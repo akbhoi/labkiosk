@@ -78,6 +78,14 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
   `grub-install --target=x86_64-efi --efi-directory=<ESP> --bootloader-id=LabKiosk --no-nvram`,
   the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`.
 - Exclude the disk backing the live medium (`live_medium_disks()`), re-checked before `wipefs`.
+- **Beside another system** (`--dual-boot`, `--replace-partition`; distro-builder/AGENTS.md
+  Rule 2a): UEFI + GPT only, checked before any write; never `bios_grub`, `i386-pc`, `--removable`
+  or a write to the other system's ESP; GRUB in `EFI/LabKiosk/` on Lab Kiosk's own 128 MiB
+  `LABKIOSK_ESP` (Debian's signed GRUB reads `EFI/debian/grub.cfg` on the ESP it starts from)
+  plus its own `efibootmgr` entry first in `BootOrder`.
+- **Network boot** (Rule 2b): `distro-builder/tools/labkiosk-netboot.py prepare` lays a release
+  out for a boot server; `labkiosk.netboot=1` means no installer and enrolment at every boot. No
+  distribution package, ever (Rule 2c).
 - Re-validate `--target` (`TARGET_DISK_PATTERN`) and `--grub-password-hash` (`GRUB_PBKDF2_PATTERN`)
   inside the installer — sudoers lets `kiosk` run it directly. The image ships an empty
   `/etc/machine-id` (lockdown hook).
@@ -149,7 +157,7 @@ docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akb
 | Hyper-V Gen 2 (UEFI) | GRUB EFI menu, live boot, disk detection, install to VHDX, standalone reboot. The host is reachable at the Default Switch address (e.g. `172.31.64.1`) for a local Worker. |
 | VirtualBox (BIOS) | ISOLINUX menu, install to VDI, legacy GRUB boot |
 | Docker simulator | agent, extension, telemetry — see `labkiosk-simulator` |
-| Build ISO workflow (KVM) | `tests/vm/boot-test.sh` (run by `.github/workflows/build-iso.yml` after each build): the ISO's own installer onto a virtual disk, then promote, broken squashfs, recover and unhealthy image in QEMU + OVMF. UEFI only; BIOS is covered by the GRUB menu tests. Needs root and `/dev/kvm`, so not on Windows. |
+| Build ISO workflow (KVM) | `tests/vm/boot-test.sh` (run by `.github/workflows/build-iso.yml` after each build): the ISO's own installer onto a virtual disk, then promote, broken squashfs, recover and unhealthy image in QEMU + OVMF, as parallel CI jobs by `BOOT_TEST_GROUPS` (`slots`, `tpm`, `beside`). Only the unhealthy test image gets a shortened health deadline; never make a release's configurable. UEFI only; BIOS is covered by the GRUB menu tests. Needs root and `/dev/kvm`, so not on Windows. |
 
 ```bash
 python3 distro-builder/tools/generate-chromium-policy.py --check

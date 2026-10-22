@@ -71,7 +71,76 @@ Closed matters: a closed shadow root is not reachable from the host element, so 
 
 **Never modify `document.body.style.marginTop`.** Reserving space for the bar breaks full-height layouts on real sites and reintroduces a scrollbar the kiosk does not want.
 
-Controls: Home, Back, Forward, Reload, domain pill, and `.client-meta` housing the network status icon (`#btn-network`), connection status dot (`#kiosk-dot`), and client ID. Navigation is done entirely with the History API in the content script and never touches the agent, so there is no navigation channel to the loopback API at all.
+Controls: Home, Back, Forward, Reload, Keyboard (`#btn-keyboard`, the on-screen keyboard below), Print (`#btn-print`, below), domain pill, and `.client-meta` housing the network status icon (`#btn-network`), connection status dot (`#kiosk-dot`), and client ID. Navigation is done entirely with the History API in the content script and never touches the agent, so there is no navigation channel to the loopback API at all. The one exception is Home while the organization has **Home starts a new session** on (`homeReset` in `/api/status`, the default): Home then opens a "Start over?" dialog (`#home-modal`, Cancel focused) and Yes sends `labkiosk:session-reset` to the service worker, which posts the agent's `/api/session/reset`. The agent ends Chromium and the watchdog wipes the profile before relaunching, exactly as for the console's Clear Session. Only the top frame may ask; a refusal (the setting was turned off meanwhile) is shown in the dialog.
+
+**Print.** `#btn-print` is hidden until `/api/status` says `printing: true`, which the agent reports only once the organization has turned printing on, a printer is set up and Chromium has reloaded the policy that lets it print ([Client Agent](Client-Agent#printing)); it hides again behind the lock curtain and the moment printing is turned off. It calls `window.print()` in the top frame (`kioskPrint` in `content.js`), so the whole page prints. The bar, the curtain and the on-screen keyboard are left out of the printout (`@media print { :host { display: none } }` in their shadow roots).
+
+**Ctrl+P.** The keyboard lockdown blocks it as every other Ctrl combination, so Chromium's own shortcut never runs. While printing is allowed, a real (`isTrusted`) Ctrl+P keydown, without Shift, Alt or Meta and not a repeat, prints the page the same way as the button; pressed inside an iframe, it goes to the top frame through `background.js` (`labkiosk:print-shortcut` → `labkiosk:print-request`, frame 0). While printing is off it does nothing. Ctrl+Shift+P, the system dialog's shortcut, stays blocked.
+
+---
+
+## The on-screen keyboard
+
+Touch workstations without a keyboard still have to fill in forms, sign in and search, so the
+extension carries its own keyboard: docked at the bottom of the screen, in a **closed** Shadow DOM
+of its own (`#labkiosk-keyboard`, top frame only), with keys at least 46 px high.
+
+**When it appears.**
+
+- **Always from the bar.** The **Keyboard** button toggles it on any workstation, keyboard or not.
+  Opened that way it stays until Hide or the button closes it.
+- **By itself when no keyboard is attached.** When `/api/status` says `keyboardPresent: false`, it
+  opens as soon as a text field gets the focus (`input` of type text, search, url, tel, email,
+  password or number, `textarea`, `contenteditable`) and closes a quarter of a second after the
+  focus leaves text. A field with `inputmode="none"` is left alone. **Hide** keeps it closed until a
+  field is tapped or focused again. `true` and `null` (unknown) leave it to the button.
+- Never over the lock curtain or an update screen; it does open for the bar's own admin password
+  field, so a touch-only workstation can still reach the network and language settings.
+
+**How the agent knows.** `input_devices_report()` reads `/proc/bus/input/devices` at most every
+5 seconds (keyboards are plugged in and out). A *keyboard* is a device with a `kbd` handler, the
+`EV_KEY` event type and **every letter, Space and Enter** in its `KEY=` bitmap — power and sleep
+buttons, the lid switch, the Video Bus, the PC speaker and laptop hotkey devices all register a
+`kbd` handler and none can type a letter. Devices named like software (`virtual`, `xtest`,
+`uinput`, `ydotool`) never count. A *touchscreen* (`touchPresent`) reports absolute X positions
+(`ABS_X` or `ABS_MT_POSITION_X`) and `INPUT_PROP_DIRECT`, which a touchpad does not. A file that
+lists no device at all — a container, a virtual machine driven over VNC — or cannot be read gives
+`null` for both, logged once, so the keyboard does not open by itself over someone typing through
+noVNC in the simulator.
+
+**Layout.** US QWERTY with the number row and the US shifted symbols (Shift is one-shot; tap it
+twice, or Caps, to lock capitals), a **?123** layer of digits and symbols, Backspace and the arrows
+repeating while held, Tab, Enter, Space and Hide. One layout is built in; another is another
+`LAYERS` table in `createOnScreenKeyboard()` chosen from the workstation's keymap
+(`localization.json`), plus dead keys for accented letters.
+
+**Typing without stealing the focus.** Keys act on `pointerdown` with its default cancelled (and
+`touchstart` cancelled), so the field keeps the focus and no click falls through to the page when
+Hide removes the keyboard. Each key is typed in the field's own frame by `kioskTyping.apply()`:
+
+- synthetic `keydown`/`keypress`/`keyup` with the US `key`, `code` and legacy `keyCode`, never with
+  Control, Alt or Meta — so the keyboard lockdown has nothing to block, and a page that cancels the
+  `keydown` cancels the key, as with a real one;
+- the text through `document.execCommand("insertText")`, the browser's own path for typed text:
+  it keeps `maxlength`, undo and the caret, raises the usual `beforeinput`/`input` events and works
+  in number and email fields, whose selection APIs throw. Where the command is refused, input and
+  textarea fall back to `setRangeText()` (the value, for number and email) plus an `input` event,
+  and contenteditable to a `Range`;
+- **Enter** in a single-line field does what HTML's implicit submission does: it clicks the form's
+  default button, or calls `form.requestSubmit()` when the form has no submit button and only one
+  field — unless the page cancelled the `keydown` or `keypress`. In a textarea it is a new line, in
+  contenteditable a new paragraph. **Tab** moves to the next focusable element.
+
+**Fields in iframes.** `content.js` runs in every frame. A frame reports its field's focus with
+`labkiosk:osk-focus`; `background.js` passes it to frame 0 (`chrome.tabs.sendMessage` with
+`frameId: 0`, stamped with the sender's `frameId`), and each key the top frame types goes back as
+`labkiosk:osk-type` → `labkiosk:osk-apply` to that `frameId` only. Both hops re-check the shape of
+the message (a key from a fixed set, or at most 8 characters of text).
+
+**The page stays usable.** While the keyboard is up, the page gets bottom padding as tall as the
+keyboard and is scrolled until the field sits above it; a page that cannot scroll (a fixed,
+full-height layout) gets the keyboard docked at the top instead when the field fits below it. The
+padding is removed when the keyboard closes. `body`'s top margin is never touched.
 
 ---
 
@@ -118,6 +187,8 @@ Once a second the content script asks the service worker for the agent's status 
 - **Lock curtain:** curtain up or down, message text.
 - **Broadcast synchronization:** broadcast navigation when the epoch has advanced.
 - **Online/Offline status:** Updates `#kiosk-dot` and `#kiosk-net-icon`.
+- **On-screen keyboard:** opens by itself on text fields while `keyboardPresent` is `false`, and
+  closes when the curtain comes up.
 - **Offline Auto-Fallback:** If `data.isOnline` stays false for more than 6 seconds (measured in time, not polls) on a non-loopback, unlocked page, the content script redirects the browser to `http://127.0.0.1:8888/setup#offline`, which returns to the page by itself once the connection is back. This allows lab technicians to remediate Wi-Fi/Ethernet disconnects immediately without rebooting or opening a terminal.
 
 Failures are handled deliberately rather than swallowed — an early version let a transient error leave the status dot green while the lock curtain never appeared again.

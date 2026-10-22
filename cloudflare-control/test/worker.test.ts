@@ -14,6 +14,7 @@ import {
   assertSchemaCurrent,
   ensureDemoTenants,
   createUser,
+  pepperLegacyPasswordHashes,
   createTenant,
   findTenantBySubdomain,
   countEnrolledWorkstations,
@@ -25,6 +26,10 @@ import {
   AUDIT_RETENTION_DAYS
 } from "../src/db";
 import { DEMO_SLUGS } from "../src/demo";
+import { listHardwareModels, listPublicHardwareModels, rebuildHardwareModels } from "../src/hardware";
+import { platformUsage, purgeOldUsage, recordUsage, rollUpPlatformUsage, USAGE_RETENTION_DAYS } from "../src/usage";
+import { effectivePower, parsePowerScheduleInput, powerScheduleConflict } from "../src/power";
+import { MAX_PRINTERS, printerNameProblem, printerUriProblem, printingFor } from "../src/printing";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
@@ -43,7 +48,7 @@ import {
   taxIdProblem
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
-import { isHostUnder } from "../src/guard";
+import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
@@ -63,7 +68,15 @@ import {
   readIssueStatus,
   redactProblemText
 } from "../src/bug_reports";
-import { HUB_PING, HUB_PONG, installRefusal, installTargetFor, releaseNudgeTarget } from "../src/org_hub";
+import {
+  HUB_PING,
+  HUB_PONG,
+  HTTP_HEARTBEAT_ATTENDED_SECONDS,
+  HTTP_HEARTBEAT_IDLE_SECONDS,
+  installRefusal,
+  installTargetFor,
+  releaseNudgeTarget
+} from "../src/org_hub";
 import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
@@ -89,12 +102,22 @@ import {
   relayName
 } from "../src/remote_relay";
 import { CONSOLE_STYLESHEET_PATH, UNSAVED_CHANGES_SCRIPT } from "../src/ui_layout";
-import { runCustomHostnameJob } from "../src/custom_hostnames";
+import { CUSTOM_HOSTNAMES_MAX, customHostnameBudget, runCustomHostnameJob } from "../src/custom_hostnames";
 import { BUSY_SCRIPT, PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
-import { ENROLLMENT_KEY_ALPHABET, enrollmentKeyCheckCharacter, generateEnrollmentKey, isEnrollmentKey } from "../src/auth";
+import {
+  ENROLLMENT_KEY_ALPHABET,
+  breachedPasswordProblem,
+  enrollmentKeyCheckCharacter,
+  generateEnrollmentKey,
+  hashPassword,
+  isEnrollmentKey,
+  passwordPepper,
+  pepperLegacyHash,
+  verifyPassword
+} from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
 import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
 import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
@@ -105,6 +128,7 @@ import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
+import { coseToJwk, decodeCbor, derToRawEcdsa, passkeyRelyingParty, PasskeyError } from "../src/webauthn";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -114,7 +138,9 @@ const mockEnv: Env = {
   DEFAULT_DOMAIN: "labkiosk.org",
   SUPER_ADMIN_EMAIL: "admin@labkiosk.org",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
-  ALLOW_LOCAL_DB: "1"
+  ALLOW_LOCAL_DB: "1",
+  // Tests never call Have I Been Pwned; the check has its own tests with a stand-in fetch.
+  BREACHED_PASSWORD_CHECK: "off"
 };
 
 const BASE = "https://labkiosk.org";
@@ -172,7 +198,8 @@ async function pageCss(html: string): Promise<string> {
 
 async function callJson<T = any>(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
   const res = await call(path, init);
-  const data = (await res.json()) as T;
+  // Read from a copy, so a sign-in response can still be followed by sessionOf().
+  const data = (await res.clone().json()) as T;
   return { res, data };
 }
 
@@ -256,10 +283,39 @@ async function signIn(
   return post("/api/auth/login/verify", { challenge: data.challenge, code });
 }
 
+/**
+ * The session cookie a sign-in leaves for its console, as `name=value`. Sessions are host-only,
+ * so a sign-in on the platform apex for an organization's console sets nothing there: the
+ * browser follows a one-time handoff to that host, which sets the cookie. This follows it too.
+ */
+async function sessionOf(res: Response, env: Env = mockEnv): Promise<string> {
+  const direct = res.headers.getSetCookie().find((c) => /^(__Host-)?labkiosk_session=[0-9a-f]/.test(c));
+  if (direct) return direct.split(";")[0];
+  const data = (await res.clone().json()) as { redirect?: string };
+  assert.ok(data.redirect?.includes("/api/auth/handoff?"), `no session cookie and no handoff: ${JSON.stringify(data)}`);
+  const handed = await worker.fetch(new Request(data.redirect!), env);
+  assert.equal(handed.status, 302, "the handoff is accepted");
+  const cookie = handed.headers.getSetCookie().find((c) => c.startsWith("__Host-labkiosk_session="));
+  assert.ok(cookie, "the handoff sets the host's session cookie");
+  return cookie!.split(";")[0];
+}
+
+/** The same session as plain HTTP carries it: a dev host cannot hold a `__Host-` cookie. */
+function plainCookie(cookie: string): string {
+  return cookie.replace(/^__Host-/, "");
+}
+
+/** Where a sign-in's redirect finally lands, following a handoff to its `next` page. */
+function destination(redirect: string): string {
+  if (!redirect.includes("/api/auth/handoff?")) return redirect;
+  const url = new URL(redirect);
+  return url.origin + url.searchParams.get("next");
+}
+
 async function superCookie(): Promise<string> {
   const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! });
   assert.equal(res.status, 200, "the super admin signs in");
-  return res.headers.getSetCookie().find((c) => c.startsWith("labkiosk_session=") || !c.startsWith("labkiosk_device="))!.split(";")[0];
+  return await sessionOf(res);
 }
 
 /** The task a registration or request opened, by its reference. */
@@ -280,9 +336,108 @@ async function registerApprovedOrganization(overrides: Record<string, unknown>):
   const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "", workstationLimit: 45 }), cookie: admin });
   assert.equal(approved.status, 200);
   const body = signupBody(overrides);
-  const login = await call("/api/auth/login", json({ email: body.email, password: body.password }));
+  const login = await signIn({ email: body.email as string, password: body.password as string });
   assert.equal(login.status, 200, "an approved organization can sign in");
-  return login.headers.get("Set-Cookie")!.split(";")[0];
+  return (await sessionOf(login));
+}
+
+// ------------------------------------------------- a software passkey for tests
+
+/** CBOR for what a test authenticator sends: unsigned and negative integers, bytes, text, maps. */
+function cbor(value: unknown): Uint8Array {
+  const head = (major: number, n: number): number[] =>
+    n < 24 ? [(major << 5) | n] : n < 256 ? [(major << 5) | 24, n] : [(major << 5) | 25, n >> 8, n & 0xff];
+  if (typeof value === "number") return Uint8Array.from(value >= 0 ? head(0, value) : head(1, -1 - value));
+  if (typeof value === "string") {
+    const text = new TextEncoder().encode(value);
+    return Uint8Array.from([...head(3, text.length), ...text]);
+  }
+  if (value instanceof Uint8Array) return Uint8Array.from([...head(2, value.length), ...value]);
+  if (value instanceof Map) {
+    const parts: number[] = head(5, value.size);
+    for (const [k, v] of value) parts.push(...cbor(k), ...cbor(v));
+    return Uint8Array.from(parts);
+  }
+  throw new Error(`cbor(): ${typeof value} is not supported`);
+}
+
+const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+const sha256Bytes = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+
+/** A raw r||s ECDSA signature as the DER sequence authenticators send. */
+function rawToDer(raw: Uint8Array): Uint8Array {
+  const int = (bytes: Uint8Array) => {
+    let i = 0;
+    while (i < bytes.length - 1 && bytes[i] === 0) i++;
+    const trimmed = bytes.subarray(i);
+    const body = trimmed[0] & 0x80 ? [0, ...trimmed] : [...trimmed];
+    return [0x02, body.length, ...body];
+  };
+  const seq = [...int(raw.subarray(0, 32)), ...int(raw.subarray(32))];
+  return Uint8Array.from([0x30, seq.length, ...seq]);
+}
+
+/** An ES256 authenticator: makes one credential, then signs assertions with a rising counter. */
+class TestPasskey {
+  readonly id = crypto.getRandomValues(new Uint8Array(32));
+  counter = 0;
+  private constructor(private readonly keys: CryptoKeyPair) {}
+  static async create(): Promise<TestPasskey> {
+    return new TestPasskey((await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair);
+  }
+  get credentialId(): string {
+    return b64url(this.id);
+  }
+  async attestation(options: { challenge: string; rp: { id: string } }, origin = BASE) {
+    const jwk = (await crypto.subtle.exportKey("jwk", this.keys.publicKey)) as JsonWebKey;
+    const coseKey = new Map<number, unknown>([
+      [1, 2],
+      [3, -7],
+      [-1, 1],
+      [-2, new Uint8Array(Buffer.from(jwk.x!, "base64url"))],
+      [-3, new Uint8Array(Buffer.from(jwk.y!, "base64url"))]
+    ]);
+    const authData = Uint8Array.from([
+      ...(await sha256Bytes(new TextEncoder().encode(options.rp.id))),
+      0x41, // user present, attested credential data
+      0, 0, 0, 0,
+      ...new Uint8Array(16),
+      0, this.id.length,
+      ...this.id,
+      ...cbor(coseKey)
+    ]);
+    const clientData = new TextEncoder().encode(JSON.stringify({ type: "webauthn.create", challenge: options.challenge, origin }));
+    const attestationObject = cbor(new Map<string, unknown>([["fmt", "none"], ["attStmt", new Map()], ["authData", authData]]));
+    return { id: this.credentialId, clientDataJSON: b64url(clientData), attestationObject: b64url(attestationObject) };
+  }
+  async assertion(options: { challenge: string; rpId: string }, tweak: { origin?: string; counter?: number; flags?: number } = {}) {
+    const counter = tweak.counter ?? ++this.counter;
+    const authData = Uint8Array.from([
+      ...(await sha256Bytes(new TextEncoder().encode(options.rpId))),
+      tweak.flags ?? 0x01,
+      (counter >>> 24) & 0xff, (counter >>> 16) & 0xff, (counter >>> 8) & 0xff, counter & 0xff
+    ]);
+    const clientData = new TextEncoder().encode(JSON.stringify({ type: "webauthn.get", challenge: options.challenge, origin: tweak.origin ?? BASE }));
+    const signed = Uint8Array.from([...authData, ...(await sha256Bytes(clientData))]);
+    const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, this.keys.privateKey, signed));
+    return { id: this.credentialId, clientDataJSON: b64url(clientData), authenticatorData: b64url(authData), signature: b64url(rawToDer(raw)) };
+  }
+}
+
+/** Add a staff member to an organization and sign them in: their session cookie. */
+async function addStaffMember(
+  ownerCookie: string,
+  subdomain: string,
+  staff: { name: string; email: string; password: string; role?: string; permissions?: string[] }
+): Promise<{ id: string; cookie: string }> {
+  const { data } = await callJson(`/api/tenant/staff?tenant=${subdomain}`, {
+    ...json({ role: "operator", permissions: ["workstations"], ...staff }),
+    cookie: ownerCookie
+  });
+  assert.equal(data.status, "ok", JSON.stringify(data));
+  const login = await signIn({ email: staff.email, password: staff.password });
+  assert.equal(login.status, 200, "the new staff member signs in");
+  return { id: data.operator.id as string, cookie: await sessionOf(login) };
 }
 
 /** The parts of the Durable Object runtime RemoteRelay uses, in this process. */
@@ -608,15 +763,36 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const again = await call(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
     assert.equal(again.status, 409, "a decided task stays decided");
 
-    const login = await call("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
+    // The organization's owner administers it, so sign-in asks for an emailed code as well.
+    const login = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
     assert.equal(login.status, 200);
-    const cookie = login.headers.get("Set-Cookie");
-    // Session cookies must be Secure, HttpOnly, and scoped to the parent domain
-    // so they survive the hop to greenwood.labkiosk.org.
-    assert.match(cookie!, /HttpOnly/);
-    assert.match(cookie!, /Secure/);
-    assert.match(cookie!, /Domain=\.labkiosk\.org/);
-    orgSessionCookie = cookie!.split(";")[0];
+    // Sessions are host-only: signing in on the apex sets no session there for an organization's
+    // console, clears the parent-domain cookie earlier releases set, and hands off to the subdomain.
+    const loginCookies = login.headers.getSetCookie();
+    assert.ok(!loginCookies.some((c) => /^(__Host-)?labkiosk_session=[0-9a-f]/.test(c)), "no session on the apex");
+    assert.ok(loginCookies.some((c) => /^labkiosk_session=;.*Max-Age=0.*Domain=\.labkiosk\.org/.test(c)), "the old domain-wide cookie is cleared");
+    const { redirect } = (await login.clone().json()) as { redirect: string };
+    const handoff = new URL(redirect);
+    assert.equal(handoff.host, "greenwood.labkiosk.org");
+    assert.equal(handoff.pathname, "/api/auth/handoff");
+    assert.equal(handoff.searchParams.get("next"), "/admin");
+
+    // The code opens only on the host it names, and only once.
+    const elsewhere = await worker.fetch(new Request(redirect.replace("greenwood.labkiosk.org", "riverside.labkiosk.org")), mockEnv);
+    assert.equal(elsewhere.headers.get("Location"), "/?signin=expired");
+    assert.equal(elsewhere.headers.getSetCookie().length, 0);
+    const handed = await worker.fetch(new Request(redirect), mockEnv);
+    assert.equal(handed.status, 302);
+    assert.equal(handed.headers.get("Location"), "/admin");
+    const cookie = handed.headers.getSetCookie().find((c) => c.startsWith("__Host-labkiosk_session="))!;
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /Secure/);
+    assert.match(cookie, /Path=\//);
+    assert.doesNotMatch(cookie, /Domain=/, "host-only");
+    const replay = await worker.fetch(new Request(redirect), mockEnv);
+    assert.equal(replay.headers.get("Location"), "/?signin=expired", "a spent code is refused");
+    assert.equal(replay.headers.getSetCookie().length, 0);
+    orgSessionCookie = cookie.split(";")[0];
   });
 
   test("Registers a second, unrelated organization for isolation checks", async () => {
@@ -673,7 +849,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       verdicts.push({ success: true, action: "login" });
       const signedIn = await post("/api/auth/login", { ...credentials, turnstileToken: "good" });
       assert.equal(signedIn.status, 200);
-      assert.ok(signedIn.headers.get("Set-Cookie"));
+      assert.equal(((await signedIn.json()) as any).status, "two_factor", "the password was checked: the owner's second step follows");
       // An organization's own domain is not a host name the widget runs on, so
       // sign-in there carries no check and relies on the lockouts.
       const elsewhere = await worker.fetch(
@@ -721,12 +897,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Two-factor sign-in: set up with an app, then a code, an emailed code or a recovery code", async () => {
-    const email = "operator@hillside.example";
-    const password = "HillsidePass789!";
-    const cookie = await registerApprovedOrganization({ name: "Hillside Library", contactName: "Hana Hill", email, password, subdomain: "hillside" });
+    const owner = await registerApprovedOrganization({
+      name: "Hillside Library",
+      contactName: "Hana Hill",
+      email: "operator@hillside.example",
+      password: "HillsidePass789!",
+      subdomain: "hillside"
+    });
+    // A staff member who does not administer the organization chooses their own second factor.
+    const email = "desk@hillside.example";
+    const password = "HillsideDesk789!";
+    const { cookie } = await addStaffMember(owner, "hillside", { name: "Dev Desk", email, password });
     const login = (device?: string) => call("/api/auth/login", { ...json({ email, password }), cookie: device });
     const cookiesOf = (res: Response) => res.headers.getSetCookie().map((c) => c.split(";")[0]);
-    const session = (res: Response) => cookiesOf(res).find((c) => c.startsWith("labkiosk_session="))!;
+    const session = (res: Response) => sessionOf(res);
     const device = (res: Response) => cookiesOf(res).find((c) => c.startsWith("labkiosk_device="))!;
     const mailTo = () => localOutbox().filter((m) => m.to === email);
 
@@ -737,18 +921,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(off.enabled, false);
     assert.equal(off.emailCodes, false, "an organization account chooses the emailed code");
     assert.equal(off.required, false);
+    const { data: ownerState } = await callJson("/api/auth/two-factor", { cookie: owner });
+    assert.equal(ownerState.emailCodes, true, "the organization's owner is always emailed a code");
+    assert.equal(ownerState.required, true);
     const { data: superState } = await callJson("/api/auth/two-factor", { cookie: await superCookie() });
     assert.equal(superState.enabled, false, "super admins have it too");
     assert.equal(superState.emailCodes, true, "a super admin is always emailed a code");
     assert.equal(superState.required, true);
 
-    const otherBrowser = session(await login());
+    const otherBrowser = (await session(await login()));
     assert.equal((await call("/api/auth/two-factor/setup", { ...json({ password: "wrong" }), cookie })).status, 400, "setup needs the password");
     const { res: setupRes, data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
     assert.equal(setupRes.status, 200);
-    assert.match(setup.otpauthUri, /^otpauth:\/\/totp\/Lab%20Kiosk%3Aoperator%40hillside\.example\?secret=[A-Z2-7]{32}&issuer=Lab%20Kiosk/);
+    assert.match(setup.otpauthUri, /^otpauth:\/\/totp\/Lab%20Kiosk%3Adesk%40hillside\.example\?secret=[A-Z2-7]{32}&issuer=Lab%20Kiosk/);
     const secret = base32Decode(setup.secret);
-    assert.equal((await login()).headers.get("Set-Cookie")?.includes("labkiosk_session"), true, "not on until a code proves the app");
+    assert.equal(((await (await login()).json()) as { status: string }).status, "ok", "not on until a code proves the app");
 
     assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "000000" }), cookie })).status, 400);
     const firstStep = currentTotpStep();
@@ -775,7 +962,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const alertsBefore = mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length;
     const signedIn = await verify({ challenge, code: await totpCode(secret, firstStep + 1) });
     assert.equal(signedIn.status, 200);
-    assert.ok(session(signedIn), "the right code signs in");
+    assert.ok(await session(signedIn), "the right code signs in");
     assert.match(signedIn.headers.getSetCookie().find((c) => c.startsWith("labkiosk_device="))!, /Path=\/api\/auth; .*HttpOnly; SameSite=Strict/);
     assert.equal((await verify({ challenge, code: "654321" })).status, 401, "a challenge signs in once");
     const browser = device(signedIn);
@@ -790,7 +977,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(step2.status, "two_factor", "a known browser is not a trusted one");
     const sent = await callJson("/api/auth/login/email-code", json({ challenge: step2.challenge }));
     assert.equal(sent.res.status, 200);
-    assert.equal(sent.data.sentTo, "o•••@hillside.example");
+    assert.equal(sent.data.sentTo, "d•••@hillside.example");
     assert.equal((await call("/api/auth/login/email-code", json({ challenge: step2.challenge }))).status, 429, "one code a minute");
     const emailed = mailTo().at(-1)!;
     const emailedCode = /is your Lab Kiosk sign-in code/.test(emailed.subject) ? emailed.subject.slice(0, 6) : "";
@@ -803,8 +990,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "a browser it has used before is not reported"
     );
     const direct = await login(browser);
+    assert.ok(await session(direct));
     assert.equal(((await direct.json()) as any).status, "ok", "a trusted browser skips the code for 30 days");
-    assert.ok(session(direct));
 
     // A recovery code works once.
     const recovery = enabled.recoveryCodes[0].toUpperCase();
@@ -822,10 +1009,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "123456" }), cookie })).status, 409, "a new setup starts over");
   });
 
-  test("Two-factor sign-in: an emailed code needs no setup, and a super admin cannot turn it off", async () => {
-    const email = "operator@lakeside.example";
-    const password = "LakesidePass789!";
-    const cookie = await registerApprovedOrganization({ name: "Lakeside Library", contactName: "Lena Lake", email, password, subdomain: "lakeside" });
+  test("Two-factor sign-in: an emailed code needs no setup, and administrators cannot turn it off", async () => {
+    const owner = await registerApprovedOrganization({
+      name: "Lakeside Library",
+      contactName: "Lena Lake",
+      email: "operator@lakeside.example",
+      password: "LakesidePass789!",
+      subdomain: "lakeside"
+    });
+    const email = "desk@lakeside.example";
+    const password = "LakesideDesk789!";
+    const { cookie } = await addStaffMember(owner, "lakeside", { name: "Dee Desk", email, password });
     const set = (body: unknown, as?: string) => call("/api/auth/two-factor/email", { ...json(body), cookie: as });
 
     // Only the signed-in account, with its password, and only a clear on or off.
@@ -835,7 +1029,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await set({ password, enabled: "yes" }, cookie)).status, 400);
     assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok", "off: the password is enough");
 
-    const otherBrowser = (await call("/api/auth/login", json({ email, password }))).headers.get("Set-Cookie")!.split(";")[0];
+    const otherBrowser = await sessionOf(await call("/api/auth/login", json({ email, password })));
     assert.equal((await set({ password, enabled: true }, cookie)).status, 200);
     assert.equal((await callJson("/api/auth/two-factor", { cookie })).data.emailCodes, true);
     assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null, "browsers signed in with the password alone are signed out");
@@ -844,7 +1038,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const { res: step, data: challenge } = await callJson("/api/auth/login", json({ email, password }));
     assert.equal(challenge.status, "two_factor");
     assert.equal(challenge.method, "email");
-    assert.equal(challenge.sentTo, "o•••@lakeside.example");
+    assert.equal(challenge.sentTo, "d•••@lakeside.example");
     assert.equal(step.headers.get("Set-Cookie"), null, "no session before the code");
     const code = lastMailTo(email).subject.match(/^(\d{6}) is your Lab Kiosk sign-in code$/)![1];
     const wrong = code === "000000" ? "111111" : "000000";
@@ -858,9 +1052,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await set({ password, enabled: false }, cookie)).status, 200);
     assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok");
 
-    // A super admin cannot turn it off.
+    // A super admin, an organization's owner and a staff member with the org_admin role cannot turn it off.
     const admin = await superCookie();
     assert.equal((await set({ password: mockEnv.SUPER_ADMIN_PASSWORD, enabled: false }, admin)).status, 409);
+    assert.equal((await set({ password: "LakesidePass789!", enabled: false }, owner)).status, 409);
+    const deputy = await addStaffMember(owner, "lakeside", { name: "Dana Deputy", email: "deputy@lakeside.example", password: "LakesideDeputy789!", role: "org_admin", permissions: [] });
+    const { data: deputyState } = await callJson("/api/auth/two-factor", { cookie: deputy.cookie });
+    assert.equal(deputyState.required, true, "staff with the org_admin role administer the organization too");
+    assert.equal((await set({ password: "LakesideDeputy789!", enabled: false }, deputy.cookie)).status, 409);
 
     // Where email is not configured a code cannot be sent: the password alone signs in, and the choice is refused.
     const noMail = { ...mockEnv, EMAIL: {}, MAIL_FROM: "Lab Kiosk <support@email.labkiosk.org>" } as unknown as Env;
@@ -874,9 +1073,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Two-factor sign-in: a challenge takes five wrong codes, then the password is needed again", async () => {
-    const email = "operator@hillside.example";
-    const password = "HillsidePass789!";
-    const cookie = (await call("/api/auth/login", json({ email, password }))).headers.get("Set-Cookie")!.split(";")[0];
+    const email = "desk@hillside.example";
+    const password = "HillsideDesk789!";
+    const cookie = await sessionOf(await call("/api/auth/login", json({ email, password })));
     const { data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
     const step = currentTotpStep();
     await call("/api/auth/two-factor/enable", { ...json({ code: await totpCode(base32Decode(setup.secret), step) }), cookie });
@@ -887,6 +1086,116 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/login/verify", json({ challenge, code: "000000" }))).status, 401);
     const late = await call("/api/auth/login/verify", json({ challenge, code: await totpCode(base32Decode(setup.secret), step + 1) }));
     assert.equal(late.status, 401, "the challenge is gone, even for the right code");
+  });
+
+  test("Passkeys: registered with the password, then a sign-in's second step, once per challenge", async () => {
+    const email = "keys@greenwood.example";
+    const password = "GreenwoodKeys789!";
+    const { cookie } = await addStaffMember(orgSessionCookie, "greenwood", { name: "Kit Keys", email, password });
+    const options = (body: unknown, as = cookie) => callJson("/api/auth/two-factor/passkey-options", { ...json(body), cookie: as });
+    const register = (body: unknown, as = cookie) => callJson("/api/auth/two-factor/passkey-register", { ...json(body), cookie: as });
+    const key = await TestPasskey.create();
+
+    // Only the signed-in account, and only with its password.
+    assert.equal((await call("/api/auth/two-factor/passkey-options", json({ password }))).status, 401);
+    assert.equal((await options({ password: "wrong" })).res.status, 400);
+    assert.deepEqual((await callJson("/api/auth/two-factor", { cookie })).data.passkeys, []);
+
+    // A credential made for another site, or answering another challenge, is refused, and the setup is spent.
+    const first = (await options({ password })).data;
+    assert.equal(first.rp.id, "labkiosk.org", "one passkey for the apex and every organization subdomain");
+    assert.equal(first.attestation, "none");
+    assert.deepEqual(first.pubKeyCredParams.map((p: any) => p.alg), [-7, -257]);
+    const phished = await register({ name: "Laptop", credential: await key.attestation(first, "https://labkiosk-login.example") });
+    assert.equal(phished.res.status, 400);
+    assert.match(phished.data.error, /different site/);
+    assert.equal((await register({ name: "Laptop", credential: await key.attestation(first) })).res.status, 409, "a setup is used once");
+    const second = (await options({ password })).data;
+    const wrongRp = await register({ name: "Laptop", credential: await key.attestation({ ...second, rp: { id: "evil.example" } }) });
+    assert.equal(wrongRp.res.status, 400);
+
+    // Registered: listed, and other browsers signed in without it are signed out.
+    const otherBrowser = await sessionOf(await signIn({ email, password }));
+    const third = (await options({ password })).data;
+    const added = await register({ name: "  Laptop\u0007  ", credential: await key.attestation(third) });
+    assert.equal(added.res.status, 200, JSON.stringify(added.data));
+    assert.equal(added.data.name, "Laptop");
+    assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null);
+    const listed = (await callJson("/api/auth/two-factor", { cookie })).data.passkeys;
+    assert.deepEqual(listed.map((p: any) => [p.id, p.name, p.site, p.here]), [[key.credentialId, "Laptop", "labkiosk.org", true]]);
+    assert.deepEqual((await options({ password })).data.excludeCredentials, [{ type: "public-key", id: key.credentialId }]);
+
+    // The password now leads to the passkey; nothing is emailed until asked for.
+    const mailsBefore = localOutbox().filter((m) => m.to === email).length;
+    const login = async () => (await callJson("/api/auth/login", json({ email, password }))).data;
+    const step = await login();
+    assert.equal(step.status, "two_factor");
+    assert.equal(step.method, "passkey");
+    assert.equal(step.passkey, true);
+    assert.equal(step.sentTo, null);
+    assert.equal(localOutbox().filter((m) => m.to === email).length, mailsBefore, "no code is emailed while a passkey is offered");
+    const ask = (challenge: string) => callJson("/api/auth/login/passkey", json({ challenge }));
+    const verify = (challenge: string, passkey: unknown) => call("/api/auth/login/verify", json({ challenge, passkey }));
+    assert.equal((await ask("f".repeat(64))).res.status, 401);
+    const request1 = (await ask(step.challenge)).data;
+    assert.equal(request1.rpId, "labkiosk.org");
+    assert.deepEqual(request1.allowCredentials, [{ type: "public-key", id: key.credentialId }]);
+
+    // Signed for another site, unsigned by the person, or stale: refused, and each answer spends the request.
+    assert.equal((await verify(step.challenge, await key.assertion(request1, { origin: "https://labkiosk-login.example" }))).status, 400);
+    const stale = await verify(step.challenge, await key.assertion(request1));
+    assert.equal(stale.status, 400, "the request was spent by the refused answer");
+    const request2 = (await ask(step.challenge)).data;
+    assert.equal((await verify(step.challenge, await key.assertion(request2, { flags: 0x00 }))).status, 400, "no user presence");
+    const request3 = (await ask(step.challenge)).data;
+    const forged = await key.assertion(request3);
+    forged.signature = (await (await TestPasskey.create()).assertion(request3)).signature;
+    assert.equal((await verify(step.challenge, forged)).status, 400, "another key's signature");
+
+    // The right answer signs in once.
+    const request4 = (await ask(step.challenge)).data;
+    const answer = await key.assertion(request4);
+    const signedIn = await verify(step.challenge, answer);
+    assert.equal(signedIn.status, 200);
+    assert.ok(await sessionOf(signedIn));
+    assert.equal((await verify(step.challenge, answer)).status, 401, "a challenge signs in once");
+    assert.ok((await callJson("/api/auth/two-factor", { cookie })).data.passkeys[0].lastUsedAt);
+
+    // A counter that does not move forward means a copied authenticator.
+    const again = await login();
+    const request5 = (await ask(again.challenge)).data;
+    const cloned = await verify(again.challenge, await key.assertion(request5, { counter: key.counter }));
+    assert.equal(cloned.status, 400);
+    assert.match(((await cloned.json()) as any).error, /counter went backwards/);
+    // An emailed code is still there when the passkey is not.
+    assert.equal((await call("/api/auth/login/email-code", json({ challenge: again.challenge }))).status, 200);
+
+    // On an organization's own domain it is not offered: that is another site.
+    const custom = new Request("https://kiosk.customer.example/");
+    assert.deepEqual(passkeyRelyingParty(mockEnv, custom), { rpId: "kiosk.customer.example", origin: "https://kiosk.customer.example" });
+    assert.deepEqual(passkeyRelyingParty(mockEnv, new Request("https://greenwood.labkiosk.org/")), { rpId: "labkiosk.org", origin: "https://greenwood.labkiosk.org" });
+
+    // Removing it needs the password, and only the owner can.
+    const remove = (body: unknown, as = cookie) => call("/api/auth/two-factor/passkey-delete", { ...json(body), cookie: as });
+    assert.equal((await remove({ password, id: key.credentialId }, rivalSessionCookie)).status, 404, "another account cannot remove it");
+    assert.equal((await remove({ password: "wrong", id: key.credentialId })).status, 400);
+    assert.equal((await remove({ password, id: key.credentialId })).status, 200);
+    assert.equal((await login()).status, "ok", "with no second factor left, the password is enough for this account");
+  });
+
+  test("Passkey data is read strictly", async () => {
+    assert.deepEqual(decodeCbor(Uint8Array.from([0xa2, 0x01, 0x02, 0x20, 0x43, 1, 2, 3])).value, new Map<any, any>([[1, 2], [-1, Uint8Array.from([1, 2, 3])]]));
+    assert.throws(() => decodeCbor(Uint8Array.from([0x9f, 0x01, 0xff])), PasskeyError, "indefinite lengths are refused");
+    assert.throws(() => decodeCbor(Uint8Array.from([0x5a, 0xff, 0xff, 0xff, 0xff])), PasskeyError, "a length past the end is refused");
+    assert.throws(() => decodeCbor(Uint8Array.from([0xa2, 0x01, 0x01, 0x01, 0x02])), PasskeyError, "a repeated key is refused");
+    assert.throws(() => decodeCbor(Uint8Array.from([0xfb, 0, 0, 0, 0, 0, 0, 0, 0])), PasskeyError, "floats are refused");
+    const raw = crypto.getRandomValues(new Uint8Array(64));
+    raw[0] = 0;
+    raw[32] = 0x80;
+    assert.deepEqual(derToRawEcdsa(rawToDer(raw)), raw);
+    assert.throws(() => derToRawEcdsa(Uint8Array.from([0x30, 0x02, 0x02, 0x00])), PasskeyError);
+    assert.throws(() => coseToJwk(new Map<any, any>([[1, 1], [3, -8]])), /ES256 or RS256/);
+    assert.throws(() => coseToJwk(new Map<any, any>([[1, 2], [3, -7], [-1, 2], [-2, new Uint8Array(32)], [-3, new Uint8Array(32)]])), /P-256/);
   });
 
   test("Remote Control is off until an organization asks and the platform approves", async () => {
@@ -1703,7 +2012,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // An organization's host does not serve the platform's pages under its own name.
     for (const host of ["greenwood.labkiosk.org", "web-demo.labkiosk.org"]) {
-      for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
+      for (const path of ["/features", "/specs", "/hardware", "/pricing", "/download", "/docs"]) {
         const res = await at(`https://${host}${path}`);
         assert.equal(res.status, 301, `${host}${path}`);
         assert.equal(res.headers.get("Location"), `https://labkiosk.org${path}`);
@@ -2118,7 +2427,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loginRes.status, 200);
     assert.equal(loginData.status, "ok");
     assert.equal(loginData.role, "super_admin");
-    superSessionCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    superSessionCookie = (await sessionOf(loginRes));
 
     const superRes = await call("/super", { cookie: superSessionCookie });
     assert.equal(superRes.status, 200);
@@ -2527,6 +2836,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/privacy", undefined, false],
       ["/terms", undefined, false],
       ["/content-policy", undefined, false],
+      ["/dpa", undefined, false],
       ["/terms/bug-reports", undefined, false]
     ];
     for (const [page, cookie, hasToggle] of pages) {
@@ -2641,6 +2951,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/privacy", undefined],
       ["/terms", undefined],
       ["/content-policy", undefined],
+      ["/dpa", undefined],
       ["/terms/bug-reports", undefined],
       ["/admin/workstations?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
@@ -3112,7 +3423,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const fromLocalConsole = await worker.fetch(
       new Request("http://localhost:8787/api/command?tenant=greenwood", {
         method: "POST",
-        headers: { Cookie: orgSessionCookie, "Content-Type": "application/json", Origin: "http://localhost:8787" },
+        headers: { Cookie: plainCookie(orgSessionCookie), "Content-Type": "application/json", Origin: "http://localhost:8787" },
         body: JSON.stringify({ target: "all", action: "navigate", resetPortal: true })
       }),
       mockEnv
@@ -3283,7 +3594,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(created.status, "ok");
     const login = await call("/api/auth/login", json({ email: "wes@greenwood.example", password: "WesPassword123!" }));
-    const operatorCookie = login.headers.get("Set-Cookie")!.split(";")[0];
+    const operatorCookie = (await sessionOf(login));
     assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
     await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
   });
@@ -3426,7 +3737,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(created.status, "ok");
     const login = await call("/api/auth/login", json({ email: "lou@greenwood.example", password: "LouPassword123!" }));
-    const operatorCookie = login.headers.get("Set-Cookie")!.split(";")[0];
+    const operatorCookie = (await sessionOf(login));
     assert.equal((await call(path, { cookie: operatorCookie })).status, 403);
     await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
     assert.equal((await call("/api/workstation-issues/log?tenant=greenwood&id=a%20b", { cookie: orgSessionCookie })).status, 400);
@@ -3548,6 +3859,321 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(over.status, 429);
     const known = await call("/api/devices/disk-health", { ...json(diskReport({ serial: "S0" })), bearer: token });
     assert.equal(known.status, 200, "a finding already listed is still answered");
+  });
+
+  const videoReport = (overrides: Record<string, unknown> = {}) => ({
+    gpus: [
+      {
+        vendor: "intel",
+        kernelDriver: "i915",
+        vaDriver: "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()",
+        decode: ["vp9", "h264", "hevc", "av1"],
+        encode: ["h264"],
+        ...overrides
+      }
+    ]
+  });
+
+  test("Refuses a video decoding report without a valid device token", async () => {
+    assert.equal((await call("/api/devices/video-decoding?tenant=greenwood", json(videoReport()))).status, 401);
+    const forged = await call("/api/devices/video-decoding", { ...json(videoReport()), bearer: "f".repeat(64) });
+    assert.equal(forged.status, 401);
+  });
+
+  test("Refuses a malformed video decoding report", async () => {
+    const bad: unknown[] = [
+      [],
+      { gpus: "intel" },
+      { gpus: [] },
+      { gpus: Array.from({ length: 5 }, () => videoReport().gpus[0]) },
+      videoReport({ vendor: "matrox" }),
+      videoReport({ kernelDriver: "../i915" }),
+      videoReport({ kernelDriver: "x".repeat(41) }),
+      videoReport({ decode: ["h264", "realvideo"] }),
+      videoReport({ decode: "h264" }),
+      videoReport({ encode: [42] }),
+      videoReport({ vaDriver: { name: "iHD" } }),
+      videoReport({ problem: ["no"] })
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/video-decoding", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unreadable = await call("/api/devices/video-decoding", { method: "POST", body: "{", bearer: deviceToken });
+    assert.equal(unreadable.status, 400);
+  });
+
+  test("Keeps the latest video decoding report on the token's own workstation", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-VIDEO" }));
+    const token = data.deviceToken;
+    const early = await call("/api/devices/video-decoding", { ...json(videoReport()), bearer: token });
+    assert.equal(early.status, 409, "a workstation the hub has not written yet is asked to report again later");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+
+    const report = {
+      ...videoReport({ vaDriver: "Intel\u0007 iHD driver", decode: ["vp9", "h264", "h264"] }),
+      // Ignored: the token decides the organization and the workstation.
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    const kept = await callJson("/api/devices/video-decoding", { ...json(report), bearer: token });
+    assert.equal(kept.res.status, 200);
+    let clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    const video = clients["PC-VIDEO"].videoDecoding;
+    assert.equal(video.gpus.length, 1);
+    assert.deepEqual(video.gpus[0].decode, ["h264", "vp9"], "codecs are listed once, in a fixed order");
+    assert.equal(video.gpus[0].vaDriver, "Intel iHD driver");
+    assert.equal(video.gpus[0].kernelDriver, "i915");
+    assert.ok(video.reportedAt > 0);
+    assert.equal(clients["PC-EVIL"], undefined);
+    const rival = (await callJson("/api/clients?tenant=riverside", { cookie: rivalSessionCookie })).data.clients;
+    assert.ok(Object.values(rival).every((client: any) => !client.videoDecoding), "another organization sees none of it");
+
+    // An NVIDIA card: no driver, so the next start says so and replaces the report.
+    const nvidia = { gpus: [{ vendor: "nvidia", kernelDriver: "nouveau", vaDriver: "", decode: [], encode: [], problem: "vainfo found no VA-API driver" }] };
+    assert.equal((await call("/api/devices/video-decoding", { ...json(nvidia), bearer: token })).status, 200);
+    clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    assert.deepEqual(clients["PC-VIDEO"].videoDecoding.gpus, nvidia.gpus);
+
+    const none = { gpus: [], problem: "No GPU render device (/dev/dri/renderD*)." };
+    assert.equal((await call("/api/devices/video-decoding", { ...json(none), bearer: token })).status, 200);
+    clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    assert.equal(clients["PC-VIDEO"].videoDecoding.problem, none.problem);
+    assert.equal(clients["PC-01"].videoDecoding, undefined, "a workstation that never reported shows nothing");
+  });
+
+  const hardwareReport = (overrides: Record<string, unknown> = {}) => ({
+    vendor: "LENOVO",
+    model: "ThinkCentre M720q",
+    cpu: "Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz",
+    cores: 6,
+    memoryMb: 7851,
+    bootMode: "uefi",
+    keyboard: true,
+    touch: false,
+    macs: ["8c:16:45:aa:bb:cc"],
+    ...overrides
+  });
+
+  test("Refuses a hardware or usage report without a valid device token", async () => {
+    for (const path of ["/api/devices/hardware", "/api/devices/usage"]) {
+      assert.equal((await call(`${path}?tenant=greenwood`, json(hardwareReport()))).status, 401, path);
+      assert.equal((await call(path, { ...json(hardwareReport()), bearer: "f".repeat(64) })).status, 401, path);
+    }
+  });
+
+  test("Refuses a malformed hardware report", async () => {
+    const bad: unknown[] = [
+      [],
+      "LENOVO",
+      hardwareReport({ bootMode: "efi" }),
+      hardwareReport({ cores: 0 }),
+      hardwareReport({ cores: 2.5 }),
+      hardwareReport({ memoryMb: "8 GB" }),
+      hardwareReport({ memoryMb: 10 }),
+      hardwareReport({ vendor: { name: "Dell" } }),
+      hardwareReport({ keyboard: "yes" }),
+      hardwareReport({ macs: "8c:16:45:aa:bb:cc" }),
+      hardwareReport({ macs: ["8c-16-45-aa-bb-cc"] }),
+      hardwareReport({ macs: Array.from({ length: 9 }, (_, i) => `02:00:00:00:00:0${i}`) })
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/hardware", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call("/api/devices/hardware", { method: "POST", body: "{", bearer: deviceToken })).status, 400);
+  });
+
+  test("Keeps the latest hardware report on the token's own workstation", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-HARDWARE" }));
+    const token = data.deviceToken;
+    assert.equal((await call("/api/devices/hardware", { ...json(hardwareReport()), bearer: token })).status, 409);
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+    const report = {
+      ...hardwareReport({
+        vendor: "To Be Filled By O.E.M.",
+        model: "Opti\u0007Plex  7050",
+        macs: ["8C:16:45:AA:BB:CC", "8c:16:45:aa:bb:cc", "01:00:5e:00:00:01", "00:00:00:00:00:00"]
+      }),
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    assert.equal((await call("/api/devices/hardware", { ...json(report), bearer: token })).status, 200);
+    const clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    const hardware = clients["PC-HARDWARE"].hardware;
+    assert.equal(hardware.vendor, "", "a firmware placeholder names no maker");
+    assert.equal(hardware.model, "Opti Plex 7050");
+    assert.deepEqual(hardware.macs, ["8c:16:45:aa:bb:cc"], "one wakeable address, once");
+    assert.ok(hardware.reportedAt > 0);
+    assert.equal(clients["PC-EVIL"], undefined);
+    const rival = (await callJson("/api/clients?tenant=riverside", { cookie: rivalSessionCookie })).data.clients;
+    assert.ok(Object.values(rival).every((client: any) => !client.hardware), "another organization sees none of it");
+  });
+
+  const today = () => new Date().toISOString().slice(0, 10);
+  const usageReport = (overrides: Record<string, unknown> = {}) => ({
+    days: [
+      {
+        day: today(),
+        onSeconds: 900,
+        activeSeconds: 600,
+        sessions: 1,
+        sites: [
+          { domain: "docs.example.org", seconds: 400, visits: 2 },
+          { domain: "127.0.0.1", seconds: 100, visits: 1 }
+        ],
+        ...overrides
+      }
+    ]
+  });
+
+  test("Refuses a malformed usage report", async () => {
+    const old = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
+    const future = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    const bad: unknown[] = [
+      [],
+      { days: [] },
+      { days: "today" },
+      usageReport({ day: "2026-02-30" }),
+      usageReport({ day: old }),
+      usageReport({ day: future }),
+      usageReport({ onSeconds: -1 }),
+      usageReport({ onSeconds: 200_000 }),
+      usageReport({ sessions: 1.5 }),
+      usageReport({ sites: [{ domain: 7, seconds: 1, visits: 1 }] }),
+      usageReport({ sites: Array.from({ length: 101 }, (_, i) => ({ domain: `s${i}.example.org`, seconds: 1, visits: 1 })) }),
+      { days: [usageReport().days[0], usageReport().days[0]] }
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/usage", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  });
+
+  test("Adds usage reports up for the organization's Usage reports and nobody else's", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-USAGE" }));
+    const token = data.deviceToken;
+    for (let n = 0; n < 2; n++) {
+      assert.equal((await call("/api/devices/usage", { ...json({ ...usageReport(), clientId: "PC-EVIL" }), bearer: token })).status, 200);
+    }
+    const report = (await callJson("/api/usage?tenant=greenwood&days=7", { cookie: orgSessionCookie })).data;
+    const mine = report.workstations.find((w: any) => w.clientId === "PC-USAGE");
+    assert.deepEqual(
+      { on: mine.onSeconds, active: mine.activeSeconds, sessions: mine.sessions },
+      { on: 1800, active: 1200, sessions: 2 },
+      "the counts are added"
+    );
+    assert.ok(!report.workstations.some((w: any) => w.clientId === "PC-EVIL"));
+    assert.deepEqual(report.sites.find((s: any) => s.domain === "docs.example.org"), { domain: "docs.example.org", activeSeconds: 800, visits: 4 });
+    assert.ok(!report.sites.some((s: any) => s.domain === "127.0.0.1"), "an IP address is no site");
+    assert.equal(report.recordSites, true, "sites are recorded by default");
+    const rival = (await callJson("/api/usage?tenant=riverside&days=7", { cookie: rivalSessionCookie })).data;
+    assert.ok(!rival.workstations.some((w: any) => w.clientId === "PC-USAGE"), "another organization sees none of it");
+
+    // Turned off: the hub tells workstations, and sites sent anyway are not kept.
+    const off = await callJson("/api/usage/settings?tenant=greenwood", { ...json({ recordSites: false }), cookie: orgSessionCookie });
+    assert.equal(off.data.recordSites, false);
+    assert.equal((await call("/api/devices/usage", { ...json(usageReport()), bearer: token })).status, 200);
+    let after = (await callJson("/api/usage?tenant=greenwood&days=7", { cookie: orgSessionCookie })).data;
+    assert.equal(after.recordSites, false);
+    assert.equal(after.sites.find((s: any) => s.domain === "docs.example.org").visits, 4);
+    const deleted = await callJson("/api/usage/sites/delete?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.ok(deleted.data.deleted >= 1);
+    after = (await callJson("/api/usage?tenant=greenwood&days=7", { cookie: orgSessionCookie })).data;
+    assert.deepEqual(after.sites, []);
+    assert.ok(after.workstations.some((w: any) => w.clientId === "PC-USAGE"), "time on and in use stays");
+    await callJson("/api/usage/settings?tenant=greenwood", { ...json({ recordSites: true }), cookie: orgSessionCookie });
+  });
+
+  test("Usage reports are for the organization's settings staff only", async () => {
+    for (const [path, init] of [
+      ["/api/usage?tenant=greenwood", {}],
+      ["/api/usage/settings?tenant=greenwood", json({ recordSites: false })],
+      ["/api/usage/sites/delete?tenant=greenwood", json({})]
+    ] as const) {
+      assert.ok([401, 403].includes((await call(path, init)).status), `${path}: anonymous`);
+      assert.ok([401, 403].includes((await call(path, { ...init, cookie: rivalSessionCookie })).status), `${path}: another organization`);
+    }
+    for (const path of ["/api/usage/settings?tenant=greenwood", "/api/usage/sites/delete?tenant=greenwood"]) {
+      const crossSite = await call(path, { ...json({ recordSites: false }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+      assert.equal(crossSite.status, 403, `${path}: cross-site`);
+    }
+    for (const days of ["0", "400", "x", "2.5"]) {
+      assert.equal((await call(`/api/usage?tenant=greenwood&days=${days}`, { cookie: orgSessionCookie })).status, 400, days);
+    }
+    assert.equal((await call("/api/usage/settings?tenant=greenwood", { ...json({ recordSites: "no" }), cookie: orgSessionCookie })).status, 400);
+    const { data: created } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Uma Usage", email: "uma@greenwood.example", password: "UmaPassword123!", role: "operator", permissions: ["workstations"] }),
+      cookie: orgSessionCookie
+    });
+    const operatorCookie = await sessionOf(await call("/api/auth/login", json({ email: "uma@greenwood.example", password: "UmaPassword123!" })));
+    assert.equal((await call("/api/usage?tenant=greenwood", { cookie: operatorCookie })).status, 403);
+    await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    // The platform's totals are the platform's administrators' alone.
+    assert.ok([401, 403].includes((await call("/api/super/usage")).status));
+    assert.ok([401, 403].includes((await call("/api/super/usage", { cookie: orgSessionCookie })).status));
+    assert.equal((await call("/api/super/usage?days=0", { cookie: superSessionCookie })).status, 400);
+    const platform = await callJson("/api/super/usage?days=30", { cookie: superSessionCookie });
+    assert.equal(platform.res.status, 200);
+    assert.ok(Array.isArray(platform.data.days) && Array.isArray(platform.data.hardware.models));
+    assert.ok(!JSON.stringify(platform.data).includes("greenwood"), "nothing in it names an organization");
+  });
+
+  test("The platform's totals and the hardware list name no organization and need three of them", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const owner = await createUser(db, { email: "owner@example.com", password: "OwnerPassword123!", name: "Owner" }, passwordPepper(mockEnv));
+    const tenants = [];
+    for (const name of ["alpha", "bravo", "charlie", "web-demo"]) {
+      tenants.push(await createTenant(db, { userId: owner.id, name, subdomain: name, status: "active" }));
+    }
+    const day = today();
+    const now = Math.floor(Date.now() / 1000);
+    for (const [index, tenant] of tenants.entries()) {
+      await db
+        .prepare("INSERT INTO client_devices (id, tenant_id, client_id, last_seen, created_at, updated_at, hardware, hardware_at) VALUES (?, ?, 'PC-1', ?, ?, ?, ?, ?)")
+        .bind(`d${index}`, tenant.id, now, now, now, JSON.stringify(hardwareReport({ vendor: index ? "Lenovo" : "LENOVO", touch: index === 1, memoryMb: 4096 * (index + 1) })), now)
+        .run();
+      await recordUsage(db, tenant.id, "PC-1", [{ day, onSeconds: 3600, activeSeconds: 1800, sessions: 2, sites: [{ domain: "shared.example.org", seconds: 60, visits: 1 }, { domain: `${tenant.subdomain}.example.org`, seconds: 60, visits: 1 }] }], true);
+    }
+    // Only two organizations run this one.
+    await db
+      .prepare("INSERT INTO client_devices (id, tenant_id, client_id, last_seen, created_at, updated_at, hardware, hardware_at) VALUES ('rare', ?, 'PC-2', ?, ?, ?, ?, ?)")
+      .bind(tenants[0].id, now, now, now, JSON.stringify(hardwareReport({ vendor: "Acme", model: "Rare 1" })), now)
+      .run();
+
+    await rollUpPlatformUsage(db);
+    const usage = await platformUsage(db, { from: day, to: day });
+    assert.deepEqual(usage.days.map((d) => ({ o: d.organizations, w: d.workstations, s: d.sessions })), [{ o: 3, w: 3, s: 6 }], "the demo is left out");
+    assert.deepEqual(usage.sites.map((s) => s.domain), ["shared.example.org"], "a site three organizations visited, and no other");
+
+    assert.equal(await rebuildHardwareModels(db, now), 2);
+    const models = await listHardwareModels(db);
+    const thinkcentre = models.find((m) => m.model === "ThinkCentre M720q")!;
+    assert.deepEqual(
+      { vendor: thinkcentre.vendor, o: thinkcentre.organizations, w: thinkcentre.workstations, touch: thinkcentre.touch, uefi: thinkcentre.uefi, mem: thinkcentre.minMemoryMb },
+      { vendor: "Lenovo", o: 3, w: 3, touch: 1, uefi: 3, mem: 4096 },
+      "one maker whatever the case, the spelling most report, the demo left out"
+    );
+    assert.deepEqual((await listPublicHardwareModels(db)).map((m) => m.model), ["ThinkCentre M720q"]);
+  });
+
+  test("The public hardware list shows only what enough organizations run", async () => {
+    const page = await (await call("/hardware")).text();
+    assert.ok(page.includes("Hardware <span>organizations run it on</span>"));
+    assert.ok(!/Tested on|Verified Hardware/.test(page));
+    assert.ok((await (await call("/specs")).text()).includes('href="/hardware"'));
+  });
+
+  test("Deletes usage past its retention", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const owner = await createUser(db, { email: "keep@example.com", password: "OwnerPassword123!", name: "Owner" }, passwordPepper(mockEnv));
+    const tenant = await createTenant(db, { userId: owner.id, name: "Keep", subdomain: "keep", status: "active" });
+    const old = new Date(Date.now() - (USAGE_RETENTION_DAYS + 2) * 86_400_000).toISOString().slice(0, 10);
+    await db.prepare("INSERT INTO usage_daily (tenant_id, client_id, day, on_seconds) VALUES (?, 'PC', ?, 60)").bind(tenant.id, old).run();
+    await db.prepare("INSERT INTO usage_daily (tenant_id, client_id, day, on_seconds) VALUES (?, 'PC', ?, 60)").bind(tenant.id, today()).run();
+    assert.equal(await purgeOldUsage(db), 1);
   });
 
   test("Clears restart logs past their retention and keeps the issue", async () => {
@@ -3988,6 +4614,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.customDomainStatus, "pending");
   });
 
+  test("A custom domain under the platform domain is refused, and Super Admin sees what custom domains cost", async () => {
+    const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
+      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.labkiosk.org" }),
+      cookie: superSessionCookie
+    });
+    assert.equal(res.status, 400);
+    assert.match(data.error, /subdomain of the platform domain/);
+    const greenwood = await getDatabase(mockEnv).prepare("SELECT custom_domain FROM tenants WHERE subdomain = 'greenwood'").first<{ custom_domain: string | null }>();
+    assert.notEqual(greenwood?.custom_domain, "kiosk.greenwood.labkiosk.org");
+
+    const html = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
+    assert.match(html, /\d+ custom domains? in use\. Cloudflare includes 100; each one after that costs \$0\.10 a month, up to 50,000 without Enterprise\. Subdomains cost nothing\./);
+    // Fewer than 100 in use: approving one more costs nothing, so the confirmation says nothing about cost.
+    assert.ok(!html.includes("data-adds-cost"));
+  });
+
   test("Allows Super Admin to approve custom domain and routes traffic via Host header", async () => {
     const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
       ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.example" }),
@@ -4295,6 +4937,56 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(device.status, 200);
   });
 
+  test("With SUPER_ADMIN_HOST set, the platform console answers on its own host only", async () => {
+    const confined = { ...mockEnv, SUPER_ADMIN_HOST: "super.labkiosk.org" } as Env;
+    const on = (host: string, path: string, init: RequestInit & { cookie?: string } = {}) =>
+      worker.fetch(request(path, { ...init, headers: { ...(init.headers as Record<string, string>), host } }), confined);
+
+    // Elsewhere, the page moves there and the API is not there at all.
+    const page = await on("labkiosk.org", "/super/organizations?x=1");
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get("Location"), "https://super.labkiosk.org/super/organizations?x=1");
+    assert.equal((await on("labkiosk.org", "/api/super/inbox", { cookie: superSessionCookie })).status, 404);
+    assert.equal((await on("greenwood.labkiosk.org", "/api/super/inbox", { cookie: superSessionCookie })).status, 404);
+    // On its host it is served as before.
+    assert.equal((await on("super.labkiosk.org", "/api/super/inbox?box=tasks&filter=all", { cookie: superSessionCookie })).status, 200);
+    // Signed out there, "/" offers the sign-in page instead of redirecting to itself.
+    const signedOut = await on("super.labkiosk.org", "/");
+    assert.equal(new URL(signedOut.headers.get("Location")!).pathname + new URL(signedOut.headers.get("Location")!).search, "/?login=1");
+    assert.equal((await on("super.labkiosk.org", "/?login=1")).status, 200);
+
+    // A super admin signing in on the apex is handed to the console host.
+    const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! }, confined);
+    const { redirect } = (await res.clone().json()) as { redirect: string };
+    assert.equal(destination(redirect), "https://super.labkiosk.org/super");
+    assert.ok(!res.headers.getSetCookie().some((c) => c.startsWith("__Host-labkiosk_session=")), "no platform session on the public apex");
+
+    // It must be one name under the platform domain.
+    assert.throws(() => superAdminHost({ SUPER_ADMIN_HOST: "admin.example.com", DEFAULT_DOMAIN: "labkiosk.org" }), /SUPER_ADMIN_HOST/);
+    assert.throws(() => superAdminHost({ SUPER_ADMIN_HOST: "a.b.labkiosk.org", DEFAULT_DOMAIN: "labkiosk.org" }), /SUPER_ADMIN_HOST/);
+    assert.equal(superAdminHost({ DEFAULT_DOMAIN: "labkiosk.org" }), null);
+  });
+
+  test("A super admin's session lasts a working day, and the old domain-wide cookie is not read", async () => {
+    const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! });
+    const set = res.headers.getSetCookie().find((c) => c.startsWith("__Host-labkiosk_session="))!;
+    assert.match(set, /Max-Age=43200/, "twelve hours, not seven days");
+    assert.doesNotMatch(set, /Domain=/);
+    const token = set.split(";")[0].split("=")[1];
+    const row = await getDatabase(mockEnv).prepare("SELECT expires_at FROM sessions WHERE token = ?").bind(token).first<{ expires_at: number }>();
+    assert.ok(row && Math.abs(row.expires_at - (Math.floor(Date.now() / 1000) + 43200)) < 60);
+
+    // The same token under the old parent-domain cookie name is ignored on HTTPS.
+    assert.equal((await callJson("/api/auth/me", { cookie: `labkiosk_session=${token}` })).data.user, null);
+    assert.ok((await callJson("/api/auth/me", { cookie: `__Host-labkiosk_session=${token}` })).data.user);
+
+    // Signing out clears this host's cookie and the old domain-wide one.
+    const out = await call("/api/auth/logout", { method: "POST", cookie: `__Host-labkiosk_session=${token}` });
+    const cleared = out.headers.getSetCookie();
+    assert.ok(cleared.some((c) => c.startsWith("__Host-labkiosk_session=;") && /Max-Age=0/.test(c)));
+    assert.ok(cleared.some((c) => c.startsWith("labkiosk_session=;") && /Domain=\.labkiosk\.org/.test(c)));
+  });
+
   test("Signs out only on POST, never on a GET link", async () => {
     const viaGet = await call("/api/auth/logout", { cookie: orgSessionCookie });
     assert.equal(viaGet.status, 405);
@@ -4302,11 +4994,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(still.data.user, "a GET must not have ended the session");
 
     // Sign a throwaway session out properly.
-    const { res: loginRes } = await callJson(
-      "/api/auth/login",
-      json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" })
-    );
-    const throwaway = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const loginRes = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
+    const throwaway = (await sessionOf(loginRes));
     const viaPost = await call("/api/auth/logout", { method: "POST", cookie: throwaway });
     assert.equal(viaPost.status, 302);
     assert.match(viaPost.headers.get("Set-Cookie")!, /Max-Age=0/);
@@ -4317,11 +5006,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ---------------------------------------------------------- password change
 
   test("Lets a signed-in user change their password and ends their other sessions", async () => {
-    const { res: otherLogin } = await callJson(
-      "/api/auth/login",
-      json({ email: "operator@riverside.example", password: "RiversidePass456!" })
-    );
-    const otherCookie = otherLogin.headers.get("Set-Cookie")!.split(";")[0];
+    const otherLogin = await signIn({ email: "operator@riverside.example", password: "RiversidePass456!" });
+    const otherCookie = (await sessionOf(otherLogin));
 
     const wrong = await callJson("/api/auth/change-password", {
       ...json({ currentPassword: "NotThePassword1", newPassword: "RiversideNewPass789!" }),
@@ -4349,8 +5035,92 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const oldPassword = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversidePass456!" }));
     assert.equal(oldPassword.status, 401);
-    const newPassword = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversideNewPass789!" }));
+    const newPassword = await signIn({ email: "operator@riverside.example", password: "RiversideNewPass789!" });
     assert.equal(newPassword.status, 200);
+  });
+
+  test("Password hashes are peppered, and older ones are wrapped without the password", async () => {
+    const pepper = passwordPepper(mockEnv);
+    const { hashHex, saltHex } = await hashPassword("CorrectHorse2026!", pepper);
+    assert.match(hashHex, /^p1\$[0-9a-f]{64}$/);
+    assert.ok(await verifyPassword("CorrectHorse2026!", hashHex, saltHex, pepper));
+    assert.ok(!(await verifyPassword("WrongHorse2026!", hashHex, saltHex, pepper)));
+    assert.ok(!(await verifyPassword("CorrectHorse2026!", hashHex, saltHex, "x".repeat(64))), "a different pepper fails");
+
+    // A bare PBKDF2 hash from before the pepper: still accepted, then wrapped by the cron.
+    const db = getDatabase(mockEnv);
+    const salt = "ab".repeat(32);
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("LegacyPassword2026!"), { name: "PBKDF2" }, false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: Buffer.from(salt, "hex"), iterations: 100000, hash: "SHA-256" }, key, 256);
+    const legacy = Buffer.from(bits).toString("hex");
+    assert.ok(await verifyPassword("LegacyPassword2026!", legacy, salt, pepper));
+    const wrapped = await pepperLegacyHash(legacy, pepper);
+    assert.ok(wrapped && (await verifyPassword("LegacyPassword2026!", wrapped, salt, pepper)));
+    assert.equal(await pepperLegacyHash(wrapped!, pepper), null, "an already peppered hash is left alone");
+
+    const now = Math.floor(Date.now() / 1000);
+    await db
+      .prepare("INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES (?, ?, ?, ?, 'org_admin', 'Legacy', ?)")
+      .bind("legacy-user", "legacy@example.com", legacy, salt, now)
+      .run();
+    assert.ok((await pepperLegacyPasswordHashes(db, pepper)) >= 1);
+    const row = await db.prepare("SELECT password_hash FROM users WHERE id = 'legacy-user'").first<{ password_hash: string }>();
+    assert.equal(row?.password_hash, wrapped);
+    assert.equal(await pepperLegacyPasswordHashes(db, pepper), 0, "nothing left to wrap");
+    const signIn = await call("/api/auth/login", json({ email: "legacy@example.com", password: "LegacyPassword2026!" }));
+    assert.notEqual(signIn.status, 401, "the wrapped hash still signs in");
+
+    // Production refuses to run without a pepper; local development has a fixed one.
+    assert.throws(() => passwordPepper({}), /PASSWORD_PEPPER must be set/);
+    assert.ok(passwordPepper({ ALLOW_LOCAL_DB: "1" }).length >= 32);
+  });
+
+  test("A new password that has appeared in a breach is refused; only a hash prefix leaves", async () => {
+    const sha1 = (await crypto.subtle.digest("SHA-1", new TextEncoder().encode("Password123456"))).valueOf() as ArrayBuffer;
+    const digest = Buffer.from(sha1).toString("hex").toUpperCase();
+    const asked: string[] = [];
+    const corpus = (body: string) =>
+      (async (url: string | URL | Request, init?: RequestInit) => {
+        asked.push(String(url));
+        assert.equal(new Headers(init?.headers).get("Add-Padding"), "true");
+        return new Response(body);
+      }) as typeof fetch;
+    const on = {};
+
+    const breached = await breachedPasswordProblem("Password123456", on, corpus(`0000000000000000000000000000000000A:3\r\n${digest.slice(5)}:52\r\n`));
+    assert.match(breached!, /appeared in a data breach/);
+    assert.deepEqual(asked, [`https://api.pwnedpasswords.com/range/${digest.slice(0, 5)}`], "only the first five characters are sent");
+
+    // Padding lines carry a count of 0 and are not a match.
+    assert.equal(await breachedPasswordProblem("Password123456", on, corpus(`${digest.slice(5)}:0\r\n`)), null);
+    assert.equal(await breachedPasswordProblem("Password123456", on, corpus("")), null);
+    // An outage allows the password rather than blocking sign-up.
+    const down = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    assert.equal(await breachedPasswordProblem("Password123456", on, down), null);
+    asked.length = 0;
+    assert.equal(await breachedPasswordProblem("Password123456", { BREACHED_PASSWORD_CHECK: "off" }, corpus(`${digest.slice(5)}:9\r\n`)), null);
+    assert.equal(asked.length, 0, "switched off, nothing is sent");
+
+    // The password change route asks before it stores anything.
+    const pwned = mock.method(globalThis, "fetch", async () => new Response(`${digest.slice(5)}:52\r\n`));
+    try {
+      const res = await worker.fetch(
+        request("/api/auth/change-password", {
+          method: "POST",
+          cookie: rivalSessionCookie,
+          body: JSON.stringify({ currentPassword: "RiversideNewPass789!", newPassword: "Password123456" })
+        }),
+        { ...mockEnv, BREACHED_PASSWORD_CHECK: undefined }
+      );
+      assert.equal(res.status, 400);
+      assert.match(((await res.json()) as { error: string }).error, /data breach/);
+    } finally {
+      pwned.mock.restore();
+    }
+    const unchanged = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversideNewPass789!" }));
+    assert.equal(unchanged.status, 200);
   });
 
   // ------------------------------------------------------ registration rules
@@ -4393,6 +5163,42 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://canvas.example.com:8080/?param=1#section"
     );
     assert.equal(safeHttpUrl("canvas.example.com:8080#section"), "https://canvas.example.com:8080/#section");
+  });
+
+  test("Organization subdomains stay on one wildcard, and custom domains are budgeted", () => {
+    // Every organization is served by one wildcard route and one wildcard DNS record, so there
+    // is no per-organization record to hit Cloudflare's per-zone DNS quota. Adding a route or a
+    // DNS record per organization would bring that limit back.
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const wrangler = JSON.parse(
+      fs
+        .readFileSync(path.join(root, "wrangler.jsonc"), "utf8")
+        .split("\n")
+        .filter((line) => !/^\s*\/\//.test(line))
+        .join("\n")
+    ) as { routes: Array<{ pattern: string; zone_name: string }> };
+    assert.deepEqual(
+      wrangler.routes.map((r) => r.pattern).sort(),
+      ["*.labkiosk.org/*", "labkiosk.org/*"],
+      "the Worker is routed by the apex and one wildcard only"
+    );
+    const srcDir = path.join(root, "src");
+    for (const file of fs.readdirSync(srcDir).filter((f) => f.endsWith(".ts"))) {
+      const source = fs.readFileSync(path.join(srcDir, file), "utf8");
+      assert.ok(!/dns_records|workers\/routes|workers\/domains/.test(source), `${file} must not create DNS records or Workers routes per organization`);
+    }
+
+    // A second label under the platform domain is not an organization: Universal SSL does not cover it.
+    const host = (h: string) => new Request("https://labkiosk.org/", { headers: { host: h } });
+    assert.equal(hostSubdomain(host("greenwood.labkiosk.org"), "labkiosk.org"), "greenwood");
+    assert.equal(hostSubdomain(host("eu.greenwood.labkiosk.org"), "labkiosk.org"), null);
+    // Wildcard custom hostnames need Cloudflare Enterprise, so a custom domain is one hostname.
+    assert.equal(cleanCustomDomain("*.example.com"), null);
+
+    assert.deepEqual(customHostnameBudget(0), { inUse: 0, billable: 0, monthlyUsd: 0, remaining: CUSTOM_HOSTNAMES_MAX });
+    assert.equal(customHostnameBudget(100).billable, 0);
+    assert.deepEqual(customHostnameBudget(1000), { inUse: 1000, billable: 900, monthlyUsd: 90, remaining: 49_000 });
+    assert.equal(customHostnameBudget(60_000).remaining, 0);
   });
 
   test("A custom domain is cleaned in linear time, whatever a workstation sends", () => {
@@ -4588,6 +5394,56 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       await hubs().runAlarm(tenantId);
       const second = await db.prepare("SELECT updated_at FROM client_devices WHERE id = ?").bind(`${tenantId}:HB-QUIET`).first<any>();
       assert.equal(second.updated_at, first.updated_at, "an unchanged workstation's row is left alone");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  test("The HTTP heartbeat is fast only while a console is in use, and asks for a screen only while it is watched", async () => {
+    const token = await enrolAs("HB-PACE");
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const beat = async () => (await callJson("/api/telemetry", { ...json({}), bearer: token })).data;
+      // Long enough for any console request earlier in the file to have lapsed.
+      mock.timers.tick(120_000);
+      let reply = await beat();
+      assert.equal(reply.heartbeatSeconds, HTTP_HEARTBEAT_IDLE_SECONDS, "nobody at a console: the slow pace");
+      assert.equal(reply.frames, false, "nobody watching: no screen");
+
+      const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+      reply = await beat();
+      assert.equal(reply.heartbeatSeconds, HTTP_HEARTBEAT_ATTENDED_SECONDS, "an open console: the fast pace");
+      assert.equal(reply.frames, false, "open but not looking at this screen");
+      await viewer.fromClient({ type: "watch", clientIds: ["HB-PACE"] });
+      assert.equal((await beat()).frames, true, "watched: a screen with every heartbeat");
+      await viewer.closeFromClient();
+
+      mock.timers.tick(61_000);
+      assert.equal((await beat()).heartbeatSeconds, HTTP_HEARTBEAT_IDLE_SECONDS, "the console closed a minute ago");
+      // A console that polls instead of holding a socket counts too.
+      assert.equal((await call("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).status, 200);
+      assert.equal((await beat()).heartbeatSeconds, HTTP_HEARTBEAT_ATTENDED_SECONDS);
+
+      // At the slow pace a workstation is not shown offline between two heartbeats.
+      mock.timers.tick(HTTP_HEARTBEAT_IDLE_SECONDS * 2 * 1000);
+      let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+      assert.equal(data.clients["HB-PACE"].online, true, "two idle heartbeats late is still online");
+      mock.timers.tick(10_000);
+      ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie }));
+      assert.equal(data.clients["HB-PACE"]?.online ?? false, false, "missing more than that is offline");
+
+      // The Super Admin list says how many of an organization's workstations are on the HTTP heartbeat.
+      await beat();
+      await hubs().runAlarm(tenantId);
+      const counts = await getDatabase(mockEnv)
+        .prepare("SELECT online_workstations, http_workstations FROM tenants WHERE id = ?")
+        .bind(tenantId)
+        .first<any>();
+      assert.ok(counts.http_workstations >= 1, "the hub writes back its HTTP heartbeat count");
+      assert.ok(counts.http_workstations <= counts.online_workstations);
+      const page = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+      assert.ok(page.includes(`${counts.http_workstations} on the HTTP heartbeat`), "shown on the organization's row");
     } finally {
       mock.timers.reset();
     }
@@ -5255,8 +6111,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         cookie: orgSessionCookie
       });
       assert.equal(data.status, "ok", JSON.stringify(data));
-      const login = await call("/api/auth/login", json({ email, password: "StaffPassword123!" }));
-      return { id: data.operator.id as string, cookie: login.headers.get("Set-Cookie")!.split(";")[0] };
+      const login = await signIn({ email, password: "StaffPassword123!" });
+      return { id: data.operator.id as string, cookie: (await sessionOf(login)) };
     };
     const operator = await staff("operator", "rc-operator@greenwood.example");
     const admin = await staff("org_admin", "rc-admin@greenwood.example");
@@ -5423,8 +6279,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
           .every((name) => err.message.includes(name))
     );
-    // With them bound, the same database serves normally.
-    const res = await worker.fetch(request("/"), {
+    const bindings = {
       ...secrets,
       ORG_HUB: {} as DurableObjectNamespace,
       REMOTE_RELAY: {} as DurableObjectNamespace,
@@ -5436,7 +6291,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       CUSTOM_HOSTNAMES: {} as Workflow,
       CF_API_TOKEN: "test-token",
       CF_ZONE_ID: "test-zone"
-    } as Env);
+    };
+    // Bound, but without PASSWORD_PEPPER no password can be hashed or checked.
+    await assert.rejects(() => worker.fetch(request("/"), bindings as Env), /PASSWORD_PEPPER must be set/);
+    await assert.rejects(() => worker.fetch(request("/"), { ...bindings, PASSWORD_PEPPER: "too-short" } as Env), /at least 32 characters/);
+    // With the pepper too, the same database serves normally.
+    const res = await worker.fetch(request("/"), { ...bindings, PASSWORD_PEPPER: "p".repeat(64) } as Env);
     assert.equal(res.status, 200);
   });
 
@@ -5664,9 +6524,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Startup never adopts a demo name another organization already holds", async () => {
     const db = createLocalD1Database();
     await initSchema(db);
-    const platform = await createUser(db, { email: "platform@example.com", password: "PlatformPassword123!", name: "Platform", role: "super_admin" });
-    const earlierPlatform = await createUser(db, { email: "old-platform@example.com", password: "PlatformPassword123!", name: "Old", role: "super_admin" });
-    const stranger = await createUser(db, { email: "stranger@example.com", password: "StrangerPassword123!", name: "Stranger" });
+    const platform = await createUser(db, { email: "platform@example.com", password: "PlatformPassword123!", name: "Platform", role: "super_admin" }, passwordPepper(mockEnv));
+    const earlierPlatform = await createUser(db, { email: "old-platform@example.com", password: "PlatformPassword123!", name: "Old", role: "super_admin" }, passwordPepper(mockEnv));
+    const stranger = await createUser(db, { email: "stranger@example.com", password: "StrangerPassword123!", name: "Stranger" }, passwordPepper(mockEnv));
     await createTenant(db, { userId: stranger.id, name: "Someone Else", subdomain: "web-demo", status: "active" });
     await createTenant(db, { userId: earlierPlatform.id, name: "Local VM Demo", subdomain: "local-demo", status: "active" });
 
@@ -5713,12 +6573,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // On the apex, a super admin belongs in the platform console.
     const onApex = await (await login(superCreds)).json();
-    assert.equal((onApex as { redirect: string }).redirect, "/super");
+    assert.equal(destination((onApex as { redirect: string }).redirect), "/super");
 
     // On the demo subdomain, they belong in the console they were looking at.
     const onDemo = await (await login(superCreds, { host: "web-demo.labkiosk.org" })).json();
     assert.equal(
-      (onDemo as { redirect: string }).redirect,
+      destination((onDemo as { redirect: string }).redirect),
       "https://web-demo.labkiosk.org/admin",
       "a super admin signing in on demo must land on the demo console"
     );
@@ -5726,7 +6586,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // On any other organization, Rule 2 applies: they may not open it, so /super.
     const onGreenwood = await (await login(superCreds, { host: "greenwood.labkiosk.org" })).json();
     assert.equal(
-      (onGreenwood as { redirect: string }).redirect,
+      destination((onGreenwood as { redirect: string }).redirect),
       "/super",
       "a super admin must never be sent into an organization they cannot open"
     );
@@ -5736,7 +6596,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       { email: "operator@greenwood.example", password: "OrganizationPassword123!" },
       { host: "labkiosk.org" }
     )).json();
-    assert.equal((asOrganization as { redirect: string }).redirect, "https://greenwood.labkiosk.org/admin");
+    assert.equal(destination((asOrganization as { redirect: string }).redirect), "https://greenwood.labkiosk.org/admin");
   });
 
   test("Sign-in honours the organization the page was showing, not just the host", async () => {
@@ -5751,7 +6611,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const viaBody = await (await login({ ...creds, tenant: "web-demo" })).json();
     assert.equal(
-      (viaBody as { redirect: string }).redirect,
+      destination((viaBody as { redirect: string }).redirect),
       "https://web-demo.labkiosk.org/admin",
       "the page said it was showing demo, so that is where the sign-in belongs"
     );
@@ -5759,7 +6619,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // The hint is a hint. It cannot open an organization Rule 2 keeps them out of.
     const notAllowed = await (await login({ ...creds, tenant: "greenwood" })).json();
     assert.equal(
-      (notAllowed as { redirect: string }).redirect,
+      destination((notAllowed as { redirect: string }).redirect),
       "/super",
       "a client-supplied organization must not route a super admin into it"
     );
@@ -5771,7 +6631,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       tenant: "web-demo"
     })).json();
     assert.equal(
-      (operator as { redirect: string }).redirect,
+      destination((operator as { redirect: string }).redirect),
       "https://greenwood.labkiosk.org/admin",
       "an organization admin goes to their own console whatever the page claimed"
     );
@@ -5831,7 +6691,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=web-demo
     const devReq = new Request("http://localhost:8787/admin/workstations", {
-      headers: { Cookie: superSessionCookie, Host: "localhost:8787" }
+      headers: { Cookie: plainCookie(superSessionCookie), Host: "localhost:8787" }
     });
     const devRes = await worker.fetch(devReq, mockEnv);
     assert.equal(devRes.status, 302);
@@ -5954,7 +6814,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loginData.status, "ok");
     assert.equal(loginData.subdomain, "greenwood");
 
-    const operatorCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const operatorCookie = (await sessionOf(loginRes));
 
     // 3. /api/auth/me returns permissions and tenantRole
     const { res: meRes, data: meData } = await callJson("/api/auth/me", {
@@ -6119,6 +6979,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Serves Privacy Policy and Terms of Service compliance pages", async () => {
+    // "Last updated" on each page is its version in legal.ts, written out.
+    const legalDate = (id: string) =>
+      new Date(`${LEGAL_DOCUMENTS.find((d) => d.id === id)!.version}T00:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
     // /privacy
     const privRes = await call("/privacy");
     assert.equal(privRes.status, 200);
@@ -6136,6 +6999,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const privCsp = privRes.headers.get("Content-Security-Policy") || "";
     assert.match(privCsp, /script-src 'nonce-[^']+'/);
     assert.doesNotMatch(privHtml, /Cloudflare Tunnel/, "remote control no longer uses a tunnel");
+    // Roles under the GDPR and India's DPDP Act, the DPA, and where data lives.
+    for (const phrase of ["controller", "processor", "Data Fiduciary", "Digital Personal Data Protection Act, 2023", "UK GDPR", "section 16", "Data Protection Board of India", "section 9 of the DPDP Act", "privacy@labkiosk.org"]) {
+      assert.ok(privHtml.includes(phrase), `the Privacy Policy says ${phrase}`);
+    }
+    assert.match(privHtml, /href="\/dpa"/);
+    // Data residency is stated as configured: no region is claimed that wrangler.jsonc does not set.
+    assert.match(privHtml, /We have not set a location hint or a data jurisdiction/);
+    assert.doesNotMatch(privHtml, /stored (only )?in (the )?(EU|European Union|India|United States)\b/i);
+    // The data each feature sends, and what never leaves the workstation.
+    for (const phrase of ["Hardware Report", "MAC", "Usage Reports", "400 days", "turn off the recording of sites", "Wake-on-LAN", "Printers", "never pass through the Platform", "Google Workspace", "Microsoft Entra ID", "do not store the provider", "on-screen keyboard works entirely on the workstation", "at least three organizations"]) {
+      assert.ok(privHtml.includes(phrase), `the Privacy Policy describes ${phrase}`);
+    }
+    assert.match(privHtml, new RegExp(`Last updated: ${legalDate("privacy")}`), "the page's date is the version legal.ts records");
 
     // /terms
     const termsRes = await call("/terms");
@@ -6150,6 +7026,35 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(termsHtml, /href="\/terms\/bug-reports"/);
     assert.match(termsHtml, /href="\/content-policy"/);
     assert.match(termsHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "terms")!.version}`), "the page shows the version consoles ask for");
+    assert.match(termsHtml, new RegExp(`Last updated: ${legalDate("terms")}`));
+    assert.match(termsHtml, /href="\/dpa"/);
+    assert.match(termsHtml, /accepting these Terms accepts both/, "the Terms carry the DPA's acceptance");
+    assert.match(termsHtml, /Anonymous statistics/);
+
+    // /dpa: part of the Terms and versioned with them; GDPR Article 28 and DPDP processor terms, and the subprocessors.
+    const dpaRes = await call("/dpa");
+    assert.equal(dpaRes.status, 200);
+    const dpaHtml = await dpaRes.text();
+    assert.match(dpaHtml, /<h1>Data Processing Agreement<\/h1>/);
+    assert.match(dpaHtml, new RegExp(`Part of the Terms of Service, Version ${LEGAL_DOCUMENTS.find((d) => d.id === "terms")!.version}`), "the DPA shows the Terms version that carries it");
+    assert.match(dpaHtml, new RegExp(`Last updated: ${legalDate("terms")}`));
+    assert.ok(!LEGAL_DOCUMENTS.some((d) => d.path === "/dpa"), "accepted with the Terms, not on its own");
+    for (const phrase of ["documented instructions", "Article 28", "Articles 33 and 34", "section 8(6)", "Data Protection Board of India", "without undue delay", "Standard Contractual Clauses", "Section 16", "Deletion at the End", "We have not set a location hint or a data jurisdiction", "privacy@labkiosk.org"]) {
+      assert.ok(dpaHtml.includes(phrase), `the DPA says ${phrase}`);
+    }
+    assert.match(dpaHtml, /<h2 id="subprocessors">/);
+    const subprocessors = dpaHtml.slice(dpaHtml.indexOf('id="subprocessors"'));
+    for (const name of ["Cloudflare, Inc.", "GitHub, Inc.", "Google and Microsoft", "Google Fonts", "Your printers"]) {
+      assert.ok(subprocessors.includes(`<strong>${name}`), `the subprocessor annex names ${name}`);
+    }
+    assert.match(subprocessors, /not our subprocessors/, "identity providers act under their own terms");
+    assert.match(dpaRes.headers.get("Content-Security-Policy") || "", /script-src 'nonce-[^']+'/);
+    assert.doesNotMatch(dpaHtml, /<script/, "no legal page carries a script");
+    for (const path of ["/", "/privacy", "/terms", "/content-policy", "/terms/bug-reports"]) {
+      assert.match(await (await call(path)).text(), /href="\/dpa"/, `${path} links the DPA`);
+    }
+    assert.match(await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text(), /href="\/dpa"/);
+    assert.equal((await call("/dpa/")).status, 301, "a trailing slash goes to the address without it");
 
     // /content-policy: part of the Terms, with the link rules link_rules.ts enforces.
     const contentRes = await call("/content-policy");
@@ -6157,6 +7062,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const contentHtml = await contentRes.text();
     assert.match(contentHtml, /<h1>Content Policy<\/h1>/);
     assert.match(contentHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "content")!.version}`));
+    assert.match(contentHtml, new RegExp(`Last updated: ${legalDate("content")}`));
     for (const rule of ["bare IP address", "link shortener", "user name or password", "blocklist", "Report this page", "legal@labkiosk.org"]) {
       assert.ok(contentHtml.includes(rule), `the Content Policy says ${rule}`);
     }
@@ -6373,7 +7279,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const loginRes = await call("/api/auth/login", json({ email: "dee@greenwood.example", password }));
     assert.equal(loginRes.status, 200);
-    const delegateCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const delegateCookie = (await sessionOf(loginRes));
 
     const { data: list } = await callJson("/api/tenant/staff?tenant=greenwood", { cookie: delegateCookie });
     const self = list.staff.find((t: any) => t.email === "dee@greenwood.example");
@@ -6446,7 +7352,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: orgSessionCookie
     });
     const loginRes = await call("/api/auth/login", json({ email: "gone@greenwood.example", password }));
-    const goneCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const goneCookie = (await sessionOf(loginRes));
     assert.equal((await call("/api/clients?tenant=greenwood", { cookie: goneCookie })).status, 200);
 
     const { data: list } = await callJson("/api/tenant/staff?tenant=greenwood", { cookie: orgSessionCookie });
@@ -6510,7 +7416,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: orgSessionCookie
     });
     const loginRes = await call("/api/auth/login", json({ email: "screens@greenwood.example", password }));
-    const cookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const cookie = (await sessionOf(loginRes));
     assert.equal((await call("/api/tenant/staff?tenant=greenwood", { cookie })).status, 403);
   });
 
@@ -6698,7 +7604,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: orgSessionCookie
     });
     const loginRes = await call("/api/auth/login", json({ email: "broadcaster@greenwood.example", password }));
-    const cookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const cookie = (await sessionOf(loginRes));
     const refused = await call("/api/command?tenant=greenwood", {
       ...json({ targets: ["PC-01"], action: "clear-session" }),
       cookie
@@ -6809,6 +7715,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/",
       "https://www.labkiosk.org/features",
       "https://www.labkiosk.org/specs",
+      "https://www.labkiosk.org/hardware",
       "https://www.labkiosk.org/pricing",
       "https://www.labkiosk.org/download",
       "https://www.labkiosk.org/docs",
@@ -6817,6 +7724,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/content-policy",
+      "https://www.labkiosk.org/dpa",
       "https://www.labkiosk.org/terms/bug-reports"
     ]);
     // Every listed page really is served, indexable, on the canonical host.
@@ -6841,6 +7749,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["www.labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
       ["www.labkiosk.org", "/content-policy"],
+      ["www.labkiosk.org", "/dpa"],
       ["www.labkiosk.org", "/terms/bug-reports"]
     ];
     for (const [host, path] of indexable) {
@@ -7052,7 +7961,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(created.status, 200, `creating ${email}`);
     const login = await call("/api/auth/login", json({ email, password }));
-    return login.headers.get("Set-Cookie")!.split(";")[0];
+    return (await sessionOf(login));
   };
 
   test("Release versions order as the workstation's updater orders them", () => {
@@ -7225,6 +8134,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const body = await listed.json<any>();
     assert.deepEqual(body.releases.map((r: any) => r.version), ["2.9.0", "2.9.1-rc1"].sort((a, b) => compareVersions(b, a)));
     assert.equal(body.downloadsConfigured, true);
+    assert.equal(body.downloadsDevelopmentOnly, false, "a custom domain on the bucket is the production address");
+    const devAddress = { ...releasesEnv, RELEASES_BASE_URL: "https://pub-0123456789abcdef.r2.dev" } as Env;
+    const flagged = await (await callWith(devAddress, "/api/super/releases", { cookie: superSessionCookie })).json<any>();
+    assert.equal(flagged.downloadsConfigured, true, "r2.dev still works");
+    assert.equal(flagged.downloadsDevelopmentOnly, true, "but Super Admin is told it is rate-limited and uncached");
     assert.ok(body.releases.every((r: any) => r.channel === null), "nothing is offered until classified");
     assert.equal(body.releases.find((r: any) => r.version === "2.9.0").sizeBytes, 948_000_000);
     const problems = Object.fromEntries(body.problems.map((p: any) => [p.version, p.problem]));
@@ -8158,6 +9072,505 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 403);
   });
+
+  // ------------------------------------------------------ power schedules and Wake-on-LAN (src/power.ts)
+
+  // From an address of their own: earlier tests spend the shared one's enrolment budget.
+  const enrolPower = async (clientId: string) => {
+    const { res, data } = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId }),
+      headers: { "CF-Connecting-IP": "198.51.100.88" }
+    });
+    assert.equal(res.status, 200, `enrolling ${clientId}`);
+    return data.deviceToken as string;
+  };
+  // Greenwood is near its workstation limit by now: each test removes what it enrolled.
+  const removeAll = async (ids: string[]) => {
+    for (const clientId of ids) {
+      assert.equal((await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie })).status, 200);
+    }
+  };
+
+  test("Power schedules are validated: days, times, the gap between them, and one schedule per day per scope", () => {
+    const ok = parsePowerScheduleInput({ days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30" });
+    assert.deepEqual(ok, { groupId: null, days: 0b0111110, offMinute: 1080, onMinute: 450 });
+    assert.equal(parsePowerScheduleInput({ days: [0], off: "00:00", on: null }).onMinute, null);
+    assert.equal(parsePowerScheduleInput({ days: [6], off: "23:59", on: "" }).onMinute, null);
+    const bad: unknown[] = [
+      null,
+      [],
+      { days: [], off: "18:00" },
+      { days: [7], off: "18:00" },
+      { days: [-1], off: "18:00" },
+      { days: [1.5], off: "18:00" },
+      { days: [1, 1], off: "18:00" },
+      { days: "1,2", off: "18:00" },
+      { days: [0, 1, 2, 3, 4, 5, 6, 0], off: "18:00" },
+      { days: [1], off: "24:00" },
+      { days: [1], off: "8:00" },
+      { days: [1], off: "18:00:00" },
+      { days: [1], off: 1080 },
+      { days: [1] },
+      { days: [1], off: "18:00", on: "18:10" },
+      { days: [1], off: "23:55", on: "00:05" },
+      { days: [1], off: "18:00", on: "7:30" },
+      { days: [1], off: "18:00", groupId: 5 },
+      { days: [1], off: "18:00", groupId: "g".repeat(65) }
+    ];
+    for (const body of bad) assert.throws(() => parsePowerScheduleInput(body), Error, JSON.stringify(body));
+    assert.doesNotThrow(() => parsePowerScheduleInput({ days: [1], off: "18:00", on: "18:15" }), "fifteen minutes is enough");
+
+    const existing = [
+      { id: "a", groupId: null, groupName: null, days: [1, 2, 3, 4, 5] },
+      { id: "b", groupId: "g1", groupName: "Library", days: [6] }
+    ];
+    assert.match(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [5, 6], off: "20:00" }))!, /every workstation already covers Friday/);
+    assert.equal(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [5, 6], off: "20:00" }), "a"), null, "a schedule never collides with itself");
+    assert.equal(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [1, 2, 3, 4, 5], off: "20:00", groupId: "g1" })), null, "a group's schedule may cover the organization's days");
+    assert.match(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [6], off: "20:00", groupId: "g1" }))!, /group Library already covers Saturday/);
+    assert.equal(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [6], off: "20:00", groupId: "g2" })), null);
+  });
+
+  test("Each workstation follows its group's schedule on that group's days, the organization's on the rest", () => {
+    const rules = [
+      { groupName: null, orphaned: false, days: 0b0111110, off: 1080, on: 450 },
+      { groupName: "Library", orphaned: false, days: 0b1100000, off: 1200, on: null },
+      { groupName: "Gone", orphaned: true, days: 0b0000001, off: 600, on: null }
+    ];
+    const everyone = effectivePower(rules, null)!;
+    assert.deepEqual(everyone.week, [null, { off: 1080, on: 450 }, { off: 1080, on: 450 }, { off: 1080, on: 450 }, { off: 1080, on: 450 }, { off: 1080, on: 450 }, null]);
+    const library = effectivePower(rules, "Library")!;
+    assert.deepEqual(library.week[5], { off: 1200, on: null }, "the group's Friday wins");
+    assert.deepEqual(library.week[6], { off: 1200, on: null });
+    assert.deepEqual(library.week[1], { off: 1080, on: 450 }, "the organization's Monday stands");
+    assert.equal(effectivePower(rules, "Gone")!.week[0], null, "a deleted group's schedule applies to nobody");
+    assert.equal(effectivePower([], "Library"), null, "no schedule, no switch-off");
+  });
+
+  test("Power schedules are for the organization's settings staff only, and malformed ones are refused", async () => {
+    const base = "/api/power-schedules?tenant=greenwood";
+    const valid = { days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30" };
+    for (const [path, init] of [
+      [base, {}],
+      [base, json(valid)],
+      ["/api/power-schedules/x?tenant=greenwood", { method: "DELETE" }]
+    ] as const) {
+      assert.ok([401, 403].includes((await call(path, init)).status), `${path}: anonymous`);
+      assert.ok([401, 403].includes((await call(path, { ...init, cookie: rivalSessionCookie })).status), `${path}: another organization`);
+    }
+    const crossSite = await call(base, { ...json(valid), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const workstationsOnly = await staffWith("power-ws@greenwood.example", ["workstations"]);
+    assert.equal((await call(base, { cookie: workstationsOnly })).status, 403, "workstations is not settings");
+    assert.equal((await call(base, { ...json(valid), cookie: workstationsOnly })).status, 403);
+    for (const body of [{ days: [], off: "18:00" }, { days: [1], off: "25:00" }, { days: [1], off: "18:00", on: "18:05" }]) {
+      assert.equal((await call(base, { ...json(body), cookie: orgSessionCookie })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call(base, { method: "POST", body: "{", cookie: orgSessionCookie })).status, 400);
+    assert.equal((await call(base, { ...json({ ...valid, groupId: "no-such-group" }), cookie: orgSessionCookie })).status, 404);
+    assert.equal((await call(base, { ...json({ ...valid, id: "no-such-schedule" }), cookie: orgSessionCookie })).status, 404);
+    assert.equal((await call("/api/power-schedules/no-such-schedule?tenant=greenwood", { method: "DELETE", cookie: orgSessionCookie })).status, 404);
+    // Another organization's group and schedule are as unknown as made-up ones.
+    const rivalGroup = await callJson("/api/groups?tenant=riverside", { ...json({ name: "Rival power group" }), cookie: rivalSessionCookie });
+    assert.equal((await call(base, { ...json({ ...valid, groupId: rivalGroup.data.group.id }), cookie: orgSessionCookie })).status, 404);
+    const rivalSchedule = await callJson("/api/power-schedules?tenant=riverside", { ...json(valid), cookie: rivalSessionCookie });
+    assert.equal(rivalSchedule.res.status, 200);
+    const rivalId = rivalSchedule.data.schedule.id;
+    assert.equal((await call(base, { ...json({ ...valid, id: rivalId }), cookie: orgSessionCookie })).status, 404);
+    assert.equal((await call(`/api/power-schedules/${rivalId}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 404);
+    const mine = (await callJson(base, { cookie: orgSessionCookie })).data;
+    assert.ok(!mine.schedules.some((s: any) => s.id === rivalId), "another organization's schedules are not listed");
+    assert.ok(!mine.groups.some((g: any) => g.id === rivalGroup.data.group.id));
+    await call(`/api/power-schedules/${rivalId}?tenant=riverside`, { method: "DELETE", cookie: rivalSessionCookie });
+    await call(`/api/groups/${rivalGroup.data.group.id}?tenant=riverside`, { method: "DELETE", cookie: rivalSessionCookie });
+  });
+
+  test("A saved power schedule is audited and reaches each workstation as its own week", async () => {
+    const tenantId = await greenwoodId();
+    const base = "/api/power-schedules?tenant=greenwood";
+    await enrolPower("PWR-ALL");
+    await enrolPower("PWR-LIB");
+    const group = (await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Power Library" }), cookie: orgSessionCookie })).data.group;
+    const all = await hubs().connectDevice({ tenantId, clientId: "PWR-ALL", ip: "10.0.0.41", portal: portalContext() });
+    const lib = await hubs().connectDevice({ tenantId, clientId: "PWR-LIB", ip: "10.0.0.42", portal: portalContext() });
+    assert.equal(ofType(all, "config")[0].power, null, "no schedule: never switched off");
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PWR-LIB"], groupName: "Power Library" }), cookie: orgSessionCookie });
+    const latestPower = (socket: typeof all) => ofType(socket, "config").at(-1)!.power as { week: Array<{ off: number; on: number | null } | null> } | null;
+
+    const weekdays = await callJson(base, { ...json({ days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30" }), cookie: orgSessionCookie });
+    assert.equal(weekdays.res.status, 200);
+    assert.deepEqual(
+      { days: weekdays.data.schedule.days, off: weekdays.data.schedule.off, on: weekdays.data.schedule.on, groupId: weekdays.data.schedule.groupId },
+      { days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30", groupId: null }
+    );
+    assert.deepEqual(latestPower(all)!.week[1], { off: 1080, on: 450 }, "pushed at once");
+    assert.equal(latestPower(all)!.week[0], null);
+
+    // The group's own Friday and Saturday; the organization's Friday stands for everyone else.
+    const library = await callJson(base, { ...json({ days: [5, 6], off: "20:00", groupId: group.id }), cookie: orgSessionCookie });
+    assert.equal(library.res.status, 200);
+    assert.equal(library.data.schedule.groupName, "Power Library");
+    assert.deepEqual(latestPower(lib)!.week[5], { off: 1200, on: null });
+    assert.deepEqual(latestPower(lib)!.week[1], { off: 1080, on: 450 });
+    assert.deepEqual(latestPower(all)!.week[5], { off: 1080, on: 450 });
+
+    // Overlaps within one scope are refused with the days named.
+    const overlap = await callJson(base, { ...json({ days: [0, 5], off: "17:00" }), cookie: orgSessionCookie });
+    assert.equal(overlap.res.status, 409);
+    assert.match(overlap.data.error, /Friday/);
+    const weekend = await callJson(base, { ...json({ days: [0, 6], off: "13:00" }), cookie: orgSessionCookie });
+    assert.equal(weekend.res.status, 200, "another scope's days are free");
+    assert.equal((await callJson(base, { ...json({ id: weekend.data.schedule.id, days: [0, 1], off: "13:00" }), cookie: orgSessionCookie })).res.status, 409);
+    const edited = await callJson(base, { ...json({ id: weekdays.data.schedule.id, days: [1, 2, 3, 4], off: "19:00", on: null }), cookie: orgSessionCookie });
+    assert.equal(edited.res.status, 200);
+    assert.deepEqual(latestPower(all)!.week[1], { off: 1140, on: null });
+    assert.equal(latestPower(all)!.week[5], null, "Friday was taken out");
+
+    // Moving a workstation out of the group gives it the organization's week.
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PWR-LIB"], groupName: null }), cookie: orgSessionCookie });
+    assert.deepEqual(latestPower(lib)!.week[6], { off: 780, on: null });
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PWR-LIB"], groupName: "Power Library" }), cookie: orgSessionCookie });
+    assert.deepEqual(latestPower(lib)!.week[6], { off: 1200, on: null });
+
+    // Deleting the group deletes its schedules, and its workstations hear of it.
+    assert.equal((await call(`/api/groups/${group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+    const listed = (await callJson(base, { cookie: orgSessionCookie })).data.schedules;
+    assert.ok(!listed.some((s: any) => s.id === library.data.schedule.id));
+    assert.deepEqual(latestPower(lib)!.week[6], { off: 780, on: null });
+
+    for (const s of listed) {
+      assert.equal((await call(`/api/power-schedules/${s.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+    }
+    assert.equal(latestPower(all), null, "every schedule deleted: never switched off");
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
+    for (const action of ["power.schedule_create", "power.schedule_update", "power.schedule_delete"]) {
+      assert.ok(logs.some((l: any) => l.action === action), action);
+    }
+    // The legacy heartbeat carries the same week.
+    await callJson(base, { ...json({ days: [3], off: "16:00", on: "08:00" }), cookie: orgSessionCookie });
+    const token = await enrolPower("PWR-HTTP");
+    const beat = await callJson("/api/telemetry", { ...json({}), bearer: token });
+    assert.deepEqual(beat.data.power.week[3], { off: 960, on: 480 });
+    for (const s of (await callJson(base, { cookie: orgSessionCookie })).data.schedules) {
+      await call(`/api/power-schedules/${s.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    }
+    await all.closeFromClient();
+    await lib.closeFromClient();
+    await removeAll(["PWR-ALL", "PWR-LIB", "PWR-HTTP"]);
+  });
+
+  test("Wake-on-LAN goes through a workstation that is on at the sleeping one's site, with its own reported addresses", async () => {
+    const tenantId = await greenwoodId();
+    const wake = (clientIds: unknown, cookie = orgSessionCookie) => callJson("/api/clients/wake?tenant=greenwood", { ...json({ clientIds }), cookie });
+    const status = (socket: Awaited<ReturnType<ReturnType<typeof hubs>["connectDevice"]>>, address: string, agentVersion = "3.3.0") =>
+      socket.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, agentVersion, lan: { address, prefix: 24 } });
+    const tokens: Record<string, string> = {};
+    for (const id of ["WOL-SLEEP", "WOL-PEER", "WOL-FAR", "WOL-NOMAC"]) tokens[id] = await enrolPower(id);
+
+    // The sleeping one was on at the site once, and reported its wired adapter.
+    const sleeper = await hubs().connectDevice({ tenantId, clientId: "WOL-SLEEP", ip: "203.0.113.70", portal: portalContext() });
+    await status(sleeper, "192.168.40.11");
+    assert.equal((await call("/api/devices/hardware", { ...json(hardwareReport({ macs: ["8c:16:45:00:00:01"] })), bearer: tokens["WOL-SLEEP"] })).status, 200);
+    const already = await wake(["WOL-SLEEP"]);
+    assert.equal(already.res.status, 409);
+    assert.match(already.data.error, /already on/);
+    await sleeper.closeFromClient();
+    // One that never reported a wired adapter.
+    await (await hubs().connectDevice({ tenantId, clientId: "WOL-NOMAC", ip: "203.0.113.70", portal: portalContext() })).closeFromClient();
+
+    // Nobody on at its site yet.
+    const far = await hubs().connectDevice({ tenantId, clientId: "WOL-FAR", ip: "198.51.100.70", portal: portalContext() });
+    await status(far, "192.168.40.12");
+    const alone = await wake(["WOL-SLEEP"]);
+    assert.equal(alone.res.status, 409);
+    assert.match(alone.data.error, /No workstation of this organization is on at its site/);
+
+    // One on at the site with an agent too old to send it, then a new one.
+    const peer = await hubs().connectDevice({ tenantId, clientId: "WOL-PEER", ip: "203.0.113.70", portal: portalContext() });
+    await status(peer, "192.168.40.13", "3.2.0");
+    assert.match((await wake(["WOL-SLEEP"])).data.error, /too old/);
+    await status(peer, "192.168.40.13", "3.3.0");
+
+    const woken = await callJson("/api/clients/wake?tenant=greenwood", {
+      ...json({ clientIds: ["WOL-SLEEP", "WOL-NOMAC", "PC-EVIL"], macs: ["ff:ff:ff:ff:ff:ff"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(woken.res.status, 200);
+    assert.deepEqual(woken.data.sent, [{ clientId: "WOL-SLEEP", via: "WOL-PEER" }]);
+    const reasons = Object.fromEntries(woken.data.skipped.map((s: any) => [s.clientId, s.reason]));
+    assert.equal(reasons["PC-EVIL"], "Not found");
+    assert.match(reasons["WOL-NOMAC"], /no wired network adapter/);
+    const commands = ofType(peer, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "wake");
+    assert.deepEqual(commands.map((c) => c.macs), [["8c:16:45:00:00:01"]], "only the sleeping one's own reported address, never the request's");
+    assert.equal(ofType(far, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "wake").length, 0, "never a peer at another site");
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "command.wake" && l.details === "clients=WOL-SLEEP via WOL-PEER"));
+
+    // Who may ask, and what they may send.
+    assert.ok([401, 403].includes((await call("/api/clients/wake?tenant=greenwood", json({ clientIds: ["WOL-SLEEP"] }))).status), "anonymous");
+    assert.ok([401, 403].includes((await wake(["WOL-SLEEP"], rivalSessionCookie)).res.status), "another organization");
+    const crossSite = await call("/api/clients/wake?tenant=greenwood", { ...json({ clientIds: ["WOL-SLEEP"] }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const settingsOnly = await staffWith("wake-settings@greenwood.example", ["settings"]);
+    assert.equal((await wake(["WOL-SLEEP"], settingsOnly)).res.status, 403, "settings is not workstations");
+    for (const body of [{}, { clientIds: "WOL-SLEEP" }, { clientIds: [] }, { clientIds: Array.from({ length: 501 }, (_, i) => `W${i}`) }]) {
+      assert.equal((await call("/api/clients/wake?tenant=greenwood", { ...json(body), cookie: orgSessionCookie })).status, 400, JSON.stringify(body).slice(0, 40));
+    }
+    for (const socket of [far, peer]) await socket.closeFromClient();
+    await removeAll(["WOL-SLEEP", "WOL-PEER", "WOL-FAR", "WOL-NOMAC"]);
+  });
+
+  test("A workstation that cannot set its wake alarm is listed under Errors & Warnings, once a day", async () => {
+    const report = { problem: "no-rtc", wakeAt: "2026-10-21 07:30", detail: "/sys/class/rtc/rtc0/wakealarm does not exist" };
+    assert.equal((await call("/api/devices/power-report?tenant=greenwood", json(report))).status, 401);
+    assert.equal((await call("/api/devices/power-report", { ...json(report), bearer: "f".repeat(64) })).status, 401);
+    for (const body of [[], { ...report, problem: "late" }, { ...report, wakeAt: "tomorrow" }, { ...report, wakeAt: "2026-10-21 24:00" }, { ...report, detail: 5 }]) {
+      assert.equal((await call("/api/devices/power-report", { ...json(body), bearer: deviceToken })).status, 400, JSON.stringify(body));
+    }
+    const token = await enrolPower("PWR-RTC");
+    assert.equal((await call("/api/devices/power-report", { ...json(report), bearer: token })).status, 409, "no row yet");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+    const first = await callJson("/api/devices/power-report", { ...json({ ...report, clientId: "PC-EVIL", tenant: "riverside" }), bearer: token });
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.recorded, true);
+    assert.equal((await callJson("/api/devices/power-report", { ...json(report), bearer: token })).data.recorded, false, "once a day");
+    const failed = await callJson("/api/devices/power-report", { ...json({ ...report, problem: "failed", detail: "write error\u0007: Invalid argument" }), bearer: token });
+    assert.equal(failed.data.recorded, true, "another problem is its own row");
+    const issues = (await issuesOf(orgSessionCookie, "greenwood")).filter((i) => i.client_id === "PWR-RTC");
+    assert.deepEqual(issues.map((i) => [i.kind, i.severity]).sort(), [["wake_alarm", "warning"], ["wake_alarm", "warning"]]);
+    assert.ok(issues.some((i) => /no hardware clock/.test(i.details) && /2026-10-21 07:30/.test(i.details)));
+    assert.ok(issues.some((i) => /write error : Invalid argument/.test(i.details)), "control characters are cleaned");
+    assert.ok(!(await issuesOf(rivalSessionCookie, "riverside")).some((i) => i.client_id === "PWR-RTC" || i.client_id === "PC-EVIL"));
+    await removeAll(["PWR-RTC"]);
+  });
+
+  // ----------------------------------------------------------- home reset (0048)
+
+  test("Home starts a new session by default, and Settings turns that off for every workstation", async () => {
+    const tenantId = await greenwoodId();
+    const settings = "/api/tenant/settings?tenant=greenwood";
+    const enrolled = await call("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId: "HOME-1" }),
+      headers: { "CF-Connecting-IP": "198.51.100.48" }
+    });
+    assert.equal(enrolled.status, 200);
+    const socket = await hubs().connectDevice({ tenantId, clientId: "HOME-1", ip: "10.0.0.31", portal: portalContext() });
+    const homeResetOf = () => ofType(socket, "config").at(-1)!.homeReset;
+    assert.equal(homeResetOf(), true, "on by default");
+
+    const off = { homeReset: false };
+    assert.ok([401, 403].includes((await call(settings, json(off))).status), "anonymous");
+    assert.ok([401, 403].includes((await call(settings, { ...json(off), cookie: rivalSessionCookie })).status), "another organization");
+    const crossSite = await call(settings, { ...json(off), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const operator = await staffWith("home-operator@greenwood.example", ["workstations"]);
+    assert.equal((await call(settings, { ...json(off), cookie: operator })).status, 403, "workstations is not settings");
+    for (const value of ["false", 0, 1, null, {}]) {
+      assert.equal((await call(settings, { ...json({ homeReset: value }), cookie: orgSessionCookie })).status, 400, JSON.stringify(value));
+    }
+    assert.equal(homeResetOf(), true, "nothing refused was stored");
+
+    const saved = await callJson(settings, { ...json(off), cookie: orgSessionCookie });
+    assert.equal(saved.res.status, 200);
+    assert.equal(saved.data.updates.home_reset, 0);
+    assert.equal(homeResetOf(), false, "an online workstation is told at once");
+    const heartbeat = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(heartbeat.data.homeReset, false, "the HTTP heartbeat carries it too");
+    const logs = (await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).data.logs as Array<{ action: string; details?: string }>;
+    assert.ok(logs.some((entry) => entry.action === "settings.update" && (entry.details || "").includes("home_reset")), "the change is audited");
+
+    await callJson(settings, { ...json({ homeReset: true }), cookie: orgSessionCookie });
+    assert.equal(homeResetOf(), true);
+  });
+
+  // ------------------------------------------------------------- printing (0047)
+
+  test("A printer address is ipp:// or ipps:// to a host name or a private address, and nothing else", () => {
+    for (const good of [
+      "ipp://printer.example.org/ipp/print",
+      "ipps://printer.example.org:443/ipp/print",
+      "IPP://Printer01/printers/Office_Laser",
+      "ipp://192.168.1.40/ipp/print",
+      "ipp://10.0.0.7:631/printers/Room%2012",
+      "ipps://172.20.3.4/ipp/print",
+      "ipp://169.254.10.20",
+      "ipp://[fd12:3456::40]/ipp/print",
+      "ipp://printer.example.org."
+    ]) {
+      assert.equal(printerUriProblem(good), null, good);
+    }
+    for (const bad of [
+      "",
+      "   ",
+      42,
+      null,
+      "file:///etc/passwd",
+      "usb://HP/LaserJet",
+      "socket://192.168.1.40:9100",
+      "lpd://192.168.1.40/queue",
+      "http://192.168.1.40:631/ipp/print",
+      "https://printer.example.org/ipp/print",
+      "ipp://",
+      "ipp:///ipp/print",
+      "ipp://printer.example.org/ipp/print;reboot",
+      "ipp://printer.example.org/$(reboot)",
+      "ipp://printer.example.org/`id`",
+      "ipp://printer.example.org/a|b",
+      "ipp://printer.example.org/a b",
+      "ipp://printer.example.org/ipp/print?x=1",
+      "ipp://printer.example.org/ipp/print#x",
+      "ipp://printer.example.org/%zz",
+      "ipp://user:secret@printer.example.org/ipp/print",
+      "ipp://printer.example.org:0/ipp/print",
+      "ipp://printer.example.org:70000/ipp/print",
+      "ipp://localhost/printers/x",
+      "ipp://127.0.0.1:631/printers/x",
+      "ipp://8.8.8.8/ipp/print",
+      "ipp://192.168.1.300/ipp/print",
+      "ipp://192.168.01.40/ipp/print",
+      "ipp://1234/ipp/print",
+      "ipp://-printer.example.org/",
+      "ipp://printer..example.org/",
+      "ipp://[2001:db8::1]/ipp/print",
+      "ipp://[fe80::1]/ipp/print",
+      "ipp://[fd00::zz]/",
+      "ipp://printer.example.org/ipp\n/print",
+      "ipp://printer.example.org/" + "a".repeat(260)
+    ]) {
+      assert.notEqual(printerUriProblem(bad), null, JSON.stringify(bad));
+    }
+    assert.equal(printerNameProblem("Library, ground floor"), null);
+    for (const bad of ["", " ", "a".repeat(65), "Line\nbreak", "Tab\there", 7]) {
+      assert.notEqual(printerNameProblem(bad), null, JSON.stringify(bad));
+    }
+    const printers = [
+      { id: "aaaaaaaaaaaaaaaa", name: "All", uri: "ipp://p1.example.org/", groupName: null },
+      { id: "bbbbbbbbbbbbbbbb", name: "Lab", uri: "ipp://p2.example.org/", groupName: "Lab A" }
+    ];
+    assert.deepEqual(printingFor(false, printers, "Lab A"), { enabled: false, printers: [] }, "off sends nothing to print to");
+    assert.deepEqual(printingFor(true, printers, undefined).printers.map((p) => p.name), ["All"]);
+    assert.deepEqual(printingFor(true, printers, "Lab A").printers.map((p) => p.name), ["All", "Lab"]);
+  });
+
+  test("Printing is off by default, and Settings -> Printing is for the organization's settings staff only", async () => {
+    const settings = "/api/settings/printing?tenant=greenwood";
+    const initial = await callJson(settings, { cookie: orgSessionCookie });
+    assert.equal(initial.res.status, 200);
+    assert.equal(initial.data.enabled, false, "off until an administrator turns it on");
+    assert.deepEqual(initial.data.printers, []);
+    assert.equal(initial.data.maxPrinters, MAX_PRINTERS);
+
+    const valid = { enabled: true, printers: [{ name: "Front desk", uri: "ipp://192.168.1.40/ipp/print" }] };
+    for (const init of [{}, json(valid)]) {
+      assert.ok([401, 403].includes((await call(settings, init)).status), "anonymous");
+      assert.ok([401, 403].includes((await call(settings, { ...init, cookie: rivalSessionCookie })).status), "another organization");
+    }
+    const crossSite = await call(settings, { ...json(valid), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const operator = await staffWith("printing-operator@greenwood.example", ["workstations"]);
+    assert.equal((await call(settings, { cookie: operator })).status, 403, "workstations is not settings");
+    assert.equal((await call(settings, { ...json(valid), cookie: operator })).status, 403);
+
+    const printer = (overrides: Record<string, unknown>) => ({ name: "Front desk", uri: "ipp://192.168.1.40/ipp/print", ...overrides });
+    for (const body of [
+      [],
+      { printers: [] },
+      { enabled: "yes", printers: [] },
+      { enabled: true },
+      { enabled: true, printers: "none" },
+      { enabled: true, printers: [7] },
+      { enabled: true, printers: [printer({ uri: "file:///etc/shadow" })] },
+      { enabled: true, printers: [printer({ uri: "usb://HP/LaserJet" })] },
+      { enabled: true, printers: [printer({ uri: "ipp://192.168.1.40/;rm -rf /" })] },
+      { enabled: true, printers: [printer({ uri: "ipp://203.0.113.9/ipp/print" })] },
+      { enabled: true, printers: [printer({ name: "" })] },
+      { enabled: true, printers: [printer({ groupName: 5 })] },
+      { enabled: true, printers: [printer({}), printer({ name: "FRONT DESK", uri: "ipp://192.168.1.41/" })] },
+      { enabled: true, printers: Array.from({ length: MAX_PRINTERS + 1 }, (_, i) => printer({ name: `P${i}` })) }
+    ]) {
+      assert.equal((await call(settings, { ...json(body), cookie: orgSessionCookie })).status, 400, JSON.stringify(body).slice(0, 120));
+    }
+    assert.equal((await call(settings, { method: "POST", body: "{not json", headers: { "Content-Type": "application/json" }, cookie: orgSessionCookie })).status, 400);
+    const unknownGroup = await call(settings, { ...json({ enabled: true, printers: [printer({ groupName: "No such group" })] }), cookie: orgSessionCookie });
+    assert.equal(unknownGroup.status, 404);
+    const after = await callJson(settings, { cookie: orgSessionCookie });
+    assert.equal(after.data.enabled, false, "nothing refused was stored");
+    assert.deepEqual(after.data.printers, []);
+  });
+
+  test("Turning printing on sends each workstation the printers meant for it, and off takes them away", async () => {
+    const tenantId = await greenwoodId();
+    const settings = "/api/settings/printing?tenant=greenwood";
+    const group = await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Print Lab" }), cookie: orgSessionCookie });
+    assert.equal(group.res.status, 200);
+    for (const clientId of ["PRN-1", "PRN-2"]) {
+      const enrolled = await call("/api/devices/enroll", {
+        ...json({ subdomain: "greenwood", enrollmentKey, clientId }),
+        headers: { "CF-Connecting-IP": "198.51.100.47" }
+      });
+      assert.equal(enrolled.status, 200, `enrolling ${clientId}`);
+    }
+    const inGroup = await hubs().connectDevice({ tenantId, clientId: "PRN-1", ip: "10.0.0.21", portal: portalContext() });
+    const outside = await hubs().connectDevice({ tenantId, clientId: "PRN-2", ip: "10.0.0.22", portal: portalContext() });
+    assert.equal((await call("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PRN-1"], groupName: "Print Lab" }), cookie: orgSessionCookie })).status, 200);
+    const printingOf = (socket: typeof inGroup) =>
+      ofType(socket, "config").at(-1)!.printing as { enabled: boolean; printers: Array<{ id: string; name: string; uri: string }> };
+    assert.deepEqual(printingOf(inGroup), { enabled: false, printers: [] }, "a workstation is told printing is off");
+
+    const saved = await callJson(settings, {
+      ...json({
+        enabled: true,
+        printers: [
+          { name: "Library", uri: " IPPS://printer.example.org/ipp/print " },
+          { name: "Lab colour", uri: "ipp://192.168.5.9/ipp/print", groupName: "Print Lab" }
+        ]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(saved.res.status, 200);
+    assert.equal(saved.data.enabled, true);
+    assert.equal(saved.data.printers[0].uri, "ipps://printer.example.org/ipp/print", "trimmed, the scheme in lower case for CUPS");
+    assert.ok(saved.data.printers.every((p: any) => /^[0-9a-f]{16}$/.test(p.id)));
+    assert.deepEqual(printingOf(inGroup).printers.map((p) => p.name), ["Library", "Lab colour"]);
+    assert.deepEqual(printingOf(outside).printers.map((p) => p.name), ["Library"], "a printer limited to a group reaches only its members");
+    assert.equal(printingOf(outside).enabled, true);
+
+    // The HTTP heartbeat carries the same, and another organization sees none of it.
+    const heartbeat = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(heartbeat.data.printing.enabled, true);
+    assert.deepEqual(heartbeat.data.printing.printers.map((p: any) => p.name), ["Library"]);
+    const rival = await callJson("/api/settings/printing?tenant=riverside", { cookie: rivalSessionCookie });
+    assert.deepEqual(rival.data.printers, []);
+    assert.equal(rival.data.enabled, false);
+
+    // A printer that keeps its id keeps its queue; moving a workstation into the group reaches it.
+    const ids = saved.data.printers.map((p: any) => p.id);
+    const again = await callJson(settings, {
+      ...json({
+        enabled: true,
+        printers: [...saved.data.printers.map((p: any) => ({ ...p })), { id: "ffffffffffffffff", name: "Extra", uri: "ipp://extra.example.org/" }]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.deepEqual(again.data.printers.slice(0, 2).map((p: any) => p.id), ids);
+    assert.notEqual(again.data.printers[2].id, "ffffffffffffffff", "an id the organization does not have is replaced");
+    assert.equal((await call("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PRN-2"], groupName: "Print Lab" }), cookie: orgSessionCookie })).status, 200);
+    assert.deepEqual(printingOf(outside).printers.map((p) => p.name), ["Library", "Lab colour", "Extra"], "moved into the group, told at once");
+
+    const logs = (await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).data.logs as Array<{ action: string; details?: string }>;
+    assert.ok(logs.some((entry) => entry.action === "settings.printing" && (entry.details || "").startsWith("on ")), "the change is audited");
+
+    const off = await callJson(settings, { ...json({ enabled: false, printers: again.data.printers }), cookie: orgSessionCookie });
+    assert.equal(off.data.enabled, false);
+    assert.equal(off.data.printers.length, 3, "the list is kept for next time");
+    assert.deepEqual(printingOf(inGroup), { enabled: false, printers: [] }, "off: nothing to print to");
+    assert.deepEqual(printingOf(outside), { enabled: false, printers: [] });
+
+    await callJson(settings, { ...json({ enabled: false, printers: [] }), cookie: orgSessionCookie });
+    await inGroup.closeFromClient();
+    await outside.closeFromClient();
+    await callJson(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+  });
 });
 
 /**
@@ -8323,6 +9736,12 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0034"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0035"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0036"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0044"))), /missing the current schema/);
+    // 0046: single sign-on settings and the sign-ins in flight.
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0046"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0045"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0047"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0048"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

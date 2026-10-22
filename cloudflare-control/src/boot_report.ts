@@ -523,3 +523,126 @@ export async function purgeOldWorkstationIssues(db: D1Database, now = Math.floor
     .run();
   return res.meta.changes || 0;
 }
+
+// ------------------------------------------------------------ video decoding
+
+/**
+ * What a workstation's GPUs decode in hardware, as its agent read it with
+ * vainfo at start (probe_video_decoding in agent.py) and sent with
+ * POST /api/devices/video-decoding. Chromium decodes every other video on the
+ * CPU, which is what an administrator wants to know about.
+ */
+export const GPU_VENDORS = ["intel", "amd", "nvidia", "virtual", "other"] as const;
+export type GpuVendor = (typeof GPU_VENDORS)[number];
+/** The codecs the agent names (its VA_PROFILE_CODECS). */
+export const VIDEO_CODECS = ["h264", "hevc", "vp8", "vp9", "av1", "mpeg2", "vc1", "jpeg"] as const;
+export type VideoCodec = (typeof VIDEO_CODECS)[number];
+/** The agent reports at most this many render nodes (MAX_GPUS_REPORTED). */
+export const MAX_GPUS_PER_REPORT = 4;
+const KERNEL_DRIVER_PATTERN = /^[A-Za-z0-9_.-]{1,40}$/;
+const MAX_VA_DRIVER = 120;
+const MAX_VIDEO_PROBLEM = 200;
+
+export interface GpuDecoding {
+  vendor: GpuVendor;
+  kernelDriver: string;
+  vaDriver: string;
+  decode: VideoCodec[];
+  encode: VideoCodec[];
+  problem?: string;
+}
+
+export interface VideoDecoding {
+  gpus: GpuDecoding[];
+  /** Why there is no GPU to ask at all. */
+  problem?: string;
+}
+
+function codecList(value: unknown, field: string): VideoCodec[] {
+  if (!Array.isArray(value) || value.length > VIDEO_CODECS.length) {
+    throw new Error(`${field} must list at most ${VIDEO_CODECS.length} codecs`);
+  }
+  const codecs = new Set<VideoCodec>();
+  for (const codec of value) {
+    if (typeof codec !== "string" || !(VIDEO_CODECS as readonly string[]).includes(codec)) {
+      throw new Error(`${field} names an unknown codec`);
+    }
+    codecs.add(codec as VideoCodec);
+  }
+  return VIDEO_CODECS.filter((codec) => codecs.has(codec));
+}
+
+function optionalProblem(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const problem = diskText(value, field, MAX_VIDEO_PROBLEM);
+  return problem || undefined;
+}
+
+/** Validate a video decoding report from a workstation; throws with the reason on anything malformed. */
+export function parseVideoDecodingReport(input: unknown): VideoDecoding {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("The video decoding report must be a JSON object");
+  }
+  const report = input as Record<string, unknown>;
+  if (!Array.isArray(report.gpus) || report.gpus.length > MAX_GPUS_PER_REPORT) {
+    throw new Error(`gpus must list at most ${MAX_GPUS_PER_REPORT} GPUs`);
+  }
+  const gpus = report.gpus.map((entry, index): GpuDecoding => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`gpus[${index}] must be an object`);
+    }
+    const gpu = entry as Record<string, unknown>;
+    if (typeof gpu.vendor !== "string" || !(GPU_VENDORS as readonly string[]).includes(gpu.vendor)) {
+      throw new Error(`gpus[${index}].vendor is not a known vendor`);
+    }
+    const kernelDriver = gpu.kernelDriver ?? "";
+    if (typeof kernelDriver !== "string" || (kernelDriver !== "" && !KERNEL_DRIVER_PATTERN.test(kernelDriver))) {
+      throw new Error(`gpus[${index}].kernelDriver is not a driver name`);
+    }
+    const parsed: GpuDecoding = {
+      vendor: gpu.vendor as GpuVendor,
+      kernelDriver,
+      vaDriver: diskText(gpu.vaDriver ?? "", `gpus[${index}].vaDriver`, MAX_VA_DRIVER),
+      decode: codecList(gpu.decode ?? [], `gpus[${index}].decode`),
+      encode: codecList(gpu.encode ?? [], `gpus[${index}].encode`)
+    };
+    const problem = optionalProblem(gpu.problem, `gpus[${index}].problem`);
+    if (problem) parsed.problem = problem;
+    return parsed;
+  });
+  const result: VideoDecoding = { gpus };
+  const problem = optionalProblem(report.problem, "problem");
+  if (problem) result.problem = problem;
+  if (!gpus.length && !problem) throw new Error("A report with no GPU must say why");
+  return result;
+}
+
+/** Keep a workstation's latest report on its row. False when the row does not exist yet. */
+export async function recordVideoDecoding(
+  db: D1Database,
+  tenantId: string,
+  clientId: string,
+  report: VideoDecoding,
+  now: number
+): Promise<boolean> {
+  const result = await db
+    .prepare("UPDATE client_devices SET video_decoding = ?, video_decoding_at = ? WHERE tenant_id = ? AND client_id = ?")
+    .bind(JSON.stringify(report), now, tenantId, clientId)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * A stored report, read back for /api/clients. It went through
+ * parseVideoDecodingReport on the way in; one that no longer parses (a later
+ * release narrowed the format) is dropped with a warning rather than shown.
+ */
+export function storedVideoDecoding(json: string | null | undefined, at: number | null | undefined): (VideoDecoding & { reportedAt: number }) | undefined {
+  if (!json) return undefined;
+  try {
+    return { ...parseVideoDecodingReport(JSON.parse(json)), reportedAt: (at ?? 0) * 1000 };
+  } catch (err) {
+    console.warn("[Worker] A stored video decoding report no longer reads:", err);
+    return undefined;
+  }
+}

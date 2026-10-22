@@ -12,10 +12,15 @@ Every knob, where it is set, and what happens if it is wrong.
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL` | **Yes**, with a D1 binding | The worker refuses to serve |
 | `SUPER_ADMIN_PASSWORD` | **Yes**, with a D1 binding | The worker refuses to serve |
+| `PASSWORD_PEPPER` | **Yes**, with a D1 binding | The worker refuses to serve. At least 32 characters (`openssl rand -hex 32`); an HMAC key over every stored password hash. Losing or changing it invalidates every password. |
+| `BREACHED_PASSWORD_CHECK` | No | A variable: `off` stops checking new passwords against Have I Been Pwned (only a 5-character hash prefix is sent; an outage allows the password). |
+| `SUPER_ADMIN_HOST` | No | A variable: one name under `DEFAULT_DOMAIN` (e.g. `super.labkiosk.org`) that alone serves `/super` and `/api/super/*`. Elsewhere `/super` redirects there and the API answers `404`. Unset, the console stays on every platform host. Anything else stops the worker. |
 | `CF_API_TOKEN` | For custom domains | Approving a custom domain cannot create its Cloudflare for SaaS custom hostname. An API token for the platform zone with **Zone · SSL and Certificates · Edit**. |
 | `CF_ZONE_ID` | For custom domains | As above. The zone id of the platform domain (zone **Overview** → *API* → *Zone ID*). |
 | `RELEASE_NOTES_TOKEN` | For releases | `POST /api/release-notes/sync` and `GET /api/release-support` answer `503`, so `/download` offers a new release only after the next hourly run, a tag build fails, and the daily security rebuild stops (it rebuilds no line without knowing which major releases are at end of life). At least 32 characters; the same value as the repository's Actions secret of that name. |
 | `GITHUB_ISSUES_TOKEN` | No | Automatic bug reports stay unavailable to every organization. A fine-grained token for the one repository in `GITHUB_ISSUES_REPO` with **Issues: Read and write** (and **Pull requests: Read** for a private repository). |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | No | **Continue with Google** is never offered and organizations cannot turn it on; the Worker logs once that they are missing. The platform's Google Cloud OAuth client (Web application) with the redirect URI `https://<CANONICAL_HOST or DEFAULT_DOMAIN>/api/auth/sso/callback`: [Production Deployment](Production-Deployment#optional-staff-sign-in-with-google-or-microsoft). |
+| `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` | No | The same for **Continue with Microsoft**: the platform's multitenant Microsoft Entra app registration and a client secret value (it expires; renew it before it does). |
 
 There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAIL` migrates the account to the new address; rotate the password from inside `/super` instead, since that path verifies the current password and revokes the account's other sessions.
 

@@ -132,6 +132,14 @@ ${canUpdate ? UPDATES_MENU_HTML : ""}
           <svg class="btn-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
         <div class="menu-popover" id="ws-power-menu" popover role="menu" aria-label="Session and power commands">
+          <button type="button" class="menu-item" id="btn-wake-all" role="menuitem" title="Switch on the selected workstations that are off, through a workstation that is on at the same site (Wake-on-LAN)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+            <span class="menu-item-text">
+              <span id="btn-wake-label">Wake</span>
+              <span class="menu-item-hint">Switches on the ones that are off</span>
+            </span>
+          </button>
+          <div class="menu-separator" role="separator"></div>
           <button type="button" class="menu-item" id="btn-clear-session-all" role="menuitem" title="Sign users out: wipes browser logins, history, cookies and cache on the selected workstations, without a reboot">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
             <span class="menu-item-text">
@@ -416,6 +424,9 @@ function renderWorkstationsScripts(
         const shutdownLabel = document.getElementById("btn-shutdown-label");
         if (shutdownLabel) shutdownLabel.textContent = selCount ? "Shutdown (" + selCount + ")" : "Shutdown";
 
+        const wakeLabel = document.getElementById("btn-wake-label");
+        if (wakeLabel) wakeLabel.textContent = selCount ? "Wake (" + selCount + ")" : "Wake";
+
         const moveBtn = document.getElementById("btn-move-group");
         if (moveBtn) moveBtn.style.display = selCount > 0 ? "inline-flex" : "none";
 
@@ -510,8 +521,16 @@ function renderWorkstationsScripts(
           e.stopPropagation();
           sendCommand([id], "reload");
         });
+        // Only while it is off: Wake-on-LAN through a workstation on at its site.
+        const wakeBtn = el("button", "btn btn-sm btn-secondary hidden", "Wake");
+        wakeBtn.dataset.role = "wake";
+        wakeBtn.title = "Switch " + id + " on through a workstation that is on at the same site";
+        wakeBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          wakeClients([id]);
+        });
         if (CAN_REMOTE_CONTROL) actions.append(vncBtn);
-        actions.append(lockBtn, unlockBtn, reloadBtn);
+        actions.append(wakeBtn, lockBtn, unlockBtn, reloadBtn);
 
         const footer = el("div", "kc-footer");
         const urlSpan = el("span", "kc-url", "Ready");
@@ -523,7 +542,13 @@ function renderWorkstationsScripts(
         const updateLine = el("div", "kc-update");
         updateLine.dataset.role = "update";
 
-        card.append(head, thumbBox, actions, footer, updateLine);
+        const videoLine = el("div", "kc-update hidden");
+        videoLine.dataset.role = "video";
+
+        const hardwareLine = el("div", "kc-update hidden");
+        hardwareLine.dataset.role = "hardware";
+
+        card.append(head, thumbBox, actions, footer, updateLine, videoLine, hardwareLine);
         if (selectedClientIds.has(id)) card.classList.add("selected");
         return card;
       }
@@ -567,6 +592,8 @@ function renderWorkstationsScripts(
           urlSpan.textContent = "Offline";
         }
         ipSpan.textContent = (client && client.ip) || "--";
+        const wakeBtn = card.querySelector('[data-role="wake"]');
+        if (wakeBtn) wakeBtn.classList.toggle("hidden", Boolean(client && client.online));
         const updateLine = card.querySelector('[data-role="update"]');
         if (updateLine) {
           const line = updateText(client);
@@ -577,6 +604,80 @@ function renderWorkstationsScripts(
           updateLine.classList.toggle("kc-update-warn", line.tone === "warn");
           updateLine.classList.toggle("hidden", !line.text);
         }
+        const videoLine = card.querySelector('[data-role="video"]');
+        if (videoLine) {
+          const line = videoText(client);
+          videoLine.textContent = line.text;
+          videoLine.title = line.title;
+          videoLine.classList.toggle("kc-update-warn", line.tone === "warn");
+          videoLine.classList.toggle("hidden", !line.text);
+        }
+        const hardwareLine = card.querySelector('[data-role="hardware"]');
+        if (hardwareLine) {
+          const line = hardwareText(client);
+          hardwareLine.textContent = line.text;
+          hardwareLine.title = line.title;
+          hardwareLine.classList.toggle("hidden", !line.text);
+        }
+      }
+
+      // The machine, from its agent's last start: model, memory and boot mode on the card, the rest in the title.
+      function hardwareText(client) {
+        const h = client && client.hardware;
+        if (!h) return { text: "", title: "" };
+        const name = [h.vendor, h.model].filter(Boolean).join(" ") || "Unknown model";
+        const memory = h.memoryMb >= 1024 ? Math.round(h.memoryMb / 1024) + " GB" : h.memoryMb + " MB";
+        const title = [
+          h.cpu ? h.cpu + " (" + h.cores + " cores)" : h.cores + " cores",
+          h.keyboard === false ? "No keyboard attached" : h.keyboard === true ? "Keyboard attached" : "",
+          h.touch === true ? "Touchscreen" : "",
+          h.macs.length ? "Wired network " + h.macs.join(", ") : "No wired network adapter (Wake-on-LAN needs one)"
+        ].filter(Boolean).join(". ") + ".";
+        return { text: name + " \u00b7 " + memory + " \u00b7 " + h.bootMode.toUpperCase(), title: title };
+      }
+
+      const CODEC_NAMES = { h264: "H.264", hevc: "HEVC", vp8: "VP8", vp9: "VP9", av1: "AV1", mpeg2: "MPEG-2", vc1: "VC-1", jpeg: "JPEG" };
+      // The codecs a viewer cares about first; the rest are in the title.
+      const MAIN_CODECS = ["h264", "hevc", "vp9", "av1"];
+
+      // What the workstation's GPU decodes in hardware, from its agent's last start.
+      function videoText(client) {
+        const v = client && client.videoDecoding;
+        if (!v || !Array.isArray(v.gpus)) return { text: "", title: "", tone: "" };
+        const names = (list) => list.map((codec) => CODEC_NAMES[codec] || codec).join(", ");
+        let best = null;
+        for (const gpu of v.gpus) {
+          if (gpu.decode.length && (!best || gpu.decode.length > best.decode.length)) best = gpu;
+        }
+        if (best) {
+          const main = best.decode.filter((codec) => MAIN_CODECS.includes(codec));
+          const missing = MAIN_CODECS.filter((codec) => !best.decode.includes(codec));
+          let title = "Decoded on the GPU (" + (best.vaDriver || best.kernelDriver || "VA-API") + "): " + names(best.decode) + ".";
+          if (missing.length) title += " " + names(missing) + " video plays on the CPU.";
+          if (best.encode.length) title += " Encodes " + names(best.encode) + ".";
+          return { text: "Video: GPU \u00b7 " + (main.length ? names(main) : names(best.decode)), title: title, tone: "" };
+        }
+        const vendors = v.gpus.map((gpu) => gpu.vendor);
+        const reason = (v.gpus.find((gpu) => gpu.problem) || v).problem || "";
+        if (vendors.includes("nvidia")) {
+          return {
+            text: "Video: CPU \u00b7 NVIDIA graphics",
+            title: "The system image has no NVIDIA driver, so Chromium decodes video on the CPU. Intel or AMD graphics decode it in hardware." + (reason ? " (" + reason + ")" : ""),
+            tone: "warn"
+          };
+        }
+        if (vendors.length && vendors.every((vendor) => vendor === "virtual")) {
+          return {
+            text: "Video: CPU \u00b7 virtual machine",
+            title: "A virtual graphics card decodes nothing in hardware, so Chromium decodes video on the CPU." + (reason ? " (" + reason + ")" : ""),
+            tone: ""
+          };
+        }
+        return {
+          text: "Video: CPU only",
+          title: "No hardware video decoder found, so Chromium decodes video on the CPU." + (reason ? " (" + reason + ")" : ""),
+          tone: "warn"
+        };
       }
 
       // The system image a workstation runs, and the update it is fetching or holding.
@@ -598,7 +699,7 @@ function renderWorkstationsScripts(
         }
         switch (u.phase) {
           case "live":
-            return { text: prefix + "live session", title: "Started from the USB stick; update it by re-flashing", tone: "" };
+            return { text: prefix + "live session", title: "Started from a USB stick or over the network; update it by re-flashing the stick or the boot server", tone: "" };
           case "checking":
             return { text: prefix + "checking for updates", title: "", tone: "" };
           case "downloading":
@@ -1006,6 +1107,30 @@ function renderWorkstationsScripts(
         }
       }
 
+      // Wake-on-LAN: the Worker picks a workstation that is on at each one's site
+      // and says why any could not be woken.
+      async function wakeClients(clientIds) {
+        try {
+          const res = await fetch(labkioskApi("/api/clients/wake"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ clientIds })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            lkToast(data.error || "The wake signal could not be sent", "error");
+            return;
+          }
+          const note = skippedSummary(data.skipped);
+          lkToast(
+            "Wake signal sent to " + data.sent.length + " workstation(s); they appear here once started" + (note ? ". " + note : ""),
+            note ? "warning" : "success"
+          );
+        } catch (err) {
+          lkToast("Network error: " + err.message, "error");
+        }
+      }
+
       async function removeClient(clientId) {
         var agreed = await lkConfirm({
           title: "Decommission " + clientId + "?",
@@ -1110,6 +1235,17 @@ function renderWorkstationsScripts(
           tone: "danger"
         });
         if (agreed) sendCommand(targets, "shutdown");
+      });
+
+      document.getElementById("btn-wake-all").addEventListener("click", () => {
+        const targets = getSelectedOrAll(true);
+        if (!targets) return;
+        const off = targets.filter((id) => !(clientsData[id] && clientsData[id].online));
+        if (!off.length) {
+          lkToast("Every one of them is already on.", "info");
+          return;
+        }
+        wakeClients(off);
       });
 
       // End of a session: sign everyone out without restarting the machine.

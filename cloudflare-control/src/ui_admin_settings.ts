@@ -14,6 +14,10 @@ import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts, WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
+import { renderUsagePaneHtml, renderUsageScript } from "./ui_admin_usage";
+import { renderSsoCardHtml, renderSsoScript } from "./ui_admin_sso";
+import { renderPowerPaneHtml, renderPowerScript } from "./ui_admin_power";
+import { renderPrintingPaneHtml, renderPrintingScript } from "./ui_admin_printing";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
@@ -40,7 +44,11 @@ ${canUpdate ? renderUpdatesPaneHtml() : ""}`,
     scriptsHtml:
       renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)) +
       renderTwoFactorScript(nonce) +
-      (canUpdate ? renderUpdatesScript(nonce) : "")
+      (canUpdate ? renderUpdatesScript(nonce) : "") +
+      renderUsageScript(nonce) +
+      renderSsoScript(nonce) +
+      renderPowerScript(nonce) +
+      renderPrintingScript(nonce)
   };
 }
 
@@ -101,6 +109,18 @@ function renderSettingsPageHtml(
       </button>`
           : ""
       }
+      <button type="button" class="segmented-tab" data-action="tab-usage">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span>Usage</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-power">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        <span>Power</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-printing">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        <span>Printing</span>
+      </button>
     </nav>
 
     <!-- ============================================================== -->
@@ -150,6 +170,13 @@ function renderSettingsPageHtml(
                 <option value="/home" ${homeRoute === "/home" ? "selected" : ""}>/home &mdash; straight to the app grid</option>
               </select>
               <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your organization writes; the app grid is the launcher users pick a site from.</div>
+            </div>
+            <div class="form-group">
+              <label class="form-checkbox-label">
+                <input type="checkbox" class="form-checkbox" id="setting-home-reset" ${tenant?.home_reset === 0 ? "" : "checked"}>
+                <span>Home starts a new session</span>
+              </label>
+              <div class="form-hint">Home in the kiosk bar asks &ldquo;Start over?&rdquo; and, on Yes, signs out of every site and clears the browser, as Clear Session does from the console. Turned off, Home only goes back to the landing page.</div>
             </div>
             <button type="submit" class="btn btn-secondary">Save Routing</button>
           </form>
@@ -297,6 +324,7 @@ ${renderRemoteControlCard(tenant)}
               <button type="submit" class="btn btn-secondary">Change Password</button>
             </form>
           </div>
+${renderSsoCardHtml()}
         </div>
 
         <div>
@@ -337,6 +365,17 @@ ${renderUpdatesPaneHtml()}
 `
     : ""
 }
+    <div class="tab-pane" id="pane-usage">
+${renderUsagePaneHtml()}
+    </div>
+
+    <div class="tab-pane" id="pane-power">
+${renderPowerPaneHtml()}
+    </div>
+    <div class="tab-pane" id="pane-printing">
+${renderPrintingPaneHtml()}
+    </div>
+
     <!-- ============================================================== -->
     <!-- TAB 5: ERRORS & WARNINGS                                       -->
     <!-- ============================================================== -->
@@ -438,19 +477,26 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-enrollment": "security",
         "section-password": "security",
         "section-activity": "security",
+        "section-sso": "security",
         "section-issues": "issues",
-        "section-updates": "updates"
+        "section-updates": "updates",
+        "section-usage": "usage",
+        "section-power": "power",
+        "section-printing": "printing"
       };
 
       function switchTab(tabId) {
-        const validTabs = ["general", "domains", "homepage", "security", "two-factor", "issues"];
-        if (document.getElementById("pane-updates")) validTabs.push("updates");
+        // The tabs are the panes this page rendered: Updates only for the \`updates\` permission.
+        const validTabs = Array.from(document.querySelectorAll(".tab-pane[id^='pane-']")).map((pane) => pane.id.slice(5));
         if (!validTabs.includes(tabId)) tabId = "general";
 
         // Update In-Canvas Segmented Tabs
         const segTabs = document.querySelectorAll(".segmented-nav .segmented-tab");
         segTabs.forEach((tab) => {
-          tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
+          const active = tab.getAttribute("data-action") === "tab-" + tabId;
+          tab.classList.toggle("active", active);
+          // The tabs scroll sideways on a narrow screen; keep the chosen one in sight.
+          if (active && typeof tab.scrollIntoView === "function") tab.scrollIntoView({ block: "nearest", inline: "nearest" });
         });
 
         // Update Tab Panes
@@ -659,11 +705,12 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       document.getElementById("form-routing-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
         const homeRoute = document.getElementById("setting-home-route").value;
+        const homeReset = document.getElementById("setting-home-reset").checked;
         try {
           const res = await fetch(labkioskApi("/api/tenant/settings"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ homeRoute })
+            body: JSON.stringify({ homeRoute, homeReset })
           });
           const data = await res.json();
           if (data.status === "ok") {
@@ -843,7 +890,8 @@ ${WHEN_PANE_SHOWN_JS}
             boot_error: "Boot record error",
             unexpected_restart: "Restarted without shutting down",
             watchdog_reset: "Stopped responding",
-            disk_health: "Disk wearing out or failing"
+            disk_health: "Disk wearing out or failing",
+            wake_alarm: "Cannot switch itself on"
           };
           // The end of the journal a workstation sent with a restart, fetched
           // when someone asks for it: a log can be 16 KiB, the list is 100 rows.

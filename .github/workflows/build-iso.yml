@@ -10,8 +10,9 @@ on:
 permissions:
   contents: read
 
-# An ISO build is ~15 minutes of runner time and writes a release on tags.
-# Never let two of them run against the same ref.
+# Three stages: build the ISO, boot-test it in parallel jobs (each on its own
+# runner, from the same artifact), and on a tag sign and publish it, only after
+# every boot-test job passed. Never let two of these run against the same ref.
 concurrency:
   group: build-iso-${{ github.ref }}
   cancel-in-progress: false
@@ -20,31 +21,58 @@ jobs:
   build-iso:
     name: Build Live ISO
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # debootstrap, the squashfs and the finished hybrid ISO together need
-      # well over the free space a stock runner has once its preinstalled
-      # toolchains are counted. Reclaiming them first is cheaper than
-      # diagnosing an ENOSPC two thirds of the way through a build.
-      - name: Free disk space on the runner
+      # debootstrap, the squashfs and the finished hybrid ISO all live under
+      # Docker's data directory on /. Deleting the preinstalled toolchains
+      # takes minutes, so it happens only when / has less free than the build
+      # needs (NEED_GIB: the build's peak, printed after "Compile the ISO", was
+      # 6 GiB in October 2026; this is that with a wide margin).
+      - name: Free disk space on the runner (only if needed)
+        env:
+          NEED_GIB: 15
         run: |
-          echo "Before:"; df -h / | tail -1
+          df -h / /mnt
+          free_gib=$(( $(df --output=avail -B1G / | tail -1) ))
+          if [ "$free_gib" -ge "$NEED_GIB" ]; then
+            echo "/ has $free_gib GiB free, enough for the build ($NEED_GIB GiB): nothing deleted."
+            exit 0
+          fi
+          echo "/ has $free_gib GiB free, under $NEED_GIB GiB: deleting preinstalled toolchains."
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          echo "After:"; df -h / | tail -1
+          sudo docker image prune --all --force >/dev/null
+          df -h /
 
-      - name: Warn when a release build has no GRUB password pinned
+      # The live USB is not a trust boundary: installed disks get their own boot-menu
+      # password in the setup wizard. A repository secret LABKIOSK_GRUB_PBKDF2 locks the
+      # live menu too (Route 2), and the variable REQUIRE_LOCKED_LIVE_MENU=true turns
+      # this warning into a failure for whoever ships the live USB to users.
+      - name: Check the live boot menu is locked (on tag)
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+        env:
+          LABKIOSK_GRUB_PBKDF2: ${{ secrets.LABKIOSK_GRUB_PBKDF2 }}
+          REQUIRE_LOCKED_LIVE_MENU: ${{ vars.REQUIRE_LOCKED_LIVE_MENU }}
         run: |
-          if ! grep -q '^PASSWORD_PBKDF2=grub\.pbkdf2\.sha512\.' distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin; then
-            echo "::warning file=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin::No GRUB password is pinned. This release ISO boots with an editable boot menu; see distro-builder/README.md 'Securing the Boot Chain'."
+          pin=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin
+          if [ -n "$LABKIOSK_GRUB_PBKDF2" ]; then
+            case "$LABKIOSK_GRUB_PBKDF2" in
+              grub.pbkdf2.sha512.*) echo "The live boot menu is locked by the LABKIOSK_GRUB_PBKDF2 secret." ;;
+              *) echo "::error::LABKIOSK_GRUB_PBKDF2 is set but is not a grub.pbkdf2.sha512 hash."; exit 1 ;;
+            esac
+          elif grep -q '^PASSWORD_PBKDF2=grub\.pbkdf2\.sha512\.' "$pin"; then
+            echo "The live boot menu is locked by grub.pin."
+          elif [ "$REQUIRE_LOCKED_LIVE_MENU" = "true" ]; then
+            echo "::error file=$pin::REQUIRE_LOCKED_LIVE_MENU is true and no GRUB password is set: add the LABKIOSK_GRUB_PBKDF2 secret. See distro-builder/README.md 'Securing the Boot Chain'."
+            exit 1
+          else
+            echo "::warning file=$pin::No GRUB password is set. This release ISO's live boot menu is editable; installed disks still get their own password in the setup wizard. See distro-builder/README.md 'Securing the Boot Chain'."
           fi
 
       # Over-the-air updates, phase 2: a release is also a signed update in R2.
@@ -81,13 +109,13 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Built through buildx so the apt layer is cached. The scope is shared
       # with docker-publish.yml, so a publish run and a release build reuse the
       # same layers instead of each installing live-build from scratch.
       - name: Build the ISO builder image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: distro-builder
           file: distro-builder/Dockerfile
@@ -100,11 +128,24 @@ jobs:
       # GitHub runners give a rootful Docker daemon, so --privileged really is
       # privileged and debootstrap's mknod succeeds. See distro-builder/README.md.
       - name: Compile the ISO
+        env:
+          LABKIOSK_GRUB_PBKDF2: ${{ secrets.LABKIOSK_GRUB_PBKDF2 }}
         run: |
           mkdir -p distro-builder/out
+          # The most / held during the build, for NEED_GIB above.
+          used_before=$(df --output=used -B1M / | tail -1)
+          ( while sleep 5; do df --output=used -B1M / | tail -1; done ) > "$RUNNER_TEMP/disk-used.txt" &
+          sampler=$!
+          # Passed by name only, so the hash never appears in the command line or the log.
+          status=0
           docker run --privileged --rm \
+            -e LABKIOSK_GRUB_PBKDF2 \
             -v "$PWD/distro-builder/out:/build/out" \
-            ghcr.io/akbhoi/labkiosk-iso-builder:ci
+            ghcr.io/akbhoi/labkiosk-iso-builder:ci || status=$?
+          kill "$sampler"
+          peak=$(sort -n "$RUNNER_TEMP/disk-used.txt" | tail -1)
+          echo "Disk: the build used at most $(( (${peak:-$used_before} - used_before) / 1024 )) GiB on / beyond what was in use before it."
+          exit "$status"
 
       - name: Verify the checksum
         working-directory: distro-builder/out
@@ -114,7 +155,7 @@ jobs:
           ls -lh labkiosk-debian12-amd64.iso
 
       - name: Upload ISO Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: labkiosk-debian12-amd64-iso
           # The checksum travels with the image; an artifact nobody can verify
@@ -125,34 +166,100 @@ jobs:
           retention-days: 14
           compression-level: 0 # The ISO is already gzip-compressed internally.
 
-      # Over-the-air updates, phase 1, on a real install: the ISO's own
-      # installer writes a virtual disk, which then boots in QEMU with KVM to
-      # prove the one try, the promotion and both kinds of rollback. Before
-      # the release step, so an ISO that cannot roll back is never published.
-      - name: Boot-test the installed disk
+  # Over-the-air updates, phase 1, on a real install: the ISO's own installer
+  # writes a virtual disk, which then boots in QEMU with KVM to prove the one
+  # try, the promotion and both kinds of rollback. Before the release job, so
+  # an ISO that cannot roll back is never published. It also installs with an
+  # encrypted data partition sealed to a TPM, beside another system (dual
+  # boot), and boots over the network: UEFI PXE with Secure Boot on, and BIOS
+  # iPXE. The groups (tests/vm/boot-test.sh) run side by side, so the wall time
+  # is the slowest group rather than the sum.
+  boot-test:
+    name: Boot test (${{ matrix.name }})
+    needs: build-iso
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: slots
+            groups: slots
+          - name: tpm and beside
+            groups: tpm,beside
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the ISO
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: labkiosk-debian12-amd64-iso
+          path: distro-builder/out
+
+      - name: Verify the checksum
+        working-directory: distro-builder/out
+        run: sha256sum -c labkiosk-debian12-amd64.iso.sha256
+
+      - name: Boot-test the installed disk (${{ matrix.name }})
+        env:
+          BOOT_TEST_GROUPS: ${{ matrix.groups }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xorriso squashfs-tools \
-            swtpm cryptsetup-bin
-          sudo distro-builder/tests/vm/boot-test.sh \
+            swtpm cryptsetup-bin dosfstools python3-virt-firmware
+          sudo --preserve-env=BOOT_TEST_GROUPS distro-builder/tests/vm/boot-test.sh \
             distro-builder/out/labkiosk-debian12-amd64.iso "$RUNNER_TEMP/boot-test"
 
       - name: Upload boot-test screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: boot-test-screenshots
-          path: ${{ runner.temp }}/boot-test/*.ppm
+          name: boot-test-screenshots-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/boot-test/*.ppm
+            ${{ runner.temp }}/boot-test/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  release:
+    name: Publish the release
+    needs: [build-iso, boot-test]
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the ISO
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: labkiosk-debian12-amd64-iso
+          path: distro-builder/out
+
+      - name: Verify the checksum
+        working-directory: distro-builder/out
+        run: sha256sum -c labkiosk-debian12-amd64.iso.sha256
+
+      - name: Install xorriso
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xorriso
 
       # The manifest names every file's size, sha256 and 8 MiB chunk hashes; its
       # detached signature is what a workstation checks with gpgv before it
       # downloads a byte (docs/OTA_UPDATES.md section 5.3). The signature is
       # verified here against the keys the image carries, so a secret that does
       # not match them can never publish a release no workstation would take.
-      - name: Sign the over-the-air release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+      - name: Sign the over-the-air release
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
           UPDATE_SIGNING_PASSPHRASE: ${{ secrets.UPDATE_SIGNING_PASSPHRASE }}
@@ -189,8 +296,7 @@ jobs:
       # changed under a workstation halfway through its download would make it
       # start again. The manifest goes last, so a release is never visible
       # before its files are.
-      - name: Upload the over-the-air release to R2 (on tag)
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+      - name: Upload the over-the-air release to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -218,9 +324,8 @@ jobs:
               "$RUNNER_TEMP/release/$name" "s3://$R2_RELEASES_BUCKET/$prefix/$name"
           done
 
-      - name: Create GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
-        uses: softprops/action-gh-release@v3
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: "Lab Kiosk ${{ github.ref_name }}"
           generate_release_notes: true
@@ -234,8 +339,7 @@ jobs:
       # it otherwise does hourly: ask it to read them now, so the new ISO and
       # its checksum are offered the moment the release exists. GitHub can take
       # a few seconds to list a new release, hence the retries.
-      - name: Offer the release on the download page (on tag)
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+      - name: Offer the release on the download page
         env:
           RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
           CONTROLLER_URL: ${{ vars.CONTROLLER_URL }}

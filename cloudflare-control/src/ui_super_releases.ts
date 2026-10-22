@@ -480,6 +480,8 @@ export function renderReleasesScript(nonce: string): string {
             const messages = [];
             if (!data.downloadsConfigured) {
               messages.push("RELEASES_BASE_URL is not set: workstations cannot download any release until it names the bucket's public address.");
+            } else if (data.downloadsDevelopmentOnly) {
+              messages.push("RELEASES_BASE_URL is the bucket's r2.dev address, which Cloudflare rate-limits and never caches: connect a custom domain to the bucket and use that address instead.");
             }
             (data.problems || []).forEach((p) => messages.push(p.version + ": " + p.problem));
             showNotice(messages);

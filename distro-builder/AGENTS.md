@@ -49,10 +49,12 @@ distro-builder/
 │       │   ├── labkiosk-install        # Automated Python disk installer (GPT, ESP, image store, dual GRUB)
 │       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap (Rule 1h)
 │       ├── usr/local/sbin/
-│       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
+│       │   ├── labkiosk-localization   # Sudo for the agent: language, region, clock (Rule 1e)
+│       │   ├── labkiosk-printing       # Sudo for the agent: CUPS queues and the print policy (Rule 1e)
 │       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       │   ├── labkiosk-update         # Root-only: signed release download and install (Rule 8)
 │       │   ├── labkiosk-health         # Root-only: SMART / eMMC disk health every 6 h (Rule 1j)
+│       │   ├── labkiosk-wake-alarm     # Sudo (52-labkiosk-wake-alarm): RTC wake alarm for a power schedule
 │       │   └── labkiosk-share          # Unprivileged: serves verified images to the site's LAN (Rule 8)
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the grub.pin build pin, version (the image's release)
@@ -207,9 +209,16 @@ distro-builder/
   (the `locales` package, ~21 MB), keyboard layouts from the X11 rules list. A hardcoded country
   list would be wrong by the next tzdata update.
 - Setting a timezone, generating a locale and writing `/etc/default/keyboard` need root, and the
-  agent does not run as root. `/usr/local/sbin/labkiosk-localization` is the only program it may
-  run through sudo, and **it re-validates every argument against those same tables** — the caller
-  is not a trust boundary, exactly as with `labkiosk-install`.
+  agent does not run as root. `/usr/local/sbin/labkiosk-localization` is one of the two programs it
+  may run through sudo, and **it re-validates every argument against those same tables** — the
+  caller is not a trust boundary, exactly as with `labkiosk-install`. The other is
+  `/usr/local/sbin/labkiosk-printing` (`/etc/sudoers.d/52-labkiosk-printing`), which turns printing
+  on and off when the organization's Settings → Printing says so and re-validates every queue name,
+  printer address and name it is given. CUPS ships masked (`cups.service`, `cups.socket`,
+  `cups.path`); with printing on it listens on its Unix socket only, never on TCP 631, because the
+  allowlist lets any page reach `127.0.0.1` on any port. The policy that lets Chromium print is a
+  second file, `zz-labkiosk-printing.json`, written by the helper and never by the agent
+  (`wiki/Client-Agent.md`, Printing).
 - The choice itself is persisted in `/etc/labkiosk/localization.json`, and `apply_saved_localization()`
   re-applies it at every agent start. On an installed disk that is the only way it comes back:
   the system image is the same for every organization and an update replaces it, so the installer
@@ -354,6 +363,19 @@ distro-builder/
   `[HEALTH] …` lines, including which user Xorg runs as and both AppArmor labels. smartmontools'
   own daemon is disabled and masked. The agent sends `warning`/`failing` disks to
   `POST /api/devices/disk-health` (`labkiosk-core`); a disk without data is `unknown`, never sent.
+- **Video decoding is VA-API, and reported.** Chromium decodes through VA-API with the drivers in
+  the package list (`intel-media-va-driver-non-free`, `i965-va-driver`, `mesa-va-drivers`) and the
+  `CHROMIUM_GPU_FEATURES` in the autostart. NVIDIA cards decode on the CPU: the proprietary driver
+  is an out-of-tree module (Rule 2 forbids it), and nouveau offers no usable VA-API decoding, so
+  the documentation recommends Intel or AMD graphics. Once per start the agent runs `vainfo` on each
+  render node and sends what each GPU decodes to `POST /api/devices/video-decoding`
+  (`labkiosk-core` 2e); the console shows it on the workstation's card. Keep `vainfo` in the package
+  list and `/usr/bin/vainfo ix`, `/dev/dri/renderD* rw` in the agent's profile.
+- **X11 until Debian 13.** The session is Xorg + Openbox, and `xdotool`, `scrot`, `unclutter`,
+  `x11vnc`, `xkbcomp` and `labkiosk-lock-keys` all need it. A move to Wayland (`cage` as the
+  compositor, `wayvnc` for Remote Control, `grim` for thumbnails, the compositor's own key
+  handling for the lockdown) replaces every one of them, so it belongs to the Debian 13 major
+  release, not before; do not start it piecemeal.
 - `distro-builder/tests/test_hardening.py` pins all of this; `tests/vm/boot-test.sh` step **4b**
   checks from the journal on DATA that `nftables.service` finished, Xorg ran as `kiosk`, both
   profiles attached in complain mode and the disk was checked.
@@ -373,6 +395,78 @@ distro-builder/
     5. Partition 5: `SWAP` (end − 1536 MiB – end − 512 MiB, GPT type Linux swap), created last so `DATA` stays number 4. `labkiosk-swap` opens it with `cryptsetup --type plain --key-file /dev/urandom` at every boot, only when its PARTUUID is GRUB's `labkiosk.swap=`, its type is Linux swap, it is on the data partition's disk and nothing uses it; priority 10, behind zram (100).
   - The installer runs `grub-install --target=x86_64-efi --uefi-secure-boot --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode, and with Secure Boot on (shim → signed GRUB → signed kernel). Never add an out-of-tree kernel module (DKMS, the proprietary NVIDIA driver): it would need a MOK enrolled at the keyboard, which breaks Secure Boot or the unattended boot.
   - Every workstation has its own hostname (`labkiosk-hostname.service`, before the network): `labkiosk.hostname=` from `boot/grub/labkiosk-hostname.cfg` (generated `labkiosk-<6 hex>` or typed in the wizard), else derived from the lowest permanent MAC. A workstation never sleeps: logind ignores the sleep keys and the lid, `sleep.conf.d` refuses sleep, the sleep targets are masked.
+
+### Rule 2a: Beside Another System, Lab Kiosk Touches Only What It Adds
+
+- **Dual boot is UEFI + GPT only** (`--dual-boot`, or `--replace-partition <part>`, which implies
+  it). The installer takes the largest free stretch, or one partition plus the free space around
+  it, and creates its own 128 MiB ESP (`LABKIOSK_ESP`, FAT32, `esp on`) followed by
+  `LABKIOSK_ROOT`, `LABKIOSK_DATA` and `LABKIOSK_SWAP` (same sizes and roles as Rule 2, numbers
+  read back from the table). Every other partition is left as it is.
+- **The other system's boot path is never written**: no `bios_grub`, no `i386-pc` into the boot
+  sector, nothing on its ESP. **Never share the other system's ESP**: Debian's signed GRUB has the
+  built-in prefix `/EFI/debian` and sources `EFI/debian/grub.cfg` on the partition it started from
+  when that exists, so on an ESP shared with Debian (or a derivative) Lab Kiosk's entry would boot
+  the other system. The VM boot test plants that file. GRUB goes to `EFI/LabKiosk/` on
+  `LABKIOSK_ESP` (`--no-nvram`, no `--removable`), and the installer registers its own firmware entry
+  (`efibootmgr --create … --label "Lab Kiosk" --loader '\EFI\LabKiosk\shimx64.efi'`), first in
+  `BootOrder`, after removing older "Lab Kiosk" entries. Unattended boot (invariant 9) comes from
+  that entry; the other system is chosen from the firmware's boot menu. Firmware that does not
+  keep the entry first fails the install, with what to choose by hand.
+- **Refuse rather than force**: BIOS mode, an MBR disk, no ESP for the other system, less than
+  7 GiB to install into, or anything on the disk mounted, active swap or held by device-mapper.
+  All of it is checked before the first write, which nothing before it makes.
+- **The risk is the administrator's to accept**: `POST /api/install` with `mode: "beside"` needs
+  `acceptRisk: true`, which the wizard's checkbox sends. Anyone with administrator rights on the
+  other system can change or delete Lab Kiosk's partitions and boot entry. TPM sealing (PCR 7)
+  keeps the data partition unreadable from a system that boots through different signing
+  authorities (Windows), not from one that boots through Debian's same shim and GRUB.
+
+### Rule 2b: A Network-Booted Workstation Keeps Nothing and Enrols Itself
+
+- `tools/labkiosk-netboot.py prepare` lays a release out for a boot server: the release's own
+  signed shim and `grubnetx64.efi.signed` (from its squashfs), a GRUB menu and an iPXE script.
+  The command line is the ISO's plus `fetch=http://<server>/labkiosk/<v>/filesystem.squashfs`,
+  `labkiosk.netboot=1`, `labkiosk.org=` or `labkiosk.domain=`, `labkiosk.key=`, optionally
+  `labkiosk.server=` and `labkiosk.admin=<grub.pbkdf2 digest>` (which also locks the GRUB menu).
+- The agent (`is_network_boot()`) treats it as a live session with **no installer** and nobody to
+  run the wizard: `network_boot_enrol_loop` enrols under the hostname (MAC-derived, upper-cased)
+  until it succeeds, every 15 s while the server is unreachable and every 10 minutes after a
+  refusal (failed enrolments are rate-limited per public IP). The control plane re-issues the same
+  workstation's token, so nothing per machine is stored anywhere.
+- The administrator gate follows `labkiosk.admin=`: set, it gates like an installed disk; absent,
+  settings are open like live media. A malformed digest keeps the gate shut.
+- **UEFI PXE and BIOS iPXE only.** Debian 12's signed network GRUB has no HTTP client (Debian
+  bug #1016873; the VM test saw 2.06-13+deb12u2 stop at `grub>` after a UEFI HTTP Boot), so the
+  GRUB menu loads the kernel and initrd from GRUB's own boot device (TFTP), never `(http,…)`, and
+  UEFI HTTP Boot is not offered. Revisit with the Debian 13 major release.
+- The boot network is trusted: GRUB's menu, kernel and initrd come over plain TFTP (or HTTP for
+  iPXE), the squashfs over plain HTTP, and Secure Boot verifies only shim, GRUB and the kernel. The enrollment key is readable on that
+  network. Say so wherever network boot is documented.
+
+### Rule 2c: No Distribution Package
+
+- Lab Kiosk is never shipped as a `.deb` (or any package) for a general-purpose distribution. On
+  someone else's read-write root, with their kernel, packages and administrators, invariant 2 (RAM
+  overlay, read-only root, only `LABKIOSK_DATA` persists) cannot hold. Whole-disk, dual boot and
+  network boot all boot this image.
+
+### Rule 2d: Compile Only What Measurement Says Is Slow
+
+- The system image is a **zstd** squashfs (`--chroot-squashfs-compression-type zstd` in
+  `auto/config`): faster to build and to read at every boot than live-build's default xz, for a
+  somewhat larger image. The initrd stays xz (`labkiosk-compress`).
+- The client stays Python and the pages stay HTML: the ISO build, the installer, the pixel work
+  (`scrot`, `x11vnc`) and the Worker's crypto already run compiled code, and Chromium renders
+  only HTML, CSS and JavaScript. Do not rewrite a component in Rust or C for speed without a
+  measurement that shows it is the bottleneck. `tests/vm/boot-test.sh` step 4b prints the last
+  boot's timings (`boot_timings.py`): systemd's split, when the session started, and each
+  `labkiosk-*` unit's start time. Compare runs of that test with each other, not with hardware.
+- If the Python one-shots ever show up on the boot's critical path, merge them into one
+  early-boot program before changing language. If compiled code is ever written, the candidate is
+  the agent, in Rust (long-running, on the network, parsing untrusted input; less RAM than
+  CPython), and only as a planned port that removes `python3` from the image once every script is
+  ported, or a new hot path such as a hardware-encoded Remote Control streamer.
 
 ### Rule 3: The Installer Copies the Image, Not the Root
 
@@ -402,8 +496,12 @@ distro-builder/
     - `#btn-locale-languages` is hidden by default and displayed only on configured workstations.
     - When the user cancels the administrator modal during an offline redirect (`#offline`), the wizard closes the modal without re-triggering `returnToKiosk()`, breaking the redirect loop.
     - Dynamic prompt text distinguishes between network and locale changes (`admin.promptLocale` vs `admin.prompt`).
+- A network-booted workstation (`labkiosk.netboot=1`, Rule 2b) is live-booted but reports
+  `isLive: false`, `isInstalled: false`, `isNetworkBoot: true`: badge `NETWORK BOOT`, no installer.
+  The wizard opens the administrator modal when `/api/status` says `adminRequired`, not merely
+  when the session is not live.
 - **Backend Lockout**:
-  - `/api/install/disks` returns `[]` if not live.
+  - `/api/install/disks` returns `[]` if not live, or if started over the network.
   - `POST /api/install` rejects requests with HTTP 400 (`"System is already installed on an internal drive"`), preventing accidental data loss of the running drive.
 
 ### Rule 5: Native Top-Level Navigation & Auto-Hiding Viewport
@@ -656,6 +754,10 @@ Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
   last and the wizard labels them, so the default selection is always an internal disk.
 - `--status`: Reads `/tmp/labkiosk-install-status.json` and returns current installation state and progress percentage.
 - `--target /dev/sdX`: Runs full partition, format, image copy, and GRUB deployment as root.
+- `--dual-boot` / `--replace-partition /dev/sdXN`: with `--target`, install beside the disk's
+  other system instead of erasing it (Rule 2a). `--list-disks` describes each disk's `dualBoot`
+  (`possible`, `reason`, `freeBytes`, and each partition with `replaceable`), computed without
+  root from lsblk and sysfs; the install re-reads the table with `parted -m` as root.
 
 ### Critical Implementation Standards
 
@@ -688,7 +790,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-printing
 sh -n distro-builder/config/includes.chroot/etc/systemd/system-generators/labkiosk-data-generator
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
@@ -747,12 +850,23 @@ deadlock.*
 `.github/workflows/build-iso.yml` runs `distro-builder/tests/vm/boot-test.sh` on every built ISO:
 the ISO's own installer writes a virtual disk, which then boots under QEMU + OVMF (UEFI, KVM)
 through four scenarios — promote, broken squashfs, recover, unhealthy image — read back from
-`grubenv`. BIOS is covered only by the GRUB menu tests in `test_client.py`. It needs root and
+`grubenv`, then the signed download, the TPM, an install beside another system (dual boot, with
+`efibootmgr` played by `install_into_disk.py` and the entry given to the VM by `virt-fw-vars`) and
+network boot from `tools/labkiosk-netboot.py`'s layout (UEFI PXE with Secure Boot on, BIOS
+iPXE). Step 4b prints the boot's timings. An installed disk's BIOS boot is covered only by the GRUB menu tests in
+`test_client.py`. It needs root and
 `/dev/kvm`, so it does not run on Windows:
 
 ```bash
 sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
 ```
+
+CI runs it as parallel jobs from the same ISO artifact, one per group of `BOOT_TEST_GROUPS`
+(`slots`: install and scenarios 1-9; `tpm`: 10; `beside`: 11-13), and publishes a release only
+after all of them passed. The unhealthy scenario's image alone gets a `labkiosk-boot-slots` with a
+2-minute health deadline, repacked into its squashfs by the test (`mksquashfs -p`). **Never** add a
+way for a release to shorten the deadline (a kernel argument, a file on DATA, an environment
+variable): it would be a way to skip the health check in the field.
 
 ### 3. Rapid Live Debugging via Docker Test Simulator
 

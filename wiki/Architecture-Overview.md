@@ -101,7 +101,8 @@ Authorization: Bearer <device token>
 
 The ping is answered at the edge without waking the hub, so an idle workstation costs nothing.
 Agents without the WebSocket client, and any agent whose server lacks the route, use the older
-`POST /api/telemetry` every three seconds, which carries the same fields in one request and reply.
+`POST /api/telemetry` (every 3 seconds while a console is open, every 15 otherwise), which carries the
+same fields in one request and reply.
 
 The device token, never the request body, decides which workstation and which tenant the request belongs to. A payload claiming a different `clientId` is ignored.
 
@@ -134,7 +135,7 @@ labkiosk.example.edu            ->  platform apex: landing page, no tenant
 - the request arrived on a development host (`localhost`, `127.0.0.1`, `host.docker.internal`, …), or
 - the caller holds an active `super_admin` session, or
 - the caller's session already owns that tenant, or
-- the route is explicitly public (`/`, `/home`, `/privacy`, `/terms`, `/content-policy`, `/terms/bug-reports`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`, and `GET` `/api/i18n` and `/i18n/<tag>.json`, the interface catalogs a workstation reads before it is enrolled).
+- the route is explicitly public (`/`, `/home`, `/privacy`, `/terms`, `/content-policy`, `/dpa`, `/terms/bug-reports`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`, and `GET` `/api/i18n` and `/i18n/<tag>.json`, the interface catalogs a workstation reads before it is enrolled).
 
 `X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) (`www`, `super`, `api`, `admin`, `releases`, `login` and more) can be neither registered nor resolved as an organization.
 

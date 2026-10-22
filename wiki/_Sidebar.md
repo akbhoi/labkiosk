@@ -5,6 +5,7 @@
 - [Quickstart](Quickstart)
 - [Architecture Overview](Architecture-Overview)
 - [Installation Guide](Installation-Guide)
+- [Network Boot](Network-Boot)
 - [Workstation Simulator](Workstation-Simulator)
 
 **Using Lab Kiosk**

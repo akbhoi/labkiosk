@@ -40,9 +40,9 @@ labkiosk/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots,
 │                            sbin/labkiosk-update, sbin/labkiosk-share, sbin/labkiosk-logs,
 │                            sbin/labkiosk-swap, sbin/labkiosk-hostname, sbin/labkiosk-data-unlock,
-│                            sbin/labkiosk-health
+│                            sbin/labkiosk-health, sbin/labkiosk-printing
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0040 (never edit an applied one)
+│   ├── migrations/          0001..0043 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
@@ -51,6 +51,7 @@ labkiosk/
 │   │                        lan_sharing.ts (sites, seeds and peers for sharing a release on the LAN),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
 │   │                        two_factor.ts (TOTP, recovery codes, sign-in alerts), turnstile.ts,
+│   │                        sso.ts (staff sign-in with Google Workspace / Microsoft Entra ID, OIDC + PKCE),
 │   │                        legal.ts (versioned legal documents, the acceptance record and the console gate),
 │   │                        link_rules.ts (what a link on a hosted page may point to: no IPs, shorteners, blocklist),
 │   │                        license.ts (an organization's license plan and end date),
@@ -135,7 +136,9 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-wake-alarm \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-printing
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests

@@ -16,6 +16,7 @@ import {
   renderLandingHtml,
   renderFeaturesHtml,
   renderSpecsHtml,
+  renderHardwareHtml,
   renderPricingHtml,
   renderDownloadHtml,
   renderDocsHtml,
@@ -26,7 +27,7 @@ import {
   SITE_STYLESHEET_PATH,
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
-import { renderBugReportTermsHtml, renderContentPolicyHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderContentPolicyHtml, renderDataProcessingAgreementHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
@@ -46,9 +47,9 @@ import {
 } from "./seo";
 
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
-const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
+const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
-const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/terms/bug-reports", "/admin", "/super"]);
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
@@ -90,6 +91,7 @@ import {
   endOfLifeReminderStage,
   setEndOfLifeReminderStage,
   sendEndOfLifeReminders,
+  releaseAddressIsDevelopmentOnly,
   releaseFolderUrl,
   securityReleasesPending,
   workstationOffer,
@@ -203,6 +205,7 @@ import {
   findUserByEmail,
   findUserById,
   createUser,
+  pepperLegacyPasswordHashes,
   findTenantBySubdomain,
   findTenantById,
   findTenantByUserId,
@@ -283,11 +286,12 @@ import {
   verifyPassword,
   generateSessionToken,
   parseCookies,
-  createSessionCookie,
-  clearSessionCookie,
   timingSafeEqual,
   sha256Hex,
   validatePasswordStrength,
+  breachedPasswordProblem,
+  passwordPepper,
+  PEPPERED_HASH_PREFIX,
   isPlausibleEmail,
   isEnrollmentKey,
   generateNonce
@@ -305,6 +309,7 @@ import {
   isDevHost,
   isHostUnder,
   isReservedSlug,
+  superAdminHost,
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
 } from "./guard";
@@ -314,6 +319,9 @@ import {
   parseBootReport,
   parseRestartReport,
   parseDiskHealthReport,
+  parseVideoDecodingReport,
+  recordVideoDecoding,
+  storedVideoDecoding,
   recordDiskHealthReport,
   purgeOldWorkstationIssues,
   recordBootReport,
@@ -336,7 +344,8 @@ import {
   openRelaySession,
   relayUpgrade
 } from "./remote_relay";
-import { startCustomHostnameJob } from "./custom_hostnames";
+import { isPlatformHostname, startCustomHostnameJob } from "./custom_hostnames";
+import { HANDOFF_PATH, clearSessionCookies, createSessionCookie, handleSessionHandoff, sessionCookieName } from "./session_handoff";
 import { mailConfigProblem, sendMail } from "./mail";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
@@ -366,8 +375,52 @@ import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, han
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
 import {
+  handleSsoCallback,
+  handleSsoRedeem,
+  handleSsoSettings,
+  handleSsoStart,
+  passwordSignInRefusal,
+  purgeExpiredSsoStates,
+  ssoButtonsFor
+} from "./sso";
+import {
+  hardwareModelsComputedAt,
+  listHardwareModels,
+  listPublicHardwareModels,
+  parseHardwareReport,
+  rebuildHardwareModels,
+  recordHardware,
+  storedHardware
+} from "./hardware";
+import {
+  MAX_POWER_SCHEDULES,
+  deleteGroupPowerSchedules,
+  deletePowerSchedule,
+  groupPowerScheduleCount,
+  hasGroupPowerSchedules,
+  listPowerSchedules,
+  parsePowerReport,
+  parsePowerScheduleInput,
+  powerScheduleConflict,
+  recordPowerReport,
+  savePowerSchedule
+} from "./power";
+import {
+  deleteUsageSites,
+  MAX_REPORT_DAYS,
+  parseUsageReport,
+  platformUsage,
+  purgeOldUsage,
+  recordUsage,
+  reportPeriod,
+  rollUpPlatformUsage,
+  usageSummary
+} from "./usage";
+import { hasGroupPrinters, listPrinters, parsePrintingSettings, savePrintingSettings, MAX_PRINTERS } from "./printing";
+import {
   continueSignIn,
   handleLoginEmailCode,
+  handleLoginPasskeyOptions,
   handleLoginVerify,
   handleTwoFactorRoute,
   isTwoFactorRoute,
@@ -549,13 +602,16 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
       if (production) {
         const missing = requiredBindingsProblem(env);
         if (missing) throw new Error(missing);
+        // A misspelt console host is a startup error, not a console nobody can reach.
+        superAdminHost(env);
       }
       if (!production && (Boolean(email) !== Boolean(password))) {
         throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
       }
       const superAdmin = await ensureSuperAdmin(
         db,
-        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN
+        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN,
+        passwordPepper(env)
       );
       const demos = await ensureDemoTenants(db, superAdmin.id);
       return { superAdmin, demos };
@@ -595,8 +651,11 @@ function postLoginRedirect(options: {
   requestedSlug: string | null;
   isDev: boolean;
   baseDomain: string;
+  /** SUPER_ADMIN_HOST, when the platform console is confined to its own host. */
+  superHost?: string | null;
+  host?: string;
 }): string {
-  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain } = options;
+  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain, superHost, host } = options;
 
   const consoleFor = (slug: string) =>
     isDev ? `/admin?tenant=${encodeURIComponent(slug)}` : `https://${slug}.${baseDomain}/admin`;
@@ -605,7 +664,7 @@ function postLoginRedirect(options: {
     // The organization they were already looking at, if they are allowed in it.
     const context = hostSlug || requestedSlug;
     if (isDemoSlug(context)) return consoleFor(context);
-    return "/super";
+    return superHost && !isDev && host !== superHost ? `https://${superHost}/super` : "/super";
   }
 
   if (ownSubdomain) return consoleFor(ownSubdomain);
@@ -847,6 +906,126 @@ async function handleDiskHealthReport(
 }
 
 /**
+ * POST /api/devices/video-decoding: a workstation reports what its GPUs decode
+ * in hardware, once per agent start. The device token alone decides the
+ * organization and the workstation; the latest report replaces the last.
+ *
+ * 200 kept; 400 malformed (the agent drops it); 409 the workstation's row does
+ * not exist yet (the agent tries again).
+ */
+async function handleVideoDecodingReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let report;
+  try {
+    report = parseVideoDecodingReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Video decoding report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const kept = await recordVideoDecoding(db, device.tenant_id, device.client_id, report, Math.floor(Date.now() / 1000));
+  if (!kept) {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
+ * POST /api/devices/hardware: a workstation reports the machine it runs on,
+ * once per agent start (src/hardware.ts). The device token alone decides the
+ * organization and the workstation; the latest report replaces the last.
+ *
+ * 200 kept; 400 malformed (the agent drops it); 409 the workstation's row does
+ * not exist yet (the agent tries again).
+ */
+async function handleHardwareReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let report;
+  try {
+    report = parseHardwareReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Hardware report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const kept = await recordHardware(db, device.tenant_id, device.client_id, report, Math.floor(Date.now() / 1000));
+  if (!kept) {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
+ * POST /api/devices/power-report: a workstation about to switch itself off by
+ * its power schedule could not set its hardware clock to switch it on again
+ * (no RTC, or the write failed). Listed under Settings -> Errors & Warnings once
+ * per kind of problem and day (src/power.ts).
+ *
+ * 200 kept (or already listed today); 400 malformed (the agent drops it); 409
+ * the workstation's row does not exist yet.
+ */
+async function handlePowerReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let report;
+  try {
+    report = parsePowerReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Power report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const outcome = await recordPowerReport(db, device.tenant_id, device.client_id, report, Math.floor(Date.now() / 1000));
+  if (outcome === "unknown-workstation") {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok", recorded: outcome === "recorded" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
+ * POST /api/devices/usage: a workstation sends what it counted since its last
+ * report (src/usage.ts): per day, seconds on and in use, sessions and, when
+ * the organization records them, the sites. The counts are added, so the
+ * agent forgets what it sent once this answers 200.
+ *
+ * 200 counted; 400 malformed (the agent drops it rather than resend it forever).
+ */
+async function handleUsageReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let days;
+  try {
+    days = parseUsageReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Usage report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const tenant = await findTenantById(db, device.tenant_id);
+  if (!tenant) return jsonError("This organization no longer exists", 401, jsonHeaders);
+  await recordUsage(db, tenant.id, device.client_id, days, tenant.usage_sites !== 0);
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
  * POST /api/devices/restart-report: an installed workstation reports a boot
  * that ended without shutting down, with the end of that boot's journal. The
  * device token alone decides the organization and the workstation.
@@ -1023,8 +1202,10 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
-  if (path === "/terms/bug-reports" || path === "/content-policy") return true;
+  if (path === "/terms/bug-reports" || path === "/content-policy" || path === "/dpa") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
+  // Single sign-on starts from an organization's sign-in page, which may be the platform host with ?tenant=.
+  if (path === "/api/auth/sso/start" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
   // enrolled and holds no credential at that point, and the text is the same
@@ -1101,11 +1282,18 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    await purgeExpiredSsoStates(db);
+    const peppered = await pepperLegacyPasswordHashes(db, passwordPepper(env));
+    if (peppered) console.log(`[Worker] Wrapped ${peppered} password hashes in PASSWORD_PEPPER.`);
     for (const tenantId of await rotateUncheckedEnrollmentKeys(db)) {
       await writeAuditLog(db, { tenantId, userId: null, action: "settings.rotate_enrollment_key", details: "reason=check_character" });
     }
     const stranded = await fileStrandedInboundMail(env, db);
     if (stranded) console.log(`[Worker] Filed ${stranded} incoming messages the email Worker could not hand over.`);
+    const purgedUsage = await purgeOldUsage(db);
+    if (purgedUsage) console.log(`[Worker] Deleted ${purgedUsage} usage rows older than the retention period.`);
+    await rollUpPlatformUsage(db);
+    await rebuildHardwareModels(db, Math.floor(Date.now() / 1000));
     const purgedIssues = await purgeOldWorkstationIssues(db);
     if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
@@ -1220,6 +1408,18 @@ export default {
     }
     if (path === "/api/devices/disk-health" && method === "POST") {
       return handleDiskHealthReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/video-decoding" && method === "POST") {
+      return handleVideoDecodingReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/hardware" && method === "POST") {
+      return handleHardwareReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/usage" && method === "POST") {
+      return handleUsageReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/power-report" && method === "POST") {
+      return handlePowerReport(request, db, jsonHeaders);
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
@@ -1336,14 +1536,6 @@ export default {
     }
 
     // --- Identity -----------------------------------------------------------
-    const cookies = parseCookies(request.headers.get("cookie"));
-    const authHeader = request.headers.get("authorization");
-    const usedCookie = Boolean(cookies["labkiosk_session"]);
-    const sessionToken =
-      cookies["labkiosk_session"] ||
-      (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
-    const session = sessionToken ? await getSession(db, sessionToken) : null;
-
     const isDev = isDevHost(request);
     const isHttps = Boolean(
       url.protocol === "https:" ||
@@ -1351,12 +1543,19 @@ export default {
       request.headers.get("cf-visitor")?.includes('"scheme":"https"')
     );
     const secureCookies = Boolean(isHttps && !isDev);
-    const cookieDomain =
+    // Sessions are host-only (session_handoff.ts). Earlier releases set one cookie for the whole
+    // platform domain; it is no longer read, and sign-in and sign-out clear it.
+    const legacyCookieDomain =
       isHttps && !isDev && env.DEFAULT_DOMAIN && isHostUnder(hostname(request), env.DEFAULT_DOMAIN)
         ? env.DEFAULT_DOMAIN
         : undefined;
-    const sessionCookie = (token: string) =>
-      createSessionCookie(token, { domain: cookieDomain, secure: secureCookies });
+    const cookies = parseCookies(request.headers.get("cookie"));
+    const authHeader = request.headers.get("authorization");
+    const cookieToken = cookies[sessionCookieName(secureCookies)] || "";
+    const usedCookie = Boolean(cookieToken);
+    const sessionToken = cookieToken || (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
+    const session = sessionToken ? await getSession(db, sessionToken) : null;
+    const sessionCookie = (token: string, maxAgeSeconds: number) => createSessionCookie(token, { secure: secureCookies, maxAgeSeconds });
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
 
     // A coarse per-address limit in front of what a stranger can hammer. The
@@ -1364,10 +1563,14 @@ export default {
     // this keeps a flood from reaching the database at all.
     if (
       env.AUTH_RATE_LIMITER &&
-      method === "POST" &&
-      (path === "/api/auth/login" ||
+      (method === "POST" || path === "/api/auth/sso/start" || path === "/api/auth/sso/callback") &&
+      (path === "/api/auth/sso/start" ||
+        path === "/api/auth/sso/callback" ||
+        path === "/api/auth/sso/redeem" ||
+        path === "/api/auth/login" ||
         path === "/api/auth/login/verify" ||
         path === "/api/auth/login/email-code" ||
+        path === "/api/auth/login/passkey" ||
         path === "/api/auth/register" ||
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
@@ -1404,6 +1607,19 @@ export default {
     const loginTurnstile = isDev || isHostUnder(hostname(request), env.DEFAULT_DOMAIN);
     /** What every public page needs to draw the checks its forms carry. */
     const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
+
+    // With SUPER_ADMIN_HOST set, the platform console and its API answer on that host only, so the
+    // public apex (landing, registration, legal pages) never shares an origin with it.
+    const superHost = superAdminHost(env);
+    if (
+      superHost &&
+      !isDev &&
+      hostname(request) !== superHost &&
+      (path === "/super" || path.startsWith("/super/") || path === "/api/super" || path.startsWith("/api/super/"))
+    ) {
+      if (method === "GET" && !path.startsWith("/api/")) return Response.redirect(`https://${superHost}${path}${url.search}`, 302);
+      return jsonError("The Super Admin console is served on its own host", 404, jsonHeaders);
+    }
 
     // A cookie-authenticated mutation must come from this site.
     if (path.startsWith("/api/")) {
@@ -1449,7 +1665,7 @@ export default {
       baseDomain,
       isDev
     };
-    const signInCookies = { domain: cookieDomain, secure: secureCookies, sessionCookie };
+    const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
 
     // POST /api/auth/register/email-code: prove the email address before signing up.
     if (path === "/api/auth/register/email-code" && method === "POST") {
@@ -1508,8 +1724,8 @@ export default {
         // Always run a verification so a missing account and a wrong password
         // take comparable time and cannot be told apart by response latency.
         const isValid = user
-          ? await verifyPassword(body.password, user.password_hash, user.salt)
-          : await verifyPassword(body.password, "0".repeat(64), "0".repeat(64));
+          ? await verifyPassword(body.password, user.password_hash, user.salt, passwordPepper(env))
+          : await verifyPassword(body.password, PEPPERED_HASH_PREFIX + "0".repeat(64), "0".repeat(64), passwordPepper(env));
 
         if (!user || !isValid) {
           await recordLoginFailure(db, identifier);
@@ -1531,6 +1747,10 @@ export default {
             jsonHeaders
           );
         }
+        // Staff of an organization that signs them in with Google or Microsoft (src/sso.ts).
+        // Said only after the password checked out, like the approval message above.
+        const ssoOnly = await passwordSignInRefusal(db, env, user, tenant);
+        if (ssoOnly) return jsonError(ssoOnly, 403, jsonHeaders);
         // A session now, or a second step first for an account with two-factor sign-in.
         return await continueSignIn(routeContext, signInCookies, {
           userId: user.id,
@@ -1548,7 +1768,9 @@ export default {
               requestedSlug:
                 cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
             isDev,
-            baseDomain
+            baseDomain,
+            superHost: superAdminHost(env),
+            host: hostname(request)
           })
         });
       } catch (err: any) {
@@ -1557,12 +1779,38 @@ export default {
       }
     }
 
-    // POST /api/auth/login/verify, /email-code: the second step of a two-factor sign-in.
+    // POST /api/auth/login/verify, /email-code, /passkey: the second step of a two-factor sign-in.
     if (path === "/api/auth/login/verify" && method === "POST") {
       return handleLoginVerify(routeContext, signInCookies);
     }
     if (path === "/api/auth/login/email-code" && method === "POST") {
       return handleLoginEmailCode(routeContext);
+    }
+    if (path === "/api/auth/login/passkey" && method === "POST") {
+      return handleLoginPasskeyOptions(routeContext);
+    }
+
+    // Single sign-on with Google Workspace or Microsoft Entra ID (src/sso.ts): start on the
+    // sign-in page's host, come back on the platform host, redeem on the sign-in page's host.
+    if (path === "/api/auth/sso/start" && method === "GET") {
+      return handleSsoStart(routeContext, currentTenant, secureCookies);
+    }
+    if (path === "/api/auth/sso/callback" && method === "GET") {
+      return handleSsoCallback(routeContext, htmlHeaders);
+    }
+    if (path === "/api/auth/sso/redeem" && method === "POST") {
+      return handleSsoRedeem(routeContext, signInCookies, (tenant) =>
+        postLoginRedirect({
+          role: "org_admin",
+          ownSubdomain: tenant.subdomain,
+          hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
+          requestedSlug: null,
+          isDev,
+          baseDomain,
+          superHost: superAdminHost(env),
+          host: hostname(request)
+        })
+      );
     }
 
     // /api/auth/two-factor...: the signed-in account turns its own second factor on or off.
@@ -1582,12 +1830,19 @@ export default {
       if (sessionToken) {
         await deleteSession(db, sessionToken);
       }
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: "/",
-          "Set-Cookie": clearSessionCookie({ domain: cookieDomain, secure: secureCookies })
-        }
+      const signedOut = new Headers({ Location: "/" });
+      for (const cleared of clearSessionCookies({ secure: secureCookies, legacyDomain: legacyCookieDomain })) {
+        signedOut.append("Set-Cookie", cleared);
+      }
+      return new Response(null, { status: 302, headers: signedOut });
+    }
+
+    // GET /api/auth/handoff: a sign-in on another host hands its session to this one.
+    if (path === HANDOFF_PATH && method === "GET") {
+      return handleSessionHandoff(db, request, url, {
+        pepper: passwordPepper(env),
+        secure: secureCookies,
+        legacyDomain: legacyCookieDomain
       });
     }
 
@@ -1633,14 +1888,16 @@ export default {
         if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
 
         const user = await findUserById(db, session.user_id);
-        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt))) {
+        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt, passwordPepper(env)))) {
           return jsonError("Current password is not correct", 400, jsonHeaders);
         }
         if (currentPassword === newPassword) {
           return jsonError("New password must differ from the current one", 400, jsonHeaders);
         }
+        const breached = await breachedPasswordProblem(newPassword, env);
+        if (breached) return jsonError(breached, 400, jsonHeaders);
 
-        await updateUserPassword(db, user.id, newPassword);
+        await updateUserPassword(db, user.id, newPassword, passwordPepper(env));
         await revokeTrustedBrowsers(db, user.id);
         // Any other browser holding this account is signed out; this one stays.
         await deleteSessionsForUser(db, user.id, sessionToken || undefined);
@@ -1667,7 +1924,8 @@ export default {
       return Response.redirect(redirectUrl.toString(), 302);
     }
 
-    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/")) {
+    // On the console's own host (super.<domain>), "/" is the console; "/?login=1" stays the sign-in page.
+    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/" && !url.searchParams.has("login"))) {
       // Signed out: the sign-in page, as /admin does.
       if (!session) return Response.redirect(`${url.origin}/?login=1`, 302);
       if (session.role !== "super_admin") {
@@ -2035,7 +2293,8 @@ export default {
           ...(await platformReleasePolicy(db, releases, names)),
           added: sync.added,
           problems: sync.problems,
-          downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null
+          downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null,
+          downloadsDevelopmentOnly: releaseAddressIsDevelopmentOnly(env)
         }),
         { headers: jsonHeaders }
       );
@@ -2484,6 +2743,24 @@ export default {
       return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
     }
 
+    // GET /api/super/usage?days=N: the platform's anonymous usage totals and the
+    // hardware every organization's workstations run on, by model. Nothing here
+    // names an organization (src/usage.ts, src/hardware.ts).
+    if (path === "/api/super/usage" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const days = Number(url.searchParams.get("days") || 30);
+      if (!Number.isInteger(days) || days < 1 || days > MAX_REPORT_DAYS) {
+        return jsonError(`days is a whole number from 1 to ${MAX_REPORT_DAYS}`, 400, jsonHeaders);
+      }
+      const [usage, models, modelsAt] = await Promise.all([
+        platformUsage(db, reportPeriod(days)),
+        listHardwareModels(db),
+        hardwareModelsComputedAt(db)
+      ]);
+      return new Response(JSON.stringify({ ...usage, hardware: { models, computedAt: modelsAt } }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/super/tenants/approve" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -2575,6 +2852,9 @@ export default {
         const domain = cleanCustomDomain(body.customDomain || targetTenant.requested_custom_domain);
         if (!domain) {
           return jsonError("Valid domain name required (e.g. kiosk.example.com)", 400, jsonHeaders);
+        }
+        if (isPlatformHostname(env, domain)) {
+          return jsonError("Custom domain cannot be a subdomain of the platform domain", 400, jsonHeaders);
         }
 
         const existing = await findTenantByCustomDomain(db, domain);
@@ -3074,12 +3354,8 @@ export default {
           return jsonError("Please enter a valid domain name (e.g. kiosk.example.com)", 400, jsonHeaders);
         }
 
-        // Prevent setting the platform apex or its subdomains as custom domain
-        if (env.DEFAULT_DOMAIN) {
-          const base = env.DEFAULT_DOMAIN.replace(/^\./, "").toLowerCase();
-          if (domain === base || domain.endsWith("." + base)) {
-            return jsonError("Custom domain cannot be a subdomain of the platform domain", 400, jsonHeaders);
-          }
+        if (isPlatformHostname(env, domain)) {
+          return jsonError("Custom domain cannot be a subdomain of the platform domain", 400, jsonHeaders);
         }
 
         // Check collisions
@@ -3271,7 +3547,8 @@ export default {
         if (refused) return jsonError(refused, 403, jsonHeaders);
 
         if (body.password !== undefined && body.password !== "") {
-          const passwordProblem = validatePasswordStrength(String(body.password));
+          const passwordProblem =
+            validatePasswordStrength(String(body.password)) || (await breachedPasswordProblem(String(body.password), env));
           if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
         }
 
@@ -3289,7 +3566,7 @@ export default {
           password: body.password,
           role,
           permissions
-        });
+        }, passwordPepper(env));
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
@@ -3476,6 +3753,7 @@ export default {
           portalSubtitle?: string;
           portalDescription?: string;
           portalFooter?: string;
+          homeReset?: boolean;
         }>();
 
         const updates: Partial<Tenant> = {};
@@ -3510,6 +3788,10 @@ export default {
         }
         if (body.portalFooter !== undefined) {
           updates.portal_footer = String(body.portalFooter).trim().slice(0, 200) || null;
+        }
+        if (body.homeReset !== undefined) {
+          if (typeof body.homeReset !== "boolean") return jsonError("homeReset is true or false", 400, jsonHeaders);
+          updates.home_reset = body.homeReset ? 1 : 0;
         }
 
         if (Object.keys(updates).length > 0) {
@@ -3700,7 +3982,9 @@ export default {
           imageVersion: status?.imageVersion || row?.image_version || undefined,
           agentVersion: status?.agentVersion || row?.agent_version || undefined,
           update: status?.update ?? registryUpdate(row),
-          updateWaitingSince: status?.online ? status.updateWaitingSince : undefined
+          updateWaitingSince: status?.online ? status.updateWaitingSince : undefined,
+          videoDecoding: storedVideoDecoding(row?.video_decoding, row?.video_decoding_at),
+          hardware: storedHardware(row?.hardware, row?.hardware_at)
         };
       };
       for (const row of rows) clients[row.client_id] = toTelemetry(live.clients[row.client_id], row);
@@ -3929,6 +4213,148 @@ export default {
       );
     }
 
+    // GET /api/settings/sso: the organization's single sign-on (src/sso.ts), for `settings`.
+    // POST /api/settings/sso { google: {enabled, domains}, microsoft: {enabled, tenants}, requireSso }:
+    // administrators only, since a listed directory decides which addresses its accounts carry.
+    if (path === "/api/settings/sso" && (method === "GET" || method === "POST")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      return handleSsoSettings(routeContext, currentTenant!);
+    }
+
+    // GET /api/usage?days=N: the organization's usage over the last N days (1 to
+    // MAX_REPORT_DAYS) by day, by workstation and by site (src/usage.ts).
+    // POST /api/usage/settings { recordSites }: record the sites visited, or stop.
+    // POST /api/usage/sites/delete: delete every recorded site.
+    if (
+      (path === "/api/usage" && method === "GET") ||
+      ((path === "/api/usage/settings" || path === "/api/usage/sites/delete") && method === "POST")
+    ) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      if (path === "/api/usage/settings") {
+        let body: { recordSites?: unknown };
+        try {
+          body = await request.json<typeof body>();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        if (!body || typeof body.recordSites !== "boolean") return jsonError("recordSites is true or false", 400, jsonHeaders);
+        if ((tenant.usage_sites !== 0) !== body.recordSites) {
+          await updateTenant(db, tenant.id, { usage_sites: body.recordSites ? 1 : 0 });
+          await writeAuditLog(db, { tenantId: tenant.id, userId: session!.user_id, action: "settings.usage_sites", details: body.recordSites ? "on" : "off" });
+          await notifyConfigChanged(env, tenant.id);
+        }
+        return new Response(JSON.stringify({ status: "ok", recordSites: body.recordSites }), { headers: jsonHeaders });
+      }
+      if (path === "/api/usage/sites/delete") {
+        const deleted = await deleteUsageSites(db, tenant.id);
+        await writeAuditLog(db, { tenantId: tenant.id, userId: session!.user_id, action: "usage.delete_sites", details: `rows=${deleted}` });
+        return new Response(JSON.stringify({ status: "ok", deleted }), { headers: jsonHeaders });
+      }
+      const days = Number(url.searchParams.get("days") || 30);
+      if (!Number.isInteger(days) || days < 1 || days > MAX_REPORT_DAYS) {
+        return jsonError(`days is a whole number from 1 to ${MAX_REPORT_DAYS}`, 400, jsonHeaders);
+      }
+      const summary = await usageSummary(db, tenant.id, reportPeriod(days), tenant.usage_sites !== 0);
+      return new Response(JSON.stringify(summary), { headers: jsonHeaders });
+    }
+
+    // GET /api/power-schedules: the organization's power schedules and the groups
+    // one may be for. POST /api/power-schedules {id?, days, off, on?, groupId?}:
+    // create one, or replace the one with `id`. DELETE /api/power-schedules/:id.
+    // Workstations hear of every change at once (src/power.ts).
+    if (
+      (path === "/api/power-schedules" && (method === "GET" || method === "POST")) ||
+      (path.startsWith("/api/power-schedules/") && method === "DELETE")
+    ) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      if (method === "GET") {
+        const [schedules, groups] = await Promise.all([listPowerSchedules(db, tenant.id), listWorkstationGroups(db, tenant.id)]);
+        return new Response(
+          JSON.stringify({ schedules, groups: groups.map((g) => ({ id: g.id, name: g.name })) }),
+          { headers: jsonHeaders }
+        );
+      }
+      if (method === "DELETE") {
+        const id = path.slice("/api/power-schedules/".length).trim();
+        if (!id || !(await deletePowerSchedule(db, tenant.id, id))) return jsonError("Power schedule not found", 404, jsonHeaders);
+        await writeAuditLog(db, { tenantId: tenant.id, userId: session!.user_id, action: "power.schedule_delete", details: `id=${id}` });
+        await notifyConfigChanged(env, tenant.id);
+        return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json<Record<string, unknown>>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      let input;
+      try {
+        input = parsePowerScheduleInput(body);
+      } catch (err: any) {
+        return jsonError(err?.message || "The schedule is not valid", 400, jsonHeaders);
+      }
+      const id = typeof body?.id === "string" && body.id ? body.id : undefined;
+      const [existing, groups] = await Promise.all([listPowerSchedules(db, tenant.id), listWorkstationGroups(db, tenant.id)]);
+      const group = input.groupId ? groups.find((g) => g.id === input.groupId) : null;
+      if (input.groupId && !group) return jsonError("Workstation group not found", 404, jsonHeaders);
+      if (id && !existing.some((s) => s.id === id)) return jsonError("Power schedule not found", 404, jsonHeaders);
+      if (!id && existing.length >= MAX_POWER_SCHEDULES) {
+        return jsonError(`An organization keeps at most ${MAX_POWER_SCHEDULES} power schedules`, 409, jsonHeaders);
+      }
+      const conflict = powerScheduleConflict(existing, input, id);
+      if (conflict) return jsonError(conflict, 409, jsonHeaders);
+      const savedId = await savePowerSchedule(db, tenant.id, input, Math.floor(Date.now() / 1000), id);
+      if (!savedId) return jsonError("Power schedule not found", 404, jsonHeaders);
+      const schedule = (await listPowerSchedules(db, tenant.id)).find((s) => s.id === savedId)!;
+      await writeAuditLog(db, {
+        tenantId: tenant.id,
+        userId: session!.user_id,
+        action: id ? "power.schedule_update" : "power.schedule_create",
+        details: `id=${savedId} group=${group?.name ?? "all"} days=${schedule.days.join("")} off=${schedule.off} on=${schedule.on ?? "none"}`
+      });
+      await notifyConfigChanged(env, tenant.id);
+      return new Response(JSON.stringify({ status: "ok", schedule }), { headers: jsonHeaders });
+    }
+
+    // GET /api/settings/printing: whether the organization's workstations may
+    // print, its network printers and the workstation groups one can be limited to.
+    // POST /api/settings/printing { enabled, printers: [{ id?, name, uri, groupName? }] }:
+    // store both, the list replacing the old one (src/printing.ts).
+    if (path === "/api/settings/printing" && (method === "GET" || method === "POST")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      const groups = (await listWorkstationGroups(db, tenant.id)).map((g) => g.name);
+      let enabled = tenant.printing_enabled === 1;
+      let printers = await listPrinters(db, tenant.id);
+      if (method === "POST") {
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const parsed = parsePrintingSettings(body, groups, new Set(printers.map((p) => p.id)));
+        if (!parsed.ok) return jsonError(parsed.error, parsed.status, jsonHeaders);
+        await savePrintingSettings(db, tenant.id, parsed.enabled, parsed.printers);
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: "settings.printing",
+          details: `${parsed.enabled ? "on" : "off"} printers=${parsed.printers.map((p) => p.name).join(", ").slice(0, 400)}`
+        });
+        await notifyConfigChanged(env, tenant.id);
+        enabled = parsed.enabled;
+        printers = parsed.printers;
+      }
+      return new Response(JSON.stringify({ status: "ok", enabled, printers, groups, maxPrinters: MAX_PRINTERS }), { headers: jsonHeaders });
+    }
+
     // GET /api/notifications: the platform's notifications for this organization,
     // newest first, with whether this user has dismissed each.
     // POST /api/notifications/read { ids? }: dismiss them (every one when ids is left out).
@@ -4136,6 +4562,58 @@ export default {
       );
     }
 
+    // POST /api/clients/wake { clientIds }: switch on workstations that are off,
+    // through a workstation that is on at the same site (Wake-on-LAN,
+    // src/power.ts). The MAC addresses come from each one's own hardware report
+    // in this organization's rows, never from the request. 200 with `sent` and
+    // `skipped` (each with its reason) when at least one was woken; 409 with the
+    // reasons when none could be.
+    if (path === "/api/clients/wake" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      let body: { clientIds?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!Array.isArray(body?.clientIds)) return jsonError("Client IDs array required", 400, jsonHeaders);
+      const requested = Array.from(new Set(body.clientIds.map((c) => String(c ?? "").trim()).filter(Boolean)));
+      if (!requested.length) return jsonError("Client IDs array required", 400, jsonHeaders);
+      if (requested.length > MAX_BATCH_TARGETS) {
+        return jsonError(`At most ${MAX_BATCH_TARGETS} workstations can be addressed at once`, 400, jsonHeaders);
+      }
+      const tenant = currentTenant!;
+      const rows = new Map((await listClientDevices(db, tenant.id)).map((row) => [row.client_id, row]));
+      const targets: Array<{ clientId: string; macs: string[] }> = [];
+      let skipped: Array<{ clientId: string; reason: string }> = [];
+      for (const clientId of requested) {
+        const row = rows.get(clientId);
+        if (!row) skipped.push({ clientId, reason: "Not found" });
+        else targets.push({ clientId, macs: storedHardware(row.hardware, row.hardware_at)?.macs ?? [] });
+      }
+      let sent: Array<{ clientId: string; via: string }> = [];
+      if (targets.length) {
+        const result = await hubJson<{ sent: typeof sent; skipped: typeof skipped }>(env, tenant.id, "/wake", { targets });
+        sent = result.sent;
+        skipped = skipped.concat(result.skipped);
+      }
+      if (sent.length) {
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: "command.wake",
+          details: `clients=${sent.map((s) => `${s.clientId} via ${s.via}`).join(",")}`
+        });
+      }
+      if (!sent.length) {
+        const reasons = [...new Set(skipped.map((s) => s.reason))];
+        const error = requested.length === 1 ? `${requested[0]} was not woken: ${reasons[0]}` : `No workstation was woken: ${reasons.join("; ")}`;
+        return new Response(JSON.stringify({ error, sent, skipped }), { status: 409, headers: jsonHeaders });
+      }
+      return new Response(JSON.stringify({ status: "ok", sent, skipped }), { headers: jsonHeaders });
+    }
+
     // POST /api/clients/remove: Decommission a workstation
     if (path === "/api/clients/remove" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
@@ -4198,8 +4676,12 @@ export default {
         for (let i = 0; i < clientIds.length; i += D1_IN_LIST_CHUNK) {
           await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
         }
-        // A workstation moved into or out of a group a major is being tried on is offered differently.
-        if (await hasMajorPilot(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
+        // A workstation moved into or out of a group a major is being tried on is
+        // offered differently, one moved into or out of a group with a power
+        // schedule follows another week, and one a printer is limited to prints differently.
+        if ((await hasMajorPilot(db, currentTenant!.id)) || (await hasGroupPowerSchedules(db, currentTenant!.id)) || (await hasGroupPrinters(db, currentTenant!.id))) {
+          await notifyConfigChanged(env, currentTenant!.id);
+        }
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
@@ -4270,11 +4752,16 @@ export default {
       const groupId = path.slice("/api/groups/".length).trim();
       if (!groupId) return jsonError("Group ID is required", 400, jsonHeaders);
 
+      const groupSchedules = await groupPowerScheduleCount(db, currentTenant!.id, groupId);
+      // Its members leave it, so a printer limited to it no longer reaches them.
+      const groupPrinters = await hasGroupPrinters(db, currentTenant!.id);
       if (!(await deleteWorkstationGroup(db, currentTenant!.id, groupId))) {
         return jsonError("Workstation group not found", 404, jsonHeaders);
       }
+      // The group's power schedules go with it.
+      if (groupSchedules) await deleteGroupPowerSchedules(db, currentTenant!.id, groupId);
       // A major being tried on the group is no longer tried anywhere.
-      if (await endOrphanedMajorPilots(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
+      if ((await endOrphanedMajorPilots(db, currentTenant!.id)) || groupSchedules || groupPrinters) await notifyConfigChanged(env, currentTenant!.id);
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,
@@ -4479,6 +4966,9 @@ export default {
     if (path === "/content-policy") {
       return new Response(renderContentPolicyHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
+    if (path === "/dpa") {
+      return new Response(renderDataProcessingAgreementHtml({ canonicalUrl }), { headers: htmlHeaders });
+    }
     if (path === "/terms/bug-reports") {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
@@ -4542,6 +5032,23 @@ export default {
           canonicalUrl,
           nonce
         }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/hardware") {
+      const [models, computedAt] = await Promise.all([listPublicHardwareModels(db), hardwareModelsComputedAt(db)]);
+      return new Response(
+        renderHardwareHtml(
+          {
+            baseDomain,
+            contactEmail: "contact@labkiosk.org",
+            ...formChecks,
+            canonicalUrl,
+            nonce
+          },
+          models,
+          computedAt
+        ),
         { headers: htmlHeaders }
       );
     }
@@ -4916,6 +5423,8 @@ export default {
             : path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
               ? "iso"
               : undefined;
+      // The sign-in page of one organization (its host, or ?tenant=) offers the single sign-on it turned on.
+      const ssoProviders = openModal === "login" ? await ssoButtonsFor(db, env, currentTenant) : [];
       return new Response(
         renderLandingHtml({
           openModal,
@@ -4924,6 +5433,7 @@ export default {
           contactEmail: "contact@labkiosk.org",
           ...formChecks,
           canonicalUrl,
+          sso: ssoProviders.length && currentTenant ? { providers: ssoProviders, tenantSlug: currentTenant.subdomain } : undefined,
           nonce
         }),
         { headers: htmlHeaders }

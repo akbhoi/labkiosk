@@ -558,8 +558,34 @@
           <select id="target-disk-select" class="select-field">
             <option value="" data-i18n="ui.scanning-for-internal-drives">Scanning for internal drives...</option>
           </select>
-          <div class="hint-text" style="color: #f87171;" data-i18n="ui.warning-installing-will-completely-erase-and">
+          <div class="hint-text" id="erase-warning" style="color: #f87171;" data-i18n="ui.warning-installing-will-completely-erase-and">
             ⚠️ WARNING: Installing will completely erase and re-partition the selected drive.
+          </div>
+        </div>
+
+        <div class="form-group" id="install-mode-group">
+          <label class="form-label" data-i18n="ui.what-to-do-with-the-drive">What to do with the drive</label>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; margin-bottom: 6px;">
+            <input type="radio" name="install-mode" id="install-mode-erase" value="erase" checked style="accent-color: var(--accent);">
+            <span data-i18n="ui.install-mode-erase">Erase the drive and use all of it</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px;">
+            <input type="radio" name="install-mode" id="install-mode-beside" value="beside" style="accent-color: var(--accent);">
+            <span data-i18n="ui.install-mode-beside">Install beside the system already on the drive (dual boot)</span>
+          </label>
+          <div class="hint-text" id="dual-boot-unavailable" style="display: none;"></div>
+          <div id="dual-boot-options" style="display: none; margin-top: 10px;">
+            <select id="beside-target-select" class="select-field"></select>
+            <div class="hint-text" data-i18n="ui.dual-boot-how-it-starts">
+              Lab Kiosk starts by default. To start the other system, choose it from the computer's boot menu (often F12, F11 or Esc at power-on).
+            </div>
+            <div class="hint-text" style="color: #fbbf24;" data-i18n="ui.dual-boot-risk">
+              ⚠️ A shared drive is less safe than a drive of Lab Kiosk's own. Anyone with administrator rights on the other system can change or delete Lab Kiosk's partitions and change what the computer starts. The TPM encryption keeps Lab Kiosk's enrolment unreadable from most other systems, but cannot stop it being erased.
+            </div>
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; margin-top: 8px;">
+              <input type="checkbox" id="accept-dual-boot-risk" style="width: 16px; height: 16px; accent-color: var(--accent);">
+              <span data-i18n="ui.i-accept-the-dual-boot-risk">I understand that administrators of the other system can change Lab Kiosk</span>
+            </label>
           </div>
         </div>
 
@@ -732,6 +758,9 @@
     let baseDomain = 'labkiosk.org';
     let currentTargetUrl = 'http://127.0.0.1:8888/setup';
     let isLive = true;
+    // Whether changing settings here takes the administrator password: on an
+    // installed workstation, and on a network-booted one whose boot server set one.
+    let adminGate = false;
     let isConfigured = false;
     // Set from /api/status: registering again was asked for (#reenrol), or the
     // control plane no longer accepts this workstation's token.
@@ -828,6 +857,14 @@
 
     const targetDiskSelect = document.getElementById('target-disk-select');
     const startInstallBtn = document.getElementById('start-install-btn');
+    const installModeErase = document.getElementById('install-mode-erase');
+    const installModeBeside = document.getElementById('install-mode-beside');
+    const dualBootUnavailable = document.getElementById('dual-boot-unavailable');
+    const dualBootOptions = document.getElementById('dual-boot-options');
+    const besideTargetSelect = document.getElementById('beside-target-select');
+    const acceptDualBootRisk = document.getElementById('accept-dual-boot-risk');
+    const eraseWarning = document.getElementById('erase-warning');
+    let availableDisks = [];
     const rebootBtn = document.getElementById('reboot-btn');
     const progressBarContainer = document.getElementById('install-progress-bar-container');
     const progressBar = document.getElementById('install-progress-bar');
@@ -961,7 +998,7 @@
         : t('ui.js.reenrol-voluntary', 'This workstation is registered with') + ' ' + (organization || '—') + '. ' +
           t('ui.js.reenrol-replaces', 'Registering it with another organization replaces that registration.');
       document.getElementById('reenrol-notice').style.display = 'block';
-      if (!isLive && !adminToken) openAdminModal();
+      if (adminGate && !adminToken) openAdminModal();
     }
 
     btnOpenReenrol.addEventListener('click', () => {
@@ -1383,6 +1420,7 @@
         if (res.ok) {
           const data = await res.json();
           isLive = !!data.isLive;
+          adminGate = typeof data.adminRequired === 'boolean' ? data.adminRequired : !isLive;
           isConfigured = !!data.isConfigured;
           wantsReenrol = isReenrol || !!data.enrolmentRejected;
           if (btnLocaleLanguages) {
@@ -1412,11 +1450,17 @@
               tabBtnInstall.click();
             }
           } else {
-            if (badge) badge.textContent = t('ui.js.installed-workstation', 'INSTALLED WORKSTATION');
+            if (data.isNetworkBoot) {
+              if (badge) badge.textContent = t('ui.js.network-boot', 'NETWORK BOOT');
+            } else if (badge) {
+              badge.textContent = t('ui.js.installed-workstation', 'INSTALLED WORKSTATION');
+            }
             document.getElementById('tabs-nav').style.display = 'none';
             viewInstall.style.display = 'none';
             viewEnroll.style.display = 'block';
-            enrollDesc.textContent = t('ui.js.link-this-installed-workstation-to-your', "Link this installed workstation to your organization's account.");
+            enrollDesc.textContent = data.isNetworkBoot
+              ? t('ui.js.link-this-network-booted-workstation', "Link this workstation to your organization's account. It was started over the network, so its boot server's menu can do this at every start instead (labkiosk.org= and labkiosk.key=).")
+              : t('ui.js.link-this-installed-workstation-to-your', "Link this installed workstation to your organization's account.");
             // An enrolled installed workstation has nothing left to set up here
             // except its network -- or registering again -- and both are behind
             // the administrator password.
@@ -1439,7 +1483,7 @@
             btnReturnKiosk.style.display = 'flex';
             btnProceedStep2.style.display = 'none';
             if (isConfigured) btnOpenReenrol.style.display = 'flex';
-            if (!isLive && !adminToken) openAdminModal();
+            if (adminGate && !adminToken) openAdminModal();
           }
 
           if (wantsReenrol && isConfigured) showReenrol(data);
@@ -1452,7 +1496,7 @@
             step1.style.display = 'none';
             step2.style.display = 'none';
             btnLocaleReturn.style.display = 'flex';
-            if (!isLive && !adminToken) openAdminModal();
+            if (adminGate && !adminToken) openAdminModal();
           }
           if (isOfflineRedirect) {
             document.getElementById('admin-auth-offline').style.display = 'block';
@@ -1604,7 +1648,7 @@
       // Not trimmed: spaces are legal at either end of a WPA passphrase.
       const password = isWifi ? wifiPasswordInput.value : '';
 
-      if (!isLive && !adminToken) {
+      if (adminGate && !adminToken) {
         openAdminModal();
         return;
       }
@@ -1935,6 +1979,7 @@
             startInstallBtn.disabled = true;
             return;
           }
+          availableDisks = disks;
           disks.forEach(d => {
             const opt = document.createElement('option');
             opt.value = d.path;
@@ -1943,12 +1988,48 @@
             targetDiskSelect.appendChild(opt);
           });
           startInstallBtn.disabled = false;
+          updateInstallMode();
         }
       } catch {
         targetDiskSelect.innerHTML = '<option value="">Failed to scan drives</option>';
         startInstallBtn.disabled = true;
       }
     }
+
+    // Erase the drive, or install beside its other system: in its free space
+    // or in place of one partition, as the installer's listing allows.
+    function updateInstallMode() {
+      const disk = availableDisks.find(d => d.path === targetDiskSelect.value);
+      const dualBoot = disk && disk.dualBoot ? disk.dualBoot : null;
+      const possible = Boolean(dualBoot && dualBoot.possible);
+      installModeBeside.disabled = !possible;
+      if (!possible && installModeBeside.checked) installModeErase.checked = true;
+      dualBootUnavailable.textContent = dualBoot && !possible ? (dualBoot.reason || '') : '';
+      dualBootUnavailable.style.display = dualBootUnavailable.textContent ? 'block' : 'none';
+
+      const beside = installModeBeside.checked;
+      dualBootOptions.style.display = beside ? 'block' : 'none';
+      eraseWarning.style.display = beside ? 'none' : 'block';
+      besideTargetSelect.replaceChildren();
+      if (!possible) return;
+      if (dualBoot.freeBytes >= 7 * 1024 * 1024 * 1024) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = t('ui.js.use-the-free-space', 'Use the free space') + ` (${dualBoot.free})`;
+        besideTargetSelect.appendChild(opt);
+      }
+      dualBoot.partitions.filter(p => p.replaceable).forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.path;
+        const details = [p.size, p.fstype, p.label].filter(Boolean).join(', ');
+        opt.textContent = t('ui.js.replace-partition', 'Replace') + ` ${p.path} (${details}) — ` +
+          t('ui.js.everything-on-it-is-erased', 'everything on it is erased');
+        besideTargetSelect.appendChild(opt);
+      });
+    }
+    targetDiskSelect.addEventListener('change', updateInstallMode);
+    installModeErase.addEventListener('change', updateInstallMode);
+    installModeBeside.addEventListener('change', updateInstallMode);
 
     const GRUB_PBKDF2_ROUNDS = 200000;
     function toUpperHex(buffer) {
@@ -1978,7 +2059,21 @@
         alert('Please select a target storage drive.');
         return;
       }
-      if (!confirm(`Are you absolutely sure you want to install Lab Kiosk OS to ${disk}?\n\nAll existing data on this drive will be permanently deleted!`)) {
+      const beside = installModeBeside.checked;
+      const replacePartition = beside ? besideTargetSelect.value : '';
+      if (beside) {
+        if (!acceptDualBootRisk.checked) {
+          alert(t('ui.js.accept-the-dual-boot-risk-first', 'Tick the box to accept that administrators of the other system can change Lab Kiosk.'));
+          acceptDualBootRisk.focus();
+          return;
+        }
+        const where = replacePartition
+          ? t('ui.js.confirm-replace-partition', 'Everything on this partition will be permanently deleted:') + ` ${replacePartition}`
+          : t('ui.js.confirm-free-space', 'Lab Kiosk will use the free space; the other partitions are left as they are.');
+        if (!confirm(t('ui.js.confirm-dual-boot', 'Install Lab Kiosk OS beside the system already on') + ` ${disk}?\n\n${where}`)) {
+          return;
+        }
+      } else if (!confirm(`Are you absolutely sure you want to install Lab Kiosk OS to ${disk}?\n\nAll existing data on this drive will be permanently deleted!`)) {
         return;
       }
 
@@ -2005,6 +2100,7 @@
       generateGrubBtn.disabled = true;
       toggleCustomHostname.disabled = true;
       customHostnameInput.disabled = true;
+      setInstallModeLocked(true);
       progressBarContainer.style.display = 'block';
       progressStatusText.style.display = 'block';
       progressBar.style.width = '5%';
@@ -2020,7 +2116,10 @@
         const res = await fetch('http://127.0.0.1:8888/api/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetDisk: disk, grubPasswordHash, hostname })
+          body: JSON.stringify({
+            targetDisk: disk, grubPasswordHash, hostname,
+            mode: beside ? 'beside' : 'erase', replacePartition, acceptRisk: beside && acceptDualBootRisk.checked
+          })
         });
         if (!res.ok) {
           const err = await res.json();
@@ -2050,6 +2149,7 @@
                 generateGrubBtn.disabled = false;
                 toggleCustomHostname.disabled = false;
                 customHostnameInput.disabled = false;
+                setInstallModeLocked(false);
               }
             }
           } catch {}
@@ -2062,8 +2162,17 @@
         generateGrubBtn.disabled = false;
         toggleCustomHostname.disabled = false;
         customHostnameInput.disabled = false;
+        setInstallModeLocked(false);
       }
     });
+
+    function setInstallModeLocked(locked) {
+      installModeErase.disabled = locked;
+      besideTargetSelect.disabled = locked;
+      acceptDualBootRisk.disabled = locked;
+      if (locked) installModeBeside.disabled = true;
+      else updateInstallMode();
+    }
 
     rebootBtn.addEventListener('click', async () => {
       try {

@@ -14,6 +14,7 @@ End-to-end, from a blank thin client to a workstation live on an operator's dash
 | Your organization's **enrollment key** | Admin console → Settings → Workstation Enrollment Key. Organizations start with an empty key, which authenticates nothing — generate one first. It is four groups of five characters; the setup wizard inserts the hyphens as you type, and a pasted key is accepted with or without them, in any case, and even with a label copied along with it. |
 | The **ISO**, on a USB stick of 2 GB or more | Download it, or → [Building the ISO](Building-the-ISO) |
 | Thin clients with at least **2 GB RAM and a 7 GiB disk** (a drive sold as 8 GB qualifies) | 4 GB RAM and a 12 GB SSD is the reference target |
+| **Intel or AMD graphics**, for video | Decoded in hardware. NVIDIA graphics work, but decode video on the CPU (no NVIDIA driver in the image). Each workstation's card shows which → [FAQ](FAQ) |
 
 ---
 
@@ -86,6 +87,16 @@ In the wizard, select the **Install to Hard Disk** tab.
 The list shows candidate disks of at least 7 GiB — room for two system images side by side. **The USB stick you booted from is excluded** — the installer matches it through `/proc/mounts` and `/sys` and refuses it both when listing and again immediately before wiping.
 
 Removable drives are still shown and labelled `REMOVABLE DRIVE`, because internal eMMC on some thin clients reports as removable. They sort last, so the default selection is always an internal disk. Read the label before you continue.
+
+### Erase the drive, or install beside another system
+
+**Erase the drive and use all of it** is the default and the safest: Lab Kiosk is the only system on it.
+
+**Install beside the system already on the drive (dual boot)** keeps Windows or another Linux and puts Lab Kiosk in the drive's free space, or in place of one partition you choose (everything on that partition is erased). It needs a computer started in UEFI mode and a GPT drive with an EFI system partition; when one is missing, the option is greyed out with the reason. Lab Kiosk then starts by default, and the other system is chosen from the computer's boot menu.
+
+Anyone with administrator rights on the other system can change or delete Lab Kiosk, so you must tick the box that says you accept it. Details and the full list of checks: [Disk Installer](Disk-Installer#beside-another-system-dual-boot).
+
+To start workstations with no disk at all, from a server on the network, see [Network Boot](Network-Boot).
 
 ### Set a boot-menu & admin password
 

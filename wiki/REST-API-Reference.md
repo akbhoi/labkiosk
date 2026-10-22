@@ -17,8 +17,8 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
-| **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` |
+| **Session cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Operator Lab Dashboard, Super Admin console |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/video-decoding`, `/api/devices/hardware` and `/api/devices/usage` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
@@ -33,7 +33,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
 | `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*` (but `/api/settings/updates`), `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `updates`: `/api/settings/updates`, `/api/clients/check-update`, `/api/clients/install-update`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/remote` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/video-decoding`, `/api/devices/hardware`, `/api/devices/usage`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -63,6 +63,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/contact/email-code` | `POST` | Emails the code that proves the sender's address (`{ email, turnstileToken? }`) |
 | `/api/contact` | `POST` | The contact page's message (`{ name, organization?, email, emailCode, reason, message }`); filed in Mail under its reason |
 | `/api/auth/login` | `POST` | Sign in as operator or super admin |
+| `/api/auth/sso/start` | `GET` | `?provider=google\|microsoft`: start single sign-on from the organization's sign-in page (its host, or `?tenant=` on the platform host); redirects to the provider |
+| `/api/auth/sso/callback` | `GET` | The provider's redirect URI, on the platform host only; spends the state, verifies the ID token and sends the browser back to its sign-in page with a one-time code |
+| `/api/auth/sso/redeem` | `POST` | `{ code }` on the sign-in page's host, in the browser that started; answers as `/api/auth/login` does (a session, or the second step) |
 | `/api/portal-sites` | `GET` | List the host tenant's user portal cards |
 | `/api/devices/enroll` | `POST` | Exchange an enrollment key for a device token |
 
@@ -73,9 +76,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/auth/me` | `GET` | Current user profile and tenant |
 | `/api/auth/logout` | `POST` | Invalidate this session and clear the cookie |
 | `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions and trusted browsers |
-| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (app code, emailed code or recovery code) |
+| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (passkey, app code, emailed code or recovery code) |
 | `/api/auth/login/email-code` | `POST` | Email a sign-in code for a pending two-factor sign-in |
-| `/api/auth/two-factor[/setup,/enable,/recovery-codes,/disable]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
+| `/api/auth/login/passkey` | `POST` | The WebAuthn request options for a pending two-factor sign-in |
+| `/api/auth/two-factor[/email,/setup,/enable,/recovery-codes,/disable,/passkey-options,/passkey-register,/passkey-delete]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
 
 ### Operator admin
 
@@ -89,6 +93,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/console/remote` | `GET` (WebSocket) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/clients/remove` | `POST` | Decommission a workstation and revoke its token |
 | `/api/clients/group` | `POST` | Assign workstations to a group |
+| `/api/clients/wake` | `POST` | `{ clientIds }`: switch on workstations that are off, through one that is on at the same site (Wake-on-LAN; `workstations`) |
+| `/api/power-schedules` | `GET` `POST` | List the organization's power schedules (with its groups), or create or replace one (`settings`) |
+| `/api/power-schedules/:id` | `DELETE` | Delete a power schedule (`settings`) |
 | `/api/groups` | `GET` `POST` | List and create workstation groups |
 | `/api/groups/:id` | `DELETE` | Delete a workstation group |
 | `/api/tenant/staff` | `GET` `POST` | List and create delegated staff (requires `staff`; see the delegation limits in `docs/API.md`) |
@@ -108,17 +115,26 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
 | `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
 | `/api/workstation-issues/log` | `GET` | `?id=`: the journal a restart report carried, kept 30 days (requires `settings`) |
+| `/api/usage` | `GET` | `?days=1..366`: usage reports for Settings → Usage: per-day totals, per-workstation totals (with its group), the 100 sites with the most time in use, and whether sites are recorded (requires `settings`) |
+| `/api/usage/settings` | `POST` | `{ recordSites: boolean }`: whether workstations send the sites they spend time on; pushed to workstations at once (requires `settings`) |
+| `/api/usage/sites/delete` | `POST` | Delete every site the organization recorded; the time on and in use stays (requires `settings`) |
 | `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
+| `/api/settings/sso` | `GET` `POST` | Single sign-on: `{ google: { enabled, domains }, microsoft: { enabled, tenants }, requireSso }`. Reading requires `settings`; changing it also an administrator (owner or `org_admin`), `409` when turning on a provider the platform has not set up |
+| `/api/settings/printing` | `GET` `POST` | Settings → Printing: whether workstations may print, and the organization's network printers (requires `settings`) |
 
 ### Device
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
-| `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
+| `/api/telemetry` | `POST` | The HTTP fallback: a heartbeat (3 s while a console is open, 15 s otherwise) carrying the same |
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
 | `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
+| `/api/devices/video-decoding` | `POST` | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
+| `/api/devices/hardware` | `POST` | The machine it runs on, once per agent start: `{ vendor, model, cpu, cores, memoryMb, bootMode: "uefi"\|"bios", keyboard, touch, macs }` (`keyboard`/`touch` are `null` when the agent could not tell; at most 8 wired MAC addresses). `400` on a malformed report, `409` before the workstation's row exists |
+| `/api/devices/usage` | `POST` | Time switched on and in use since the last report, every 15 minutes: `{ days: [{ day, onSeconds, activeSeconds, sessions, sites: [{ domain, seconds, visits }] }] }`. Days are the workstation's own calendar days, at most 7 days old; amounts are added to what is stored. `sites` is ignored while the organization does not record sites |
+| `/api/devices/power-report` | `POST` | A workstation switching off by its power schedule could not set its hardware clock to switch it on again |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -137,6 +153,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/super/inbox/:id` | `GET` | One conversation, its messages and registration details |
 | `/api/super/inbox/:id/{reply,note,status,delete,verify-phone,approve,reject}` | `POST` | Answer by email, note, close, delete mail, confirm the phone, decide |
 | `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Download an attachment, or `original` for the whole message |
+| `/api/super/usage` | `GET` | `?days=1..366`: the platform's anonymous daily totals and the sites at least 3 organizations visited on a day, plus `hardware: { models, computedAt }`, every model workstations reported (System → Usage and System → Hardware) |
 | `/api/super/tenants/approve` | `POST` | Approve a requested subdomain change |
 | `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
@@ -161,6 +178,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/login`, `/register`, `/contact` | Landing-page sections |
 | `/privacy`, `/terms` | Privacy Policy and Terms of Service |
 | `/content-policy` | The Content Policy, part of the Terms of Service (public) |
+| `/dpa` | The Data Processing Agreement and its subprocessor list, part of the Terms of Service (public) |
 | `/terms/bug-reports` | The Automatic Bug Report Terms (public) |
 | `/download`, `/iso` | Redirect to `ISO_DOWNLOAD_URL` |
 
@@ -238,8 +256,9 @@ showing and receives `snapshot`, `status`, `frame` and `removed` messages.
 
 ### `POST /api/telemetry`
 
-The HTTP heartbeat, called every three seconds by agents without the WebSocket client (and by any
-agent whose server has no WebSocket route). It carries the same state as the control channel in
+The HTTP heartbeat, used by agents without the WebSocket client (and by any agent whose server has
+no WebSocket route, or whose network drops WebSocket upgrades). The reply paces it: every 3 seconds
+while a console is open or was used in the last minute, every 15 seconds otherwise. It carries the same state as the control channel in
 one request and reply.
 
 **Access:** `Authorization: Bearer <deviceToken>`.
@@ -261,7 +280,7 @@ one request and reply.
 | `clientNum` | Integer workstation number; non-numeric values fall back to `1`. |
 | `activeUrl` | Validated by `safeHttpUrl()`; falls back to the tenant default. |
 | `isLocked` | Whether the lock curtain is currently up. |
-| `thumbnail` | Base64 JPEG from `scrot -t 20 -q 35`. **Omitted** when the encoded payload would exceed `MAX_THUMBNAIL_BYTES` (256 KB), so an oversized frame is dropped rather than allowed to bloat a three-second loop. No PIL/Pillow is involved — the agent is standard library only. |
+| `thumbnail` | Base64 JPEG from `scrot -t 20 -q 35`. Sent only while the last reply's `frames` was true (an agent older than the field sends it every time). **Omitted** when the encoded payload would exceed `MAX_THUMBNAIL_BYTES` (256 KB), so an oversized frame is dropped rather than allowed to bloat the loop. No PIL/Pillow is involved — the agent is standard library only. |
 | `vncPassword` | Per-boot ephemeral secret from `/tmp/labkiosk/vnc.secret`. Sent only when present, so the control plane keeps what it already knows otherwise. |
 
 There is **no `currentUrl` key and no `metrics` object.** The agent collects no CPU, RAM, or storage statistics; do not build a dashboard against fields that do not exist.
@@ -280,16 +299,21 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
   "mode": "portal",
   "targetUrl": "https://oakridge.labkiosk.example.com",
   "broadcastUrl": "",
-  "broadcastEpoch": 0
+  "broadcastEpoch": 0,
+  "heartbeatSeconds": 15,
+  "frames": false
 }
 ```
 
 | Field | Notes |
 | :--- | :--- |
+| `heartbeatSeconds` | Seconds until the next heartbeat: 3 while a console is open or was used in the last minute, 15 otherwise. Every heartbeat is a billed request that wakes the organization's hub. A workstation is shown offline after 36 seconds without one. |
+| `frames` | Whether a console is showing this screen; send `thumbnail` only while it is true. |
 | `commands` | Pending commands for *this* workstation. The hub records each delivery, so each command executes exactly once rather than on every heartbeat. |
 | `whitelist` | Effective allowlist: the organization's own domains plus every portal app host, plus the active broadcast host if it is not already present. Merged into the Chromium managed policy. |
 | `targetUrl` | Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()` before the agent stores it, because it ends up in `window.location`. |
 | `broadcastUrl` / `broadcastEpoch` | The authoritative synchronised page. The epoch is a monotonic marker letting a workstation distinguish a new broadcast from a replayed one. |
+| `printing` | `{ "enabled": false, "printers": [] }` until the organization turns printing on; then the printers meant for this workstation (every-workstation ones and its group's), each `{ id, name, uri }`. The hub's `config` message carries the same. |
 
 **`403`** if the organization is not `active` — a suspended organization's workstations stop receiving commands and policy.
 
@@ -336,6 +360,66 @@ The machine's own disks that `labkiosk-health` (root, 90 s after boot and every 
 ```
 
 **`200 OK`** → `{ "status": "ok", "recorded": 1 }`; `recorded` counts the disks newly listed (`0` when each is already listed in that state). **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 8 disk issues in a day from this workstation; the next check sends again.
+
+---
+
+### `POST /api/devices/video-decoding`
+
+What the workstation's GPUs decode in hardware, read by the agent with `vainfo --display drm` on each render node once per start; Chromium decodes everything else on the CPU. The latest report replaces the last (`client_devices.video_decoding`) and comes back as `videoDecoding` (with `reportedAt`, ms) in `GET /api/clients`.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `gpus`, 0 to 4 objects with `vendor` (`intel` | `amd` | `nvidia` | `virtual` | `other`), `kernelDriver` (may be empty), `vaDriver` (≤ 120 characters), `decode` and `encode` (from `h264`, `hevc`, `vp8`, `vp9`, `av1`, `mpeg2`, `vc1`, `jpeg`) and an optional `problem` (≤ 200 characters). With no GPU, a top-level `problem` says why.
+
+```json
+{ "gpus": [ { "vendor": "intel", "kernelDriver": "i915", "vaDriver": "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()", "decode": ["av1", "h264", "hevc", "vp9"], "encode": ["h264"] } ] }
+```
+
+**`200 OK`** → `{ "status": "ok" }`. **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later.
+
+---
+
+### `POST /api/devices/power-report`
+
+Sent just before a power schedule shuts the workstation down, when `labkiosk-wake-alarm` could not set the hardware clock to switch it on again. Listed under Settings → Errors & Warnings as **Cannot switch itself on** (warning), once per workstation, problem and day, and never sent as an automatic bug report.
+
+**Access:** `Authorization: Bearer <deviceToken>`.
+
+**Request:** `problem` (`no-rtc`: the machine has no RTC that can wake it; `failed`: the RTC refused the alarm), `wakeAt` (`YYYY-MM-DD HH:MM`, the workstation's local time it should have switched on) and an optional `detail` (≤ 300 characters, control characters removed).
+
+```json
+{ "problem": "no-rtc", "wakeAt": "2026-10-26 07:30", "detail": "/sys/class/rtc/rtc0/wakealarm does not exist" }
+```
+
+**`200 OK`** → `{ "status": "ok", "recorded": true }` (`false` when already listed today). **`400`** malformed. **`401`** bad token. **`409`** the workstation has not checked in yet.
+
+---
+
+### Power schedules: `GET` / `POST /api/power-schedules`, `DELETE /api/power-schedules/:id`
+
+**Access:** a session with the `settings` permission, on the organization's own host (cross-site `Origin` refused).
+
+`GET` → `{ "schedules": [ { "id", "groupId", "groupName", "days": [1,2,3,4,5], "off": "18:00", "on": "07:30", "updatedAt" } ], "groups": [ { "id", "name" } ] }`. Days are `0` Sunday to `6` Saturday.
+
+`POST` `{ id?, days, off, on?, groupId? }` creates a schedule, or replaces the one named by `id`. `off` and `on` are `HH:MM` on each workstation's own clock; leave `on` out to switch the workstations on by hand. `groupId` limits it to one workstation group; without it the schedule is for every workstation. **The rule:** for each day, a workstation follows its group's schedule for that day when there is one, else the all-workstations one. **`200`** `{ "status": "ok", "schedule": {…} }`. **`400`** no day, a malformed time, or switch-on within 15 minutes of switch-off. **`404`** unknown group or `id`. **`409`** another schedule for the same workstations already covers one of those days, or the organization already has 50.
+
+`DELETE /api/power-schedules/:id` → **`200`**, or **`404`**.
+
+Every change writes `power.schedule_create`, `power.schedule_update` or `power.schedule_delete` to the audit log, and the workstations receive their new schedule at once: `power` in the control channel's configuration and in the `POST /api/telemetry` reply, `{ "week": [ { "off": 1080, "on": 450 } | null, … seven, Sunday first ] }` in minutes, or `null`.
+
+---
+
+### `POST /api/clients/wake`
+
+Switches on workstations that are off, by Wake-on-LAN. **Access:** a session with the `workstations` permission, on the organization's own host.
+
+**Request:** `{ "clientIds": ["PC-01", …] }`, 1 to 500.
+
+For each one the Worker takes the wired MAC addresses from that workstation's **own hardware report** in this organization's rows (never from the request), picks a workstation of the same organization that is on at the same LAN site (the private network it last reported; an installed disk's agent reports it) and runs an agent that can send it, and queues that one a `wake` command carrying those addresses (at most 64 per command). The agent broadcasts a magic packet (six `0xFF` bytes, then the MAC sixteen times) to UDP port 9 on each of its wired networks.
+
+**`200 OK`** → `{ "status": "ok", "sent": [ { "clientId", "via" } ], "skipped": [ { "clientId", "reason" } ] }`, audit `command.wake`. **`409`** when none could be woken, with `error` and the same lists; the reasons are: already on; no wired adapter reported; its local network not known yet; no workstation on at its site; the ones on at its site run an agent too old to send it. **`400`** malformed or more than 500.
+
+The machine's firmware must allow it (*Wake on LAN* / *Power on by PCI-E*), and the network must carry the broadcast to it.
 
 ---
 
@@ -503,11 +587,31 @@ Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()
 ```
 
 → `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge", "redirect": "…" }`, plus the
-`labkiosk_session` and `labkiosk_device` cookies. An account with two-factor sign-in, on a browser it
+host-only `__Host-labkiosk_session` and `labkiosk_device` cookies. When the console is on another
+host than the sign-in, the session cookie is not set here: `redirect` is that host's
+`/api/auth/handoff?code=…&next=…`, which spends the one-time, host-bound code (valid 60 s) and sets the
+cookie there. An account with two-factor sign-in, on a browser it
 has not trusted, gets `{ "status": "two_factor", "challenge": "…" }` instead, completed with
 `POST /api/auth/login/verify`.
 
 Repeated failures back off exponentially per identifier, tracked in `login_attempts`.
+Staff of an organization that requires single sign-on get `403` once their password checked out
+(the owner never does).
+
+### Single sign-on: `/api/auth/sso/start`, `/callback`, `/redeem`
+
+1. The sign-in page links `GET /api/auth/sso/start?provider=google&tenant=<slug>`. The Worker stores
+   a `sso_states` row, sets the host-only `labkiosk_sso` cookie (`Path=/api/auth/sso`,
+   `SameSite=Strict`) and answers `302` to the provider with `state`, `nonce`, `code_challenge`
+   (S256) and the platform's redirect URI. An organization that did not turn the provider on, or a
+   platform without its secrets, goes back to the sign-in page with `sso_error=unavailable`.
+2. The provider returns to `GET /api/auth/sso/callback?state&code` on the platform host. A missing,
+   unknown, used or expired state is a `400` page. Otherwise the browser goes back to
+   `<sign-in page>/?login=1&tenant=<slug>&sso=<code>`, or with `sso_error=` one of `cancelled`,
+   `unavailable`, `directory`, `no_account`, `locked`, `provider`, `identity`.
+3. The page posts `POST /api/auth/sso/redeem { "code": "<64 hex>" }`. `401` when the code is spent,
+   expired, from another host or another browser, or the account was removed meanwhile; `403` for a
+   cross-site `Origin`. Success is the `/api/auth/login` answer above.
 
 ---
 
@@ -566,6 +670,22 @@ Every one of these strings is attacker-controlled from the platform's perspectiv
 
 ---
 
+### `POST /api/tenant/settings`
+
+Settings → General. Guard: `requireTenantPermission(…, "settings")`. Takes any of `name`, `mode`, `defaultUrl`, `defaultLockMessage`, `homeRoute`, the four portal strings, and `homeReset` (a boolean: Home in the kiosk bar asks "Start over?" and signs everyone out; `400` for anything but `true` or `false`). Answers `{ "status": "ok", "updates": { … } }` with the columns changed, records them in the audit log as `settings.update` and pushes the change to the workstations (`homeReset` in their configuration).
+
+---
+
+### `GET` / `POST` `/api/settings/printing`
+
+Settings → Printing. Guard: `requireTenantPermission(…, "settings")`. `GET` returns
+
+```json
+{ "status": "ok", "enabled": false, "printers": [], "groups": ["Library"], "maxPrinters": 20 }
+```
+
+`POST` takes `{ "enabled": true, "printers": [{ "id": "…", "name": "Front desk", "uri": "ipp://192.168.1.40/ipp/print", "groupName": null }] }` and replaces the whole list. `enabled` must be a boolean and `printers` a list of at most 20. Each `name` is 1–64 characters without control characters and unique case-insensitively; each `uri` is `ipp://` or `ipps://`, a host name or a private address (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7), an optional port and a plain path, at most 255 characters (no `file:`, `usb:`, user info, query, fragment, spaces or shell characters, and never `localhost` or a public address). `groupName` is an existing workstation group or null. An `id` is kept only when the organization already has it; any other printer gets a new one. Answers `400` with the first problem, `404` for an unknown group, otherwise the same shape as `GET`. Recorded in the audit log as `settings.printing` and pushed to the workstations at once.
+
 ### `POST /api/settings/enrollment-key`
 
 Rotates the key. Already-enrolled workstations keep their bearer tokens and are unaffected — rotation only prevents *new* enrolments with the old key.
@@ -599,7 +719,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
-| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`, `secureBoot` (`on`, `off`, `legacy-bios` or `unknown`), `clockSynchronized` (true once a time server has set the clock since boot), `hostname`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
+| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`, `secureBoot` (`on`, `off`, `legacy-bios` or `unknown`), `clockSynchronized` (true once a time server has set the clock since boot), `hostname`, `keyboardPresent` and `touchPresent` (from `/proc/bus/input/devices`; `null` when that lists no device or cannot be read — the kiosk bar opens its on-screen keyboard by itself only on `false`). `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
 | `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
 | `/api/localization/languages` | `GET` | Interface languages the organization's control plane offers, with the installed ones marked. |
 | `/api/localization/language/download` | `POST` | Downloads one catalog from the control plane into `/etc/labkiosk/i18n`. Administrator token required once installed. |

@@ -31,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     import syslog
 except ImportError:
@@ -86,6 +86,24 @@ PROXY_CONFIG_FILE = "/etc/labkiosk/proxy.json"
 LOCALIZATION_CONFIG_FILE = "/etc/labkiosk/localization.json"
 LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
 LOCALIZATION_TIMEOUT_SECONDS = 60
+# Printing, off until an administrator turns it on (Settings -> Printing): the
+# root helper that starts CUPS, sets up the printers and lets Chromium print.
+PRINTING_HELPER = "/usr/local/sbin/labkiosk-printing"
+# Every printer is asked for its capabilities, up to 45 s each, 20 at most.
+PRINTING_HELPER_TIMEOUT_SECONDS = 20 * 60
+# A printer that could not be set up (switched off, not on this network yet)
+# is tried again this often.
+PRINTING_RETRY_SECONDS = 300
+# Chromium reloads its managed policy about five seconds after a file changes;
+# the bar's Print button waits that long after the helper allowed printing.
+PRINTING_POLICY_SETTLE_SECONDS = 6
+PRINTING_MAX_PRINTERS = 20
+# Keep these in step with usr/local/sbin/labkiosk-printing, which checks them
+# again as root, and with cloudflare-control/src/printing.ts.
+PRINTER_ID_PATTERN = re.compile(r"^[0-9a-f]{16}\Z")
+PRINTER_URI_PATTERN = re.compile(
+    r"^(ipps?)://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?(/(?:[A-Za-z0-9._~/-]|%[0-9A-Fa-f]{2})*)?\Z"
+)
 # en-US ships in the image; every other catalog is dropped onto the data
 # partition, which is how an organization adds its language without a new ISO.
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
@@ -106,6 +124,17 @@ GRUB_PASSWORD_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "labkiosk-password.cfg")
 GRUB_CONFIG_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "grub.cfg")
 # Only the installed boot menu passes this (/usr/share/labkiosk/boot/grub.cfg).
 INSTALLED_KERNEL_ARG = "labkiosk.installed=1"
+# Network boot (docs: wiki/Network-Boot.md): the boot server's menu starts the
+# image over the LAN with this, and with what to enrol as. Nothing written to
+# /etc/labkiosk survives, so the workstation enrols again at every boot under
+# its hostname, which labkiosk-hostname derives from the network card.
+NETBOOT_KERNEL_ARG = "labkiosk.netboot=1"
+NETBOOT_RETRY_SECONDS = 15
+# A refused key waits longer: the control plane rate-limits failed enrolments
+# per address, and a lab behind one public address shares that limit.
+NETBOOT_REFUSED_RETRY_SECONDS = 600
+ORG_SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+CUSTOM_DOMAIN_PATTERN = re.compile(r"^(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
 # What labkiosk-boot-slots check (root) recorded about this boot's system image.
 # /run/labkiosk-update is root's; the browser's user cannot write a report here.
 BOOT_STATUS_FILE = "/run/labkiosk-update/status.json"
@@ -130,6 +159,58 @@ DISK_PROBLEM_STATES = ("warning", "failing")
 DISK_FIELDS = ("device", "model", "serial", "state", "summary")
 MAX_DISK_HEALTH_BYTES = 16 * 1024
 MAX_DISKS_REPORTED = 8
+# Video decoding: what each GPU's VA-API driver can decode and encode, read
+# with vainfo once per agent start and sent to the console, so an operator can
+# tell a lab decoding video on the GPU from one decoding it on the CPU.
+DRM_CLASS_DIR = "/sys/class/drm"
+RENDER_NODE_PATTERN = re.compile(r"^renderD[0-9]{3}\Z")
+MAX_GPUS_REPORTED = 4
+VAINFO_TIMEOUT_SECONDS = 15
+# PCI vendor ids; anything else is "other".
+GPU_VENDORS = {
+    "0x8086": "intel",
+    "0x1002": "amd",
+    "0x10de": "nvidia",
+    "0x1af4": "virtual",  # virtio-gpu
+    "0x1234": "virtual",  # QEMU standard VGA
+    "0x15ad": "virtual",  # VMware SVGA
+    "0x1414": "virtual",  # Hyper-V
+    "0x80ee": "virtual",  # VirtualBox
+}
+# VAProfile name prefixes, longest first, and the codec each is reported as.
+VA_PROFILE_CODECS = (
+    ("VAProfileH264", "h264"),
+    ("VAProfileHEVC", "hevc"),
+    ("VAProfileVP8", "vp8"),
+    ("VAProfileVP9", "vp9"),
+    ("VAProfileAV1", "av1"),
+    ("VAProfileMPEG2", "mpeg2"),
+    ("VAProfileVC1", "vc1"),
+    ("VAProfileJPEG", "jpeg"),
+)
+VA_DECODE_ENTRYPOINTS = frozenset({"VAEntrypointVLD"})
+VA_ENCODE_ENTRYPOINTS = frozenset({"VAEntrypointEncSlice", "VAEntrypointEncSliceLP", "VAEntrypointEncPicture"})
+VA_PROFILE_LINE = re.compile(r"^\s*(VAProfile[A-Za-z0-9_]+)\s*:\s*(VAEntrypoint[A-Za-z0-9_]+)\s*\Z")
+VA_DRIVER_LINE = re.compile(r"Driver version:\s*(.+?)\s*\Z")
+MAX_VA_DRIVER_LENGTH = 120
+# What the machine is (probe_hardware), sent once per start: POST /api/devices/hardware.
+DMI_DIR = "/sys/class/dmi/id"
+NET_CLASS_DIR = "/sys/class/net"
+CPUINFO_FILE = "/proc/cpuinfo"
+MEMINFO_FILE = "/proc/meminfo"
+MAX_WIRED_MACS = 8
+MAC_ADDRESS_PATTERN = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z")
+# Usage reports (UsageCounter): counted per day of this machine's clock and
+# sent every USAGE_REPORT_SECONDS with POST /api/devices/usage. The limits
+# match the control plane's (src/usage.ts).
+USAGE_REPORT_SECONDS = 15 * 60
+USAGE_ON_STEP_SECONDS = 60
+USAGE_ON_MAX_CREDIT_SECONDS = 2 * USAGE_ON_STEP_SECONDS
+USAGE_TICK_MAX_CREDIT_SECONDS = 90
+USAGE_MAX_AGE_DAYS = 7
+USAGE_MAX_DAYS_PER_REPORT = USAGE_MAX_AGE_DAYS + 2
+USAGE_MAX_SITES_PER_DAY = 100
+USAGE_HOST_PATTERN = re.compile(r"^(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]\Z")
 RESTART_REPORTS_SENT_FILE = "/etc/labkiosk/restart-reports-sent.json"
 RESTART_REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
 # A report carries at most 16 KB of journal; anything far larger is not root's.
@@ -187,11 +268,17 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 # telemetry channel.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
 
-AGENT_VERSION = "3.2.0"
+AGENT_VERSION = "4.0.0"
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
 MAX_BACKOFF_SECONDS = 60
+# The HTTP heartbeat's reply names the next interval (`heartbeatSeconds`: fast
+# while a console is open, slower otherwise) and whether an operator is watching
+# this screen (`frames`). A control plane older than those fields gets the
+# 3-second cadence with a frame on every heartbeat, as before.
+HTTP_HEARTBEAT_BOUNDS = (HEARTBEAT_SECONDS, MAX_BACKOFF_SECONDS)
+http_pace = {"seconds": HEARTBEAT_SECONDS, "frames": True}
 # Upper bound on the base64 thumbnail in one heartbeat. At a 3-second cadence an
 # unbounded screenshot is a standing egress cost on an organization's uplink, and the
 # control plane documents this ceiling; a frame over budget is dropped rather
@@ -291,6 +378,11 @@ def enrollment_key_is_valid(key):
 # TARGET_DISK_PATTERN in /usr/local/bin/labkiosk-install, which re-checks it
 # because sudoers lets the kiosk user invoke that binary directly.
 TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)\Z")
+# One partition of such a disk, which an install beside another system may
+# replace. Kept identical to PARTITION_PATTERN in labkiosk-install.
+REPLACE_PARTITION_PATTERN = re.compile(
+    r"^/dev/(sd[a-z][0-9]{1,3}|vd[a-z][0-9]{1,3}|nvme[0-9]+n[0-9]+p[0-9]{1,3}|mmcblk[0-9]+p[0-9]{1,3})\Z"
+)
 
 # A grub-mkpasswd-pbkdf2 digest. The setup wizard derives this in the browser
 # with WebCrypto and posts only the digest, so the boot-menu password itself
@@ -354,6 +446,10 @@ state = {
     # to the wizard's re-enrolment form rather than left on a page Chromium
     # blocks, which is a page the kiosk bar cannot appear on.
     "enrolmentRejected": False,
+    # The organization lets Home in the kiosk bar start a new session (sign
+    # everyone out). Off until its configuration says so, so a workstation the
+    # control plane has not answered yet only goes back to its start page.
+    "homeReset": False,
     # An administrator's install of a system update is under way: the screen
     # says so, and reboot or shutdown commands wait for it. Unlock leaves it.
     "updateInstalling": "",
@@ -719,6 +815,156 @@ def clock_synchronized(path=CLOCK_SYNCHRONIZED_FILE):
     the diagnostics page before anything else.
     """
     return os.path.exists(path)
+
+
+# --------------------------------------------------------------------------
+# Input devices: is a keyboard attached, is there a touchscreen?
+# --------------------------------------------------------------------------
+#
+# The kiosk bar shows its on-screen keyboard by itself on a workstation that
+# has no keyboard, so the question has to be answered without guessing from a
+# device's name: power buttons, lid switches, the video bus and many laptop
+# hotkey devices all register a "kbd" handler, and none of them can type a
+# letter. A keyboard is a device that can type every letter, space and Enter.
+
+INPUT_DEVICES_FILE = "/proc/bus/input/devices"
+# Keyboards are plugged in and pulled out; the bar asks every second.
+INPUT_DEVICES_TTL_SECONDS = 5
+INPUT_DEVICES_MAX_BYTES = 256 * 1024
+# The kernel prints each bitmap as hexadecimal unsigned longs, most significant
+# first: 64 bits each on the amd64 image (the agent runs on the same kernel).
+INPUT_BITMAP_WORD_BITS = 64 if sys.maxsize > 2 ** 32 else 32
+# linux/input-event-codes.h
+EV_KEY = 0x01
+EV_ABS = 0x03
+ABS_X = 0x00
+ABS_MT_POSITION_X = 0x35
+INPUT_PROP_DIRECT = 0x01
+KEY_ENTER = 28
+KEY_SPACE = 57
+# KEY_Q..KEY_P, KEY_A..KEY_L, KEY_Z..KEY_M: the 26 letters.
+KEYBOARD_REQUIRED_KEYS = tuple(range(16, 26)) + tuple(range(30, 39)) + tuple(range(44, 51)) + (KEY_ENTER, KEY_SPACE)
+# Software-made devices (uinput, ydotool, an X server's XTEST device) type
+# whatever a program tells them to; none of them is a keyboard a person has.
+VIRTUAL_INPUT_NAME = re.compile(r"virtual|xtest|uinput|ydotool", re.IGNORECASE)
+TOUCHSCREEN_NAME = re.compile(r"touch\s*screen", re.IGNORECASE)
+
+
+def parse_input_devices(text):
+    """
+    The devices in /proc/bus/input/devices: name, bus, handlers and bitmaps.
+    Blocks are separated by blank lines; each line is "<letter>: <data>".
+    """
+    devices = []
+    current = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            current = None
+            continue
+        kind, separator, rest = line.partition(": ")
+        if not separator:
+            continue
+        if current is None:
+            current = {"name": "", "bus": "", "handlers": [], "bitmaps": {}}
+            devices.append(current)
+        if kind == "I":
+            for field in rest.split():
+                key, _, value = field.partition("=")
+                if key == "Bus":
+                    current["bus"] = value.lower()
+        elif kind == "N":
+            _, _, name = rest.partition("=")
+            current["name"] = name.strip().strip('"')
+        elif kind == "H":
+            _, _, handlers = rest.partition("=")
+            current["handlers"] = handlers.split()
+        elif kind == "B":
+            key, _, value = rest.partition("=")
+            current["bitmaps"][key.strip()] = value.split()
+    return devices
+
+
+def input_bitmap_has(words, bit, word_bits=INPUT_BITMAP_WORD_BITS):
+    """Is `bit` set in a bitmap printed as hexadecimal words, most significant first?"""
+    index = bit // word_bits
+    if index >= len(words):
+        return False
+    try:
+        word = int(words[len(words) - 1 - index], 16)
+    except ValueError:
+        return False
+    return bool((word >> (bit % word_bits)) & 1)
+
+
+def is_keyboard_device(device, word_bits=INPUT_BITMAP_WORD_BITS):
+    """A device a person can type a word on: every letter, space and Enter."""
+    if "kbd" not in device["handlers"] or VIRTUAL_INPUT_NAME.search(device["name"]):
+        return False
+    bitmaps = device["bitmaps"]
+    if not input_bitmap_has(bitmaps.get("EV", []), EV_KEY, word_bits):
+        return False
+    keys = bitmaps.get("KEY", [])
+    return all(input_bitmap_has(keys, code, word_bits) for code in KEYBOARD_REQUIRED_KEYS)
+
+
+def is_touchscreen_device(device, word_bits=INPUT_BITMAP_WORD_BITS):
+    """
+    Absolute positions on the screen itself (INPUT_PROP_DIRECT); a touchpad has
+    the same axes but is INPUT_PROP_POINTER. A driver too old to set the
+    property still counts when it calls itself a touchscreen.
+    """
+    if VIRTUAL_INPUT_NAME.search(device["name"]):
+        return False
+    bitmaps = device["bitmaps"]
+    if not input_bitmap_has(bitmaps.get("EV", []), EV_ABS, word_bits):
+        return False
+    axes = bitmaps.get("ABS", [])
+    if not (input_bitmap_has(axes, ABS_MT_POSITION_X, word_bits) or input_bitmap_has(axes, ABS_X, word_bits)):
+        return False
+    if input_bitmap_has(bitmaps.get("PROP", []), INPUT_PROP_DIRECT, word_bits):
+        return True
+    return bool(TOUCHSCREEN_NAME.search(device["name"]))
+
+
+def detect_input_devices(text, word_bits=INPUT_BITMAP_WORD_BITS):
+    """
+    {"keyboardPresent", "touchPresent"} from the text of /proc/bus/input/devices.
+
+    Both are None when the file lists no device at all. Real hardware always
+    lists something (a power button, the touchscreen itself); an empty list
+    means this machine's input is not visible from here -- a container, or a
+    virtual machine driven over VNC -- and nothing should be concluded from it.
+    """
+    devices = parse_input_devices(text)
+    if not devices:
+        return {"keyboardPresent": None, "touchPresent": None}
+    return {
+        "keyboardPresent": any(is_keyboard_device(d, word_bits) for d in devices),
+        "touchPresent": any(is_touchscreen_device(d, word_bits) for d in devices),
+    }
+
+
+_input_devices = {"value": None, "at": None, "problem": None}
+
+
+def input_devices_report(now=None, path=INPUT_DEVICES_FILE):
+    """detect_input_devices() of the running machine, read at most every few seconds."""
+    now = time.monotonic() if now is None else now
+    cached = _input_devices
+    if cached["at"] is not None and now - cached["at"] < INPUT_DEVICES_TTL_SECONDS:
+        return cached["value"]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            value = detect_input_devices(handle.read(INPUT_DEVICES_MAX_BYTES))
+        problem = None if value["keyboardPresent"] is not None else f"{path} lists no input devices"
+    except OSError as err:
+        value = {"keyboardPresent": None, "touchPresent": None}
+        problem = f"{path} could not be read: {err}"
+    if problem and problem != cached["problem"]:
+        log(f"Keyboard presence unknown ({problem}); the on-screen keyboard opens only from the bar")
+    cached.update(value=value, at=now, problem=problem)
+    return value
 
 
 def enrolment_is_persistent():
@@ -1169,6 +1415,10 @@ def apply_saved_localization():
 # Enrolment
 # --------------------------------------------------------------------------
 
+class EnrolmentUnreachable(ValueError):
+    """The control plane could not be reached; trying again later may work."""
+
+
 def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_domain=None):
     """
     Exchange the organization's enrollment key for this workstation's device token.
@@ -1229,7 +1479,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
             pass
         raise ValueError(detail) from err
     except (URLError, TimeoutError, socket.timeout) as err:
-        raise ValueError(f"Could not reach {base_url}. Check the network connection.") from err
+        raise EnrolmentUnreachable(f"Could not reach {base_url}. Check the network connection.") from err
 
     token = data.get("deviceToken")
     if not token:
@@ -1322,6 +1572,90 @@ def kernel_cmdline():
         return ""
 
 
+def kernel_arg(name):
+    """The value of the last name=value on the kernel command line, or None."""
+    value = None
+    for arg in kernel_cmdline().split():
+        if arg.startswith(name + "="):
+            value = arg[len(name) + 1:]
+    return value
+
+
+def is_network_boot():
+    """
+    Started over the network from a boot server. It is a live session -- no
+    disk, nothing kept -- but nobody is there to run the setup wizard: it
+    enrols by itself (network_boot_enrol_loop) and offers no installer.
+    """
+    return NETBOOT_KERNEL_ARG in kernel_cmdline().split()
+
+
+def network_boot_enrolment():
+    """
+    What the boot server's menu says to enrol with: labkiosk.org=<subdomain>
+    or labkiosk.domain=<custom domain>, labkiosk.key=<enrollment key> and, for
+    a server other than the platform's, labkiosk.server=<URL>. None when the
+    menu names no organization (the workstation is then set up by hand);
+    ValueError when it names one wrongly.
+    """
+    if not is_network_boot():
+        return None
+    subdomain = (kernel_arg("labkiosk.org") or "").lower()
+    custom_domain = (kernel_arg("labkiosk.domain") or "").lower()
+    key = (kernel_arg("labkiosk.key") or "").upper()
+    server = kernel_arg("labkiosk.server")
+    if not subdomain and not custom_domain and not key:
+        return None
+    if bool(subdomain) == bool(custom_domain):
+        raise ValueError("the boot menu must name exactly one of labkiosk.org= and labkiosk.domain=")
+    if subdomain and not ORG_SUBDOMAIN_PATTERN.match(subdomain):
+        raise ValueError(f"labkiosk.org={subdomain[:64]!r} is not an organization subdomain")
+    if custom_domain and not CUSTOM_DOMAIN_PATTERN.match(custom_domain):
+        raise ValueError(f"labkiosk.domain={custom_domain[:64]!r} is not a domain name")
+    if not enrollment_key_is_valid(key):
+        raise ValueError("labkiosk.key= is not a valid enrollment key")
+    if server is not None and not validate_worker_url(server):
+        raise ValueError(f"labkiosk.server={server[:100]!r} is not a valid server URL")
+    client_id = socket.gethostname().upper()
+    if not CLIENT_ID_PATTERN.match(client_id):
+        raise ValueError(f"the hostname {client_id[:64]!r} cannot be a workstation name")
+    return {"subdomain": subdomain, "customDomain": custom_domain, "key": key, "server": server,
+            "clientId": client_id}
+
+
+def network_boot_enrol_loop(sleep=time.sleep):
+    """
+    Enrol a network-booted workstation with what its boot menu names, until it
+    is enrolled: the control plane re-issues the device token of a workstation
+    it already knows by name, so the same machine keeps its place in the
+    console from one boot to the next.
+    """
+    try:
+        params = network_boot_enrolment()
+    except ValueError as err:
+        log(f"Network boot: not enrolling by itself, because {err}.")
+        return
+    if params is None:
+        return
+    target = params["subdomain"] or params["customDomain"]
+    while True:
+        with state_lock:
+            if state["isConfigured"]:
+                return
+        try:
+            enroll(params["subdomain"], params["clientId"], params["key"], params["server"],
+                   params["customDomain"])
+            log(f"Network boot: enrolled as {params['clientId']} with {target}.")
+            return
+        except EnrolmentUnreachable as err:
+            delay = NETBOOT_RETRY_SECONDS
+            log(f"Network boot: {err} Trying again in {delay} s.")
+        except Exception as err:  # noqa: BLE001 - logged; a refused key is retried slowly
+            delay = NETBOOT_REFUSED_RETRY_SECONDS
+            log(f"Network boot: enrolment with {target} failed: {err} Trying again in {delay} s.")
+        sleep(delay)
+
+
 def install_mode_requested():
     """
     True when the operator picked "Install Lab Kiosk to Hard Disk / SSD".
@@ -1335,6 +1669,9 @@ def install_mode_requested():
 
 
 def get_available_disks():
+    if is_network_boot():
+        log("Started over the network; the disk installer is disabled.")
+        return []
     if not is_live_session():
         log("Running on installed disk; disk installer is disabled.")
         return []
@@ -1379,11 +1716,18 @@ def get_install_status():
     return {"state": "idle", "step": "Ready", "progress": 0, "error": None}
 
 
-def start_disk_install(target_disk, grub_password_hash=None, hostname=None):
+def start_disk_install(target_disk, grub_password_hash=None, hostname=None, beside=False,
+                       replace_partition=None):
     def _run():
         try:
             log(f"Starting local disk installation to {target_disk}...")
             argv = ["sudo", "/usr/local/bin/labkiosk-install", "--target", target_disk]
+            if replace_partition:
+                argv += ["--replace-partition", replace_partition]
+                log(f"Installing beside the drive's other system, in place of {replace_partition}.")
+            elif beside:
+                argv += ["--dual-boot"]
+                log("Installing beside the drive's other system, in its free space.")
             if grub_password_hash:
                 # A PBKDF2 digest, not the password, so its appearance in the
                 # process list is not a credential disclosure. sudo resets the
@@ -1981,7 +2325,12 @@ _admin_failures = {"count": 0, "lockedUntil": 0.0}
 
 
 def admin_auth_required():
-    """Only an installed workstation is gated; live media is setup mode."""
+    """
+    An installed workstation is gated, and so is a network-booted one whose
+    boot menu sets labkiosk.admin=; live media is setup mode.
+    """
+    if is_network_boot():
+        return kernel_arg("labkiosk.admin") is not None
     return not is_live_session()
 
 
@@ -1992,7 +2341,17 @@ def read_admin_password_hash():
     None is a deliberate state: the wizard warns before installing without a
     password that settings stay unlocked. A file that exists but cannot be
     read or parsed raises instead, so a damaged gate stays shut.
+
+    A network-booted workstation has no boot partition: its boot server's menu
+    passes the digest as labkiosk.admin=<grub.pbkdf2...>.
     """
+    if is_network_boot():
+        digest = kernel_arg("labkiosk.admin")
+        if digest is None:
+            return None
+        if not GRUB_PBKDF2_PATTERN.match(digest):
+            raise ValueError("labkiosk.admin= on the kernel command line is not a grub-mkpasswd-pbkdf2 digest")
+        return digest
     try:
         with open(GRUB_PASSWORD_FILE, "r", encoding="utf-8") as handle:
             content = handle.read()
@@ -2202,8 +2561,11 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/status":
             live = is_live_session()
+            network_boot = is_network_boot()
             online = test_connectivity()["ok"]
             screen = update_screen()
+            power_off = power_off_screen()
+            inputs = input_devices_report()
             with state_lock:
                 self._send(
                     200,
@@ -2222,8 +2584,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "enrolmentRejected": state["enrolmentRejected"],
                         "organization": state["subdomain"] or state["customDomain"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
-                        "isLive": live,
+                        # A network-booted workstation is a live session too,
+                        # but one with no installer and nobody to set it up.
+                        "isLive": live and not network_boot,
                         "isInstalled": not live,
+                        "isNetworkBoot": network_boot,
+                        "adminRequired": admin_auth_required(),
                         "isOnline": online,
                         # False on an installed workstation whose LABKIOSK_DATA
                         # partition is not mounted: it can be enrolled, but it
@@ -2239,10 +2605,26 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "uiLanguage": str(load_localization_config().get("uiLanguage", "") or "en-US"),
                         # Only meaningful on live media; an installed disk has
                         # nothing to install to and the wizard hides the tab.
-                        "installRequested": live and install_mode_requested(),
+                        "installRequested": live and not network_boot and install_mode_requested(),
                         # A system update installing or finishing: the kiosk
                         # bar's curtain says so (None otherwise).
                         "updateScreen": screen,
+                        # Whether a keyboard and a touchscreen are attached
+                        # (None: cannot be told here). The kiosk bar opens its
+                        # on-screen keyboard by itself when keyboardPresent is
+                        # False and a text field gets the focus.
+                        "keyboardPresent": inputs["keyboardPresent"],
+                        "touchPresent": inputs["touchPresent"],
+                        # A switch-off by the power schedule under way: the
+                        # kiosk bar counts down to `at` (ms); `postponed` while
+                        # a system update installs. None otherwise.
+                        "powerOff": power_off,
+                        # The kiosk bar shows its Print button, and lets Ctrl+P
+                        # print, only while this is true (printing_ready).
+                        "printing": printing_ready(),
+                        # Home asks "Start over?" and, on Yes, posts
+                        # /api/session/reset; otherwise it only navigates.
+                        "homeReset": state["homeReset"],
                     },
                 )
             return
@@ -2324,6 +2706,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/install":
+            if is_network_boot():
+                self._send(400, {"error": "A workstation started over the network is not installed to a drive"})
+                return
             if not is_live_session():
                 self._send(400, {"error": "System is already installed on an internal drive"})
                 return
@@ -2345,8 +2730,33 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "The hostname must be 1-63 lowercase letters, digits and hyphens, not starting or ending with a hyphen"})
                 return
 
-            start_disk_install(target_disk, grub_hash or None, hostname or None)
-            self._send(200, {"status": "started", "targetDisk": target_disk})
+            # Beside the drive's other system (dual boot), or the whole drive.
+            # Dual boot is only as safe as that other system: anyone with
+            # administrator rights there can change Lab Kiosk's partitions, so
+            # the wizard has the administrator accept that in so many words.
+            mode = str(data.get("mode", "erase") or "erase")
+            if mode not in ("erase", "beside"):
+                self._send(400, {"error": "The install mode must be erase or beside"})
+                return
+            replace_partition = str(data.get("replacePartition", "") or "").strip()
+            if mode == "beside":
+                if data.get("acceptRisk") is not True:
+                    self._send(400, {"error": "Installing beside another system needs the administrator to accept that its administrators can change Lab Kiosk"})
+                    return
+                if replace_partition and not (
+                    REPLACE_PARTITION_PATTERN.match(replace_partition)
+                    and re.match(r"^p?[0-9]{1,3}\Z", replace_partition[len(target_disk):])
+                    and replace_partition.startswith(target_disk)
+                ):
+                    self._send(400, {"error": "The partition to replace must be one partition of the target disk"})
+                    return
+            elif replace_partition:
+                self._send(400, {"error": "A partition can be replaced only when installing beside another system"})
+                return
+
+            start_disk_install(target_disk, grub_hash or None, hostname or None, mode == "beside",
+                               replace_partition or None)
+            self._send(200, {"status": "started", "targetDisk": target_disk, "mode": mode})
             return
 
         if self.path == "/api/reboot":
@@ -2475,6 +2885,31 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/network/test":
             self._send(200, test_connectivity(force=True))
+            return
+
+        if self.path == "/api/usage/tick":
+            # The extension, once a minute: the page's hostname and whether
+            # someone used the keyboard, mouse or touchscreen in the last minute.
+            data = self._read_json()
+            if not isinstance(data, dict) or not isinstance(data.get("active"), bool) or not isinstance(data.get("host", ""), str):
+                self._send(400, {"error": "Send host (text) and active (true or false)"})
+                return
+            usage_counter.tick(usage_host(data.get("host", "")[:300]), data["active"])
+            self._send(200, {"status": "ok"})
+            return
+
+        if self.path == "/api/session/reset":
+            # Home in the kiosk bar, confirmed by the user: the same end of a
+            # session as the console's Clear session, when the organization
+            # allows it. There is nothing to choose, so no body is read.
+            with state_lock:
+                allowed = state["homeReset"]
+            if not allowed:
+                self._send(409, {"error": "This organization does not let Home start a new session"})
+                return
+            log("Home in the kiosk bar started a new session.")
+            clear_session()
+            self._send(200, {"status": "ok"})
             return
 
         if self.path == "/api/admin/verify":
@@ -2678,6 +3113,22 @@ def restart_browser(reason="to apply the new policy"):
         log(f"Could not restart the browser: {err}")
 
 
+def clear_session():
+    """
+    The end of a session: sign every user out without a reboot.
+
+    Ending Chromium is enough, because the kiosk watchdog deletes the profile
+    (cookies, saved sign-ins, history, local storage, IndexedDB, service
+    workers) and the disk cache before it relaunches, and the in-memory HTTP
+    auth cache and X clipboard die with the process. The relaunch opens the
+    page this workstation is assigned. The wipe stays in the watchdog on
+    purpose: deleting the profile from here while Chromium still has it open
+    would race its own writes.
+    """
+    restart_browser("to clear the session (profile and cache are wiped before relaunch)")
+    usage_counter.session_started()
+
+
 def run_x11(argv, **kwargs):
     """Run a command against the local X display, never through a shell."""
     env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
@@ -2754,6 +3205,9 @@ def execute_command(cmd_data):
             # leave the new image half-staged.
             log(f"Ignoring {action}: the update to {installing} is installing.")
             return
+        if action == "shutdown":
+            # Switched off from the console, it still switches itself on by its schedule.
+            prepare_wake_alarm()
         run_x11(["systemctl", "reboot" if action == "reboot" else "poweroff"])
     elif action == "release-available":
         # The organization is offered a newer release: the root updater asks the
@@ -2765,18 +3219,14 @@ def execute_command(cmd_data):
     elif action == "install-update":
         begin_update_install(cmd_data.get("version"))
     elif action == "clear-session":
-        # The end of a session: sign every user out without a reboot.
-        # Ending Chromium is enough, because the kiosk watchdog deletes the
-        # profile (cookies, saved sign-ins, history, local storage, IndexedDB,
-        # service workers) and the disk cache before it relaunches, and the
-        # in-memory HTTP auth cache and X clipboard die with the process. The
-        # relaunch opens the page this workstation is assigned. The wipe stays
-        # in the watchdog on purpose: deleting the profile from here while
-        # Chromium still has it open would race its own writes.
-        restart_browser("to clear the session (profile and cache are wiped before relaunch)")
+        clear_session()
     elif action == "mute":
         # Plain ALSA: the image ships alsa-utils and no sound server.
         run_x11(["amixer", "-q", "set", "Master", "mute"])
+    elif action == "wake":
+        # Workstations at this site that are off: the control plane took their
+        # addresses from their own hardware reports (POST /api/clients/wake).
+        send_magic_packets(cmd_data.get("macs"))
     else:
         log(f"Ignoring unknown action: {action}")
 
@@ -2838,7 +3288,8 @@ def post_telemetry():
         token = state["deviceToken"]
 
     payload = current_status()
-    payload["thumbnail"] = capture_thumbnail_base64()
+    if http_pace["frames"]:
+        payload["thumbnail"] = capture_thumbnail_base64()
 
     request = Request(
         f"{worker_url}/api/telemetry",
@@ -3043,6 +3494,140 @@ def apply_lan_sharing(allowed):
     if result.returncode != 0:
         log(f"Could not stop {LAN_SHARE_UNIT}: {(result.stderr or result.stdout).strip()[:300]}")
         _lan_sharing["allowed"] = None
+
+
+# --------------------------------------------------------------------------
+# Printing
+# --------------------------------------------------------------------------
+
+# "wanted" is the helper's printer list for what the control plane last said,
+# [] for off; the image ships with printing off, so [] is also where a boot
+# starts and nothing runs until an organization turns printing on.
+_printing = {"wanted": [], "ready": False, "readyAt": 0.0, "unavailable": False}
+_printing_cond = threading.Condition()
+
+
+def printing_plan(value):
+    """
+    The printers this workstation should print to, as the helper takes them:
+    [(queue, uri, name)]. [] means printing is off, which is also what anything
+    malformed means -- a workstation never prints by mistake.
+    """
+    if not isinstance(value, dict) or value.get("enabled") is not True:
+        return []
+    printers = value.get("printers")
+    if not isinstance(printers, list) or len(printers) > PRINTING_MAX_PRINTERS:
+        log("Ignoring an unusable printer list from the control plane; printing stays off.")
+        return []
+    plan = []
+    for printer in printers:
+        if not isinstance(printer, dict) or any(f"labkiosk-{printer.get('id')}" == queue for queue, _, _ in plan):
+            continue
+        pid, uri, name = printer.get("id"), printer.get("uri"), printer.get("name")
+        if not (isinstance(pid, str) and PRINTER_ID_PATTERN.match(pid)
+                and isinstance(uri, str) and len(uri) <= 255 and PRINTER_URI_PATTERN.match(uri)
+                and isinstance(name, str) and name.strip() and len(name) <= 64 and name.isprintable()):
+            log(f"Ignoring an unusable printer from the control plane: {str(printer)[:200]}")
+            continue
+        plan.append((f"labkiosk-{pid}", uri, name))
+    return plan
+
+
+def apply_printing(value):
+    """Hand what the control plane says about printing to the printing loop."""
+    plan = printing_plan(value)
+    with _printing_cond:
+        if plan == _printing["wanted"]:
+            return
+        _printing["wanted"] = plan
+        if not plan:
+            # Hide the Print button before the policy goes.
+            _printing["ready"] = False
+        _printing_cond.notify_all()
+
+
+def printing_ready():
+    """Whether Chromium may print now: the helper allowed it and Chromium has reloaded its policy."""
+    with _printing_cond:
+        return _printing["ready"] and time.monotonic() >= _printing["readyAt"]
+
+
+def run_printing_helper(plan):
+    """Run labkiosk-printing for a plan; returns its JSON answer. Raises RuntimeError when it did not answer."""
+    if plan:
+        args = ["apply"]
+        for queue, uri, name in plan:
+            args += ["--printer", queue, uri, name]
+    else:
+        args = ["disable"]
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", PRINTING_HELPER] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=PRINTING_HELPER_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        raise RuntimeError(f"could not run {PRINTING_HELPER}: {err}") from err
+    for line in (proc.stderr or "").strip().splitlines():
+        log(line)
+    try:
+        answer = json.loads(proc.stdout or "")
+    except ValueError as err:
+        raise RuntimeError(f"{PRINTING_HELPER} returned no JSON ({(proc.stdout or '')[:120]!r})") from err
+    if not isinstance(answer, dict):
+        raise RuntimeError(f"{PRINTING_HELPER} returned {type(answer).__name__}, not an object")
+    return answer
+
+
+def printing_pass(plan):
+    """
+    Bring printing to `plan` once. Returns when to try again (a monotonic
+    time), or None when there is nothing to retry.
+    """
+    if not os.path.exists(PRINTING_HELPER):
+        with _printing_cond:
+            first = not _printing["unavailable"]
+            _printing["unavailable"] = True
+            _printing["ready"] = False
+        if first and plan:
+            log(f"Printing is turned on, but this image has no {PRINTING_HELPER}; it cannot print.")
+        return None
+    try:
+        answer = run_printing_helper(plan)
+    except RuntimeError as err:
+        log(f"Printing: {err}")
+        answer = {"error": str(err)}
+    allowed = bool(plan) and answer.get("policy") is True
+    with _printing_cond:
+        if _printing["wanted"] == plan:
+            if allowed and (answer.get("policyChanged") is True or not _printing["ready"]):
+                _printing["readyAt"] = time.monotonic() + PRINTING_POLICY_SETTLE_SECONDS
+            _printing["ready"] = allowed
+    if "error" in answer:
+        log(f"Printing could not be {'set up' if plan else 'turned off'}: {str(answer['error'])[:300]}")
+        return time.monotonic() + PRINTING_RETRY_SECONDS
+    failed = answer.get("failed") or []
+    if failed:
+        log(f"Printing: {len(failed)} of {len(plan)} printers could not be set up; trying them again in "
+            f"{PRINTING_RETRY_SECONDS // 60} minutes.")
+        return time.monotonic() + PRINTING_RETRY_SECONDS
+    if plan:
+        log(f"Printing is on, to {len(plan)} printer{'s' if len(plan) != 1 else ''}.")
+    else:
+        log("Printing is off.")
+    return None
+
+
+def printing_loop():
+    """Apply each change of printing as it comes, one at a time, and retry what failed."""
+    applied = []
+    retry_at = None
+    while True:
+        with _printing_cond:
+            while _printing["wanted"] == applied and (retry_at is None or time.monotonic() < retry_at):
+                _printing_cond.wait(None if retry_at is None else max(0.0, retry_at - time.monotonic()))
+            plan = _printing["wanted"]
+        retry_at = printing_pass(plan)
+        applied = plan
 
 
 def start_update_unit(unit):
@@ -3441,14 +4026,914 @@ def report_disk_health(progress, path=DISK_HEALTH_FILE):
     progress["checked"] = checked
 
 
+def parse_vainfo(output):
+    """
+    vainfo's report as {"vaDriver", "decode", "encode"}: the driver's own name
+    and the codecs it decodes (VLD) and encodes, each sorted. ValueError when
+    the output names no driver, which is how vainfo says none loaded.
+    """
+    driver = ""
+    decode, encode = set(), set()
+    for line in output.splitlines():
+        found = VA_DRIVER_LINE.search(line)
+        if found:
+            driver = "".join(ch for ch in found.group(1) if ch.isprintable())[:MAX_VA_DRIVER_LENGTH]
+            continue
+        match = VA_PROFILE_LINE.match(line)
+        if not match:
+            continue
+        profile, entrypoint = match.groups()
+        codec = next((name for prefix, name in VA_PROFILE_CODECS if profile.startswith(prefix)), None)
+        if codec is None:
+            continue
+        if entrypoint in VA_DECODE_ENTRYPOINTS:
+            decode.add(codec)
+        elif entrypoint in VA_ENCODE_ENTRYPOINTS:
+            encode.add(codec)
+    if not driver:
+        raise ValueError("vainfo found no VA-API driver")
+    return {"vaDriver": driver, "decode": sorted(decode), "encode": sorted(encode)}
+
+
+def gpu_identity(node, drm_dir=DRM_CLASS_DIR):
+    """The vendor (intel, amd, nvidia, virtual, other) and kernel driver behind a render node."""
+    device = os.path.join(drm_dir, node, "device")
+    try:
+        with open(os.path.join(device, "vendor"), encoding="ascii") as handle:
+            vendor = GPU_VENDORS.get(handle.read().strip().lower(), "other")
+    except (OSError, UnicodeDecodeError):
+        vendor = "other"
+    try:
+        driver = os.path.basename(os.readlink(os.path.join(device, "driver")))
+    except OSError:
+        driver = ""
+    if not re.match(r"^[A-Za-z0-9_.-]{1,40}\Z", driver):
+        driver = ""
+    return vendor, driver
+
+
+def run_vainfo(device):
+    """vainfo's output for one render node. Raises OSError or ValueError when it cannot say."""
+    try:
+        proc = subprocess.run(
+            ["vainfo", "--display", "drm", "--device", device],
+            capture_output=True, text=True, timeout=VAINFO_TIMEOUT_SECONDS, check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise OSError(f"vainfo did not answer within {VAINFO_TIMEOUT_SECONDS} s") from err
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        raise ValueError(detail[-1][:200] if detail else f"vainfo exited with {proc.returncode}")
+    return proc.stdout
+
+
+def probe_video_decoding(drm_dir=DRM_CLASS_DIR, vainfo=None):
+    """
+    What this machine's GPUs decode in hardware: {"gpus": [...]}, one entry
+    per render node (at most MAX_GPUS_REPORTED) with its vendor, kernel driver,
+    VA-API driver and codec lists, or "problem" saying why there is none.
+    Chromium decodes on the CPU whenever this finds nothing.
+    """
+    vainfo = vainfo or run_vainfo
+    try:
+        nodes = sorted(n for n in os.listdir(drm_dir) if RENDER_NODE_PATTERN.match(n))
+    except OSError:
+        nodes = []
+    if not nodes:
+        return {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."}
+    gpus = []
+    for node in nodes[:MAX_GPUS_REPORTED]:
+        vendor, driver = gpu_identity(node, drm_dir)
+        gpu = {"vendor": vendor, "kernelDriver": driver, "vaDriver": "", "decode": [], "encode": []}
+        try:
+            gpu.update(parse_vainfo(vainfo(f"/dev/dri/{node}")))
+        except FileNotFoundError:
+            gpu["problem"] = "vainfo is not installed."
+        except (OSError, ValueError) as err:
+            gpu["problem"] = str(err)[:200]
+        gpus.append(gpu)
+    return {"gpus": gpus}
+
+
+def post_video_decoding(report):
+    """Send the video decoding report. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/video-decoding",
+        data=json.dumps(report).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=15) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_video_decoding(progress):
+    """
+    Read the GPUs once and send what they decode, once per agent start.
+
+    `progress["report"]` is the probe's result, `progress["done"]` true once
+    the control plane has answered for good. Offline or a workstation not
+    written yet (409) is tried again next round.
+    """
+    if progress["done"]:
+        return
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    if progress["report"] is None:
+        progress["report"] = probe_video_decoding()
+        decoders = sorted({codec for gpu in progress["report"]["gpus"] for codec in gpu["decode"]})
+        log(f"Hardware video decoding: {', '.join(decoders) if decoders else 'none, Chromium decodes on the CPU'}.")
+    try:
+        status = post_video_decoding(progress["report"])
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        if not progress["logged"]:
+            progress["logged"] = True
+            log(f"Video decoding not reported yet: {err}")
+        return
+    if status == 200:
+        progress["done"] = True
+    elif status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the video decoding report (HTTP {status}); not sending it again.")
+        progress["done"] = True
+
+
+# --------------------------------------------------------------------------
+# Hardware report and usage counting
+# --------------------------------------------------------------------------
+
+def read_sys_text(path, limit=200):
+    """One line of a sysfs or procfs file, stripped; "" when it cannot be read."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit * 2).strip()[:limit]
+    except OSError:
+        return ""
+
+
+def hardware_model(vendor, product_name, product_version):
+    """
+    The model to report. Lenovo firmware puts a machine-type code (10T7S0B500)
+    in product_name and the model people know (ThinkCentre M720q) in
+    product_version; everyone else puts the model in product_name.
+    """
+    if vendor.lower().startswith("lenovo") and product_version and product_version.lower() not in ("none", "lenovo"):
+        return product_version
+    return product_name
+
+
+def read_cpu_model(cpuinfo=CPUINFO_FILE):
+    try:
+        with open(cpuinfo, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key.strip() in ("model name", "Model", "Hardware"):
+                    return " ".join(value.split())[:120]
+    except OSError as err:
+        log(f"Could not read the CPU model: {err}")
+    return ""
+
+
+def read_memory_mb(meminfo=MEMINFO_FILE):
+    try:
+        with open(meminfo, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError) as err:
+        log(f"Could not read the memory size: {err}")
+    return 0
+
+
+def wired_adapters(net_dir=NET_CLASS_DIR):
+    """
+    This machine's wired Ethernet adapters as (name, MAC address): physical
+    (a `device` link), not wireless, ARP type 1. What Wake-on-LAN can reach,
+    and what a wake command sends its magic packets on.
+    """
+    adapters = []
+    try:
+        names = sorted(os.listdir(net_dir))
+    except OSError as err:
+        log(f"Could not list the network adapters: {err}")
+        return adapters
+    for name in names:
+        base = os.path.join(net_dir, name)
+        if not os.path.exists(os.path.join(base, "device")):
+            continue
+        if os.path.exists(os.path.join(base, "wireless")) or os.path.exists(os.path.join(base, "phy80211")):
+            continue
+        if read_sys_text(os.path.join(base, "type"), 8) != "1":
+            continue
+        mac = read_sys_text(os.path.join(base, "address"), 32).lower()
+        if MAC_ADDRESS_PATTERN.match(mac) and mac != "00:00:00:00:00:00" and mac not in (m for _, m in adapters):
+            adapters.append((name, mac))
+        if len(adapters) >= MAX_WIRED_MACS:
+            break
+    return adapters
+
+
+def wired_macs(net_dir=NET_CLASS_DIR):
+    """The MAC addresses of this machine's wired Ethernet adapters (wired_adapters)."""
+    return [mac for _, mac in wired_adapters(net_dir)]
+
+
+def probe_hardware(dmi_dir=DMI_DIR, net_dir=NET_CLASS_DIR, efi_dir=EFI_DIR, cpuinfo=CPUINFO_FILE, meminfo=MEMINFO_FILE,
+                   inputs=None):
+    """What this machine is, for its organization's console and the hardware list.
+
+    inputs is input_devices_report()'s answer; keyboard and touch stay None
+    where it could not tell (a container, a VM driven over VNC).
+    """
+    if inputs is None:
+        inputs = input_devices_report()
+    vendor = read_sys_text(os.path.join(dmi_dir, "sys_vendor"), 80)
+    model = hardware_model(
+        vendor,
+        read_sys_text(os.path.join(dmi_dir, "product_name"), 80),
+        read_sys_text(os.path.join(dmi_dir, "product_version"), 80),
+    )
+    return {
+        "vendor": vendor,
+        "model": model,
+        "cpu": read_cpu_model(cpuinfo),
+        "cores": max(1, min(1024, os.cpu_count() or 1)),
+        "memoryMb": max(64, read_memory_mb(meminfo)),
+        "bootMode": "uefi" if os.path.isdir(efi_dir) else "bios",
+        "keyboard": inputs["keyboardPresent"],
+        "touch": inputs["touchPresent"],
+        "macs": wired_macs(net_dir),
+    }
+
+
+def post_device_json(path, payload, timeout=15):
+    """POST a report as this workstation. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=timeout) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_hardware(progress):
+    """
+    Read the machine once and send it, once per agent start, the same way as
+    report_video_decoding: offline or a row not written yet (409) is tried again.
+    """
+    if progress["done"]:
+        return
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    if progress["report"] is None:
+        progress["report"] = probe_hardware()
+        report = progress["report"]
+        log(
+            f"Hardware: {report['vendor'] or 'unknown maker'} {report['model'] or 'unknown model'}, "
+            f"{report['cores']} cores, {report['memoryMb']} MB, {report['bootMode'].upper()}, "
+            f"{len(report['macs'])} wired adapters."
+        )
+    try:
+        status = post_device_json("/api/devices/hardware", progress["report"])
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        if not progress["logged"]:
+            progress["logged"] = True
+            log(f"Hardware not reported yet: {err}")
+        return
+    if status == 200:
+        progress["done"] = True
+    elif status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the hardware report (HTTP {status}); not sending it again.")
+        progress["done"] = True
+
+
+def usage_host(raw):
+    """A site's hostname as usage reports keep it, or "" for anything else (an IP address, localhost, a local page)."""
+    if not isinstance(raw, str):
+        return ""
+    host = raw.strip().lower().rstrip(".")
+    return host if USAGE_HOST_PATTERN.match(host) else ""
+
+
+class UsageCounter:
+    """
+    What this workstation counts for its organization's usage reports, per
+    calendar day of its own clock: seconds on, seconds in use, fresh sessions
+    and -- when the organization records them -- seconds in use and visits per
+    site. The browser extension ticks once a minute with the page's hostname
+    and whether someone used the keyboard, mouse or touchscreen in the last
+    minute; each tick credits the time since the previous one to what the
+    previous one said. Kept in memory only: a power cut loses at most one
+    report period.
+    """
+
+    def __init__(self, clock=time.monotonic, today=None):
+        self._clock = clock
+        self._today = today or (lambda: time.strftime("%Y-%m-%d"))
+        self._lock = threading.Lock()
+        self._days = {}
+        self._last_tick = None
+        self._last_on = clock()
+        self.record_sites = False
+
+    def _day(self, day):
+        return self._days.setdefault(day, {"onSeconds": 0.0, "activeSeconds": 0.0, "sessions": 0, "sites": {}})
+
+    def count_on(self):
+        """Credit the time since the last call as switched on."""
+        with self._lock:
+            now = self._clock()
+            elapsed = min(max(0.0, now - self._last_on), USAGE_ON_MAX_CREDIT_SECONDS)
+            self._last_on = now
+            self._day(self._today())["onSeconds"] += elapsed
+
+    def session_started(self):
+        with self._lock:
+            self._day(self._today())["sessions"] += 1
+
+    def tick(self, host, active):
+        with self._lock:
+            now = self._clock()
+            day = self._day(self._today())
+            previous = self._last_tick
+            if previous is not None:
+                elapsed = min(max(0.0, now - previous[0]), USAGE_TICK_MAX_CREDIT_SECONDS)
+                if previous[2]:
+                    day["activeSeconds"] += elapsed
+                    if self.record_sites and previous[1] and previous[1] in day["sites"]:
+                        day["sites"][previous[1]]["seconds"] += elapsed
+            if self.record_sites and host and (previous is None or previous[1] != host):
+                site = day["sites"].get(host)
+                if site is None and len(day["sites"]) < USAGE_MAX_SITES_PER_DAY:
+                    site = day["sites"][host] = {"seconds": 0.0, "visits": 0}
+                if site is not None:
+                    site["visits"] += 1
+            self._last_tick = (now, host, bool(active))
+
+    def set_record_sites(self, allowed):
+        """The organization's choice; turned off, the sites counted so far are dropped too."""
+        with self._lock:
+            self.record_sites = allowed
+            if not allowed:
+                for day in self._days.values():
+                    day["sites"] = {}
+
+    def take(self):
+        """
+        Everything counted so far, as the report's `days`, and forget it.
+        Days older than the control plane takes are dropped.
+        """
+        oldest = time.strftime("%Y-%m-%d", time.localtime(time.time() - USAGE_MAX_AGE_DAYS * 86400))
+        with self._lock:
+            days, self._days = self._days, {}
+        report = []
+        for name in sorted(days)[-USAGE_MAX_DAYS_PER_REPORT:]:
+            if name < oldest:
+                continue
+            day = days[name]
+            on = int(round(day["onSeconds"]))
+            active = min(on, int(round(day["activeSeconds"])))
+            sites = [
+                {"domain": host, "seconds": min(active, int(round(site["seconds"]))), "visits": site["visits"]}
+                for host, site in sorted(day["sites"].items())
+            ]
+            if on or active or day["sessions"] or sites:
+                report.append({"day": name, "onSeconds": on, "activeSeconds": active, "sessions": day["sessions"], "sites": sites})
+        return report
+
+    def put_back(self, report):
+        """Add a report that could not be sent back to what is being counted."""
+        with self._lock:
+            for entry in report:
+                day = self._day(entry["day"])
+                day["onSeconds"] += entry["onSeconds"]
+                day["activeSeconds"] += entry["activeSeconds"]
+                day["sessions"] += entry["sessions"]
+                for site in entry["sites"]:
+                    known = day["sites"].get(site["domain"])
+                    if known is None and len(day["sites"]) >= USAGE_MAX_SITES_PER_DAY:
+                        continue
+                    known = day["sites"].setdefault(site["domain"], {"seconds": 0.0, "visits": 0})
+                    known["seconds"] += site["seconds"]
+                    known["visits"] += site["visits"]
+
+
+usage_counter = UsageCounter()
+
+
+def report_usage(counter=usage_counter):
+    """Send what was counted. Kept for the next round when offline or refused for now; dropped when malformed or not taken at all (404)."""
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    report = counter.take()
+    if not report:
+        return
+    try:
+        status = post_device_json("/api/devices/usage", {"days": report})
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        counter.put_back(report)
+        log(f"Usage not reported yet: {err}")
+        return
+    if status == 200:
+        return
+    if status == 400:
+        log("The control plane refused a usage report as malformed (HTTP 400); dropping it.")
+        return
+    if status == 404:
+        # A control plane older than usage reports: it has nowhere to keep them.
+        log("The control plane does not take usage reports (HTTP 404); dropping this one.")
+        return
+    counter.put_back(report)
+    log(f"Usage not reported yet (HTTP {status}).")
+
+
+def usage_loop(sleep=time.sleep, clock=time.monotonic):
+    usage_counter.session_started()
+    next_report = clock() + USAGE_REPORT_SECONDS
+    while True:
+        sleep(USAGE_ON_STEP_SECONDS)
+        usage_counter.count_on()
+        if clock() >= next_report:
+            next_report = clock() + USAGE_REPORT_SECONDS
+            report_usage()
+
+
+# --------------------------------------------------------------------------
+# Power schedules and Wake-on-LAN
+# --------------------------------------------------------------------------
+#
+# The organization's power schedule arrives with the configuration as `power`:
+# {"week": [day, ...]} with seven entries, Sunday first, each null or
+# {"off": minutes, "on": minutes|null} after midnight on this machine's own
+# clock (src/power.ts). At a switch-off time the kiosk bar warns for
+# POWER_WARNING_SECONDS, then the machine shuts down cleanly -- never while a
+# system update installs: that waits, and is retried, and a restart the update
+# makes picks the shutdown up again (POWER_PENDING_FILE). Before it shuts down,
+# the hardware clock is set to wake the machine at the next switch-on through
+# labkiosk-wake-alarm (root, via sudo), and a machine that cannot be set is
+# reported to the console (POST /api/devices/power-report).
+#
+# A `wake` command names the MAC addresses of workstations that are off at
+# this one's site; the agent sends each a magic packet on its wired networks.
+
+POWER_WARNING_SECONDS = 5 * 60
+POWER_CHECK_SECONDS = 15
+# A shutdown an installing update holds back is tried again this often.
+POWER_POSTPONE_SECONDS = 60
+# Two checks further apart than this are a clock change (the first time sync
+# after boot), not a switch-off that was missed: nothing fires for it.
+POWER_CLOCK_JUMP_SECONDS = 5 * 60
+# A shutdown an update held back, kept across the restart the update makes.
+POWER_PENDING_FILE = "/etc/labkiosk/power-pending.json"
+# ...and honoured only this long after its switch-off time.
+POWER_PENDING_MAX_AGE_SECONDS = 2 * 60 * 60
+WAKE_ALARM_HELPER = "/usr/local/sbin/labkiosk-wake-alarm"
+WAKE_ALARM_TIMEOUT_SECONDS = 15
+# The helper's exit codes (labkiosk-wake-alarm).
+WAKE_ALARM_EXIT_NO_RTC = 3
+# A switch-on is looked for this many days ahead: a week, and the day after.
+WAKE_LOOKAHEAD_DAYS = 8
+# The helper refuses a time sooner than this; a switch-on closer than that is skipped.
+WAKE_MIN_LEAD_SECONDS = 120
+# What POST /api/devices/power-report accepts (WAKE_ALARM_PROBLEMS in src/power.ts).
+POWER_PROBLEMS = ("no-rtc", "failed")
+WOL_PORT = 9
+MAX_WAKE_MACS = 64
+WOL_REPEATS = 3
+
+power_lock = threading.Lock()
+power_state = {
+    # The week the control plane sent, normalized; None: never switched off.
+    "week": None,
+    # The shutdown under way: {"day", "minute", "event", "shutdownAt",
+    # "postponed", "resumed"}; None when there is none.
+    "pending": None,
+}
+
+
+def normalize_power_week(raw):
+    """The control plane's `power`, validated: seven entries of None or {"off", "on"}; None for none."""
+    if not isinstance(raw, dict):
+        return None
+    week = raw.get("week")
+    if not isinstance(week, list) or len(week) != 7:
+        return None
+
+    def minute(value):
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 1440
+
+    days = []
+    for entry in week:
+        if entry is None:
+            days.append(None)
+            continue
+        if not isinstance(entry, dict) or not minute(entry.get("off")):
+            return None
+        on = entry.get("on")
+        if on is not None and not minute(on):
+            return None
+        days.append({"off": entry["off"], "on": on})
+    return days if any(days) else None
+
+
+def schedule_day(moment):
+    """The week's index for a local datetime: 0 Sunday to 6 Saturday, as the control plane counts."""
+    return (moment.weekday() + 1) % 7
+
+
+def at_minute(day_start, minute):
+    return day_start + timedelta(minutes=minute)
+
+
+def switch_off_due(week, last, now):
+    """
+    The latest switch-off time after `last` and no later than `now` (local
+    datetimes), or None. A gap longer than POWER_CLOCK_JUMP_SECONDS, or the
+    clock going back, is a clock change and fires nothing.
+    """
+    if not week or now <= last or (now - last).total_seconds() > POWER_CLOCK_JUMP_SECONDS:
+        return None
+    due = None
+    day = datetime(last.year, last.month, last.day)
+    while day <= now:
+        entry = week[schedule_day(day)]
+        if entry:
+            event = at_minute(day, entry["off"])
+            if last < event <= now:
+                due = event
+        day += timedelta(days=1)
+    return due
+
+
+def next_switch_on(week, after):
+    """The first switch-on time later than `after` (local datetime) within WAKE_LOOKAHEAD_DAYS, or None."""
+    if not week:
+        return None
+    day = datetime(after.year, after.month, after.day)
+    for _ in range(WAKE_LOOKAHEAD_DAYS + 1):
+        entry = week[schedule_day(day)]
+        if entry and entry["on"] is not None:
+            event = at_minute(day, entry["on"])
+            if event > after:
+                return event
+        day += timedelta(days=1)
+    return None
+
+
+def local_epoch(moment):
+    """A local datetime as seconds since the epoch, daylight saving time included."""
+    return int(time.mktime(moment.timetuple()))
+
+
+def apply_power_schedule(raw):
+    """Keep the week the control plane sent; a shutdown it no longer asks for is called off."""
+    week = normalize_power_week(raw)
+    with power_lock:
+        changed = week != power_state["week"]
+        power_state["week"] = week
+        pending = power_state["pending"]
+        if pending and not pending.get("resumed"):
+            entry = week[pending["day"]] if week else None
+            if not entry or entry["off"] != pending["minute"]:
+                power_state["pending"] = None
+                log("The power schedule changed: the switch-off under way is called off.")
+                forget_power_pending()
+    if changed:
+        log(f"Power schedule: {json.dumps(week) if week else 'none'}")
+
+
+def power_off_screen():
+    """What the kiosk bar shows of a switch-off under way: {"at": ms, "postponed": bool}, or None."""
+    with power_lock:
+        pending = power_state["pending"]
+        if not pending:
+            return None
+        return {"at": int(pending["shutdownAt"] * 1000), "postponed": bool(pending.get("postponed"))}
+
+
+def update_units_active():
+    """Whether either update unit is running; True when systemd cannot say, so nothing is cut short."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", UPDATE_DOWNLOAD_UNIT, UPDATE_INSTALL_UNIT],
+            capture_output=True,
+            text=True,
+            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        log(f"Could not ask systemd whether an update is running: {err}")
+        return True
+    # is-active exits 0 when at least one of the units is active.
+    return result.returncode == 0
+
+
+def update_blocks_shutdown(installing=None, report=None, units_active=None):
+    """
+    Whether a system update is being installed or staged right now: an
+    administrator's install (the agent's own flag, or the updater's
+    `installing` phase), or an update unit still running (the download unit
+    stages a security release into the boot partition itself).
+    """
+    if is_live_session():
+        return False
+    if installing is None:
+        with state_lock:
+            installing = state["updateInstalling"]
+    if installing:
+        return True
+    if report is None:
+        report = read_update_report()
+    if report.get("phase") == "installing":
+        return True
+    return update_units_active() if units_active is None else units_active
+
+
+def run_wake_alarm_helper(args):
+    """Run labkiosk-wake-alarm through its sudoers entry. Returns (exit code, message)."""
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", WAKE_ALARM_HELPER, *args],
+            capture_output=True,
+            text=True,
+            timeout=WAKE_ALARM_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as err:
+        return 1, f"{WAKE_ALARM_HELPER} is not installed on this image ({err})"
+    except (OSError, subprocess.SubprocessError) as err:
+        return 1, f"the wake alarm helper did not run: {err}"
+    return proc.returncode, (proc.stderr or proc.stdout).strip()[:300]
+
+
+def report_power_problem(problem, wake_at, detail):
+    """Tell the console this workstation will not switch itself on. Logged either way."""
+    if problem not in POWER_PROBLEMS:
+        raise ValueError(f"{problem} is not a power problem")
+    payload = {"problem": problem, "wakeAt": wake_at.strftime("%Y-%m-%d %H:%M"), "detail": detail[:300]}
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    try:
+        status = post_device_json("/api/devices/power-report", payload, timeout=10)
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        log(f"Could not tell the console the wake alarm was not set: {err}")
+        return
+    if status != 200:
+        log(f"The console did not take the power report (HTTP {status}).")
+
+
+def prepare_wake_alarm(now=None):
+    """
+    Before a shutdown: set the hardware clock to wake the machine at the next
+    switch-on, or clear an alarm left from before when there is none. A machine
+    without an RTC, or one that refuses the time, is logged and reported.
+    """
+    now = now or datetime.now()
+    with power_lock:
+        week = power_state["week"]
+    wake_at = next_switch_on(week, now + timedelta(seconds=WAKE_MIN_LEAD_SECONDS))
+    if wake_at is None:
+        code, message = run_wake_alarm_helper(["clear"])
+        if code not in (0, WAKE_ALARM_EXIT_NO_RTC):
+            log(f"Could not clear the wake alarm: {message or f'exit {code}'}")
+        return None
+    code, message = run_wake_alarm_helper(["set", str(local_epoch(wake_at))])
+    if code == 0:
+        log(f"Wake alarm set for {wake_at:%Y-%m-%d %H:%M}.")
+        return "armed"
+    problem = "no-rtc" if code == WAKE_ALARM_EXIT_NO_RTC else "failed"
+    log(f"Wake alarm NOT set for {wake_at:%Y-%m-%d %H:%M} ({problem}): {message or f'exit {code}'}")
+    report_power_problem(problem, wake_at, message or f"labkiosk-wake-alarm exited with {code}")
+    return problem
+
+
+def remember_power_pending(event):
+    try:
+        fd = os.open(POWER_PENDING_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"event": int(event)}, handle)
+    except OSError as err:
+        log(f"Could not keep the postponed switch-off across a restart: {err}")
+
+
+def forget_power_pending():
+    try:
+        os.unlink(POWER_PENDING_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError as err:
+        log(f"Could not remove {POWER_PENDING_FILE}: {err}")
+
+
+def take_power_pending(now_epoch, path=None):
+    """
+    A switch-off an update held back before this start, if it is recent enough:
+    the epoch of its switch-off time, or None. The file is removed either way.
+    """
+    path = path or POWER_PENDING_FILE
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as err:
+        log(f"Ignoring an unreadable {path}: {err}")
+        data = None
+    try:
+        os.unlink(path)
+    except OSError as err:
+        log(f"Could not remove {path}: {err}")
+    event = data.get("event") if isinstance(data, dict) else None
+    if not isinstance(event, int) or isinstance(event, bool):
+        return None
+    if not 0 <= now_epoch - event <= POWER_PENDING_MAX_AGE_SECONDS:
+        return None
+    return event
+
+
+def begin_switch_off(event, resumed=False, clock=time.time):
+    """Show the warning; the machine shuts down POWER_WARNING_SECONDS from now."""
+    with power_lock:
+        if power_state["pending"]:
+            return
+        power_state["pending"] = {
+            "day": schedule_day(event),
+            "minute": event.hour * 60 + event.minute,
+            "event": local_epoch(event),
+            "shutdownAt": clock() + POWER_WARNING_SECONDS,
+            "postponed": False,
+            "resumed": resumed,
+        }
+    log(f"Switching off by the power schedule in {POWER_WARNING_SECONDS // 60} minutes"
+        f"{' (held back by a system update before the last restart)' if resumed else ''}.")
+
+
+def power_off_step(clock=time.time, blocked=update_blocks_shutdown, arm=prepare_wake_alarm, poweroff=None):
+    """
+    Shut down when the warning is over, unless an update is installing: then
+    wait POWER_POSTPONE_SECONDS and look again. Returns "waiting", "postponed",
+    "off" or None (nothing under way).
+    """
+    with power_lock:
+        pending = power_state["pending"]
+        if not pending:
+            return None
+        if clock() < pending["shutdownAt"]:
+            return "waiting"
+    if blocked():
+        with power_lock:
+            first = not pending["postponed"]
+            pending["postponed"] = True
+            pending["shutdownAt"] = clock() + POWER_POSTPONE_SECONDS
+        if first:
+            log("A system update is installing: the scheduled switch-off waits for it.")
+            remember_power_pending(pending["event"])
+        return "postponed"
+    with power_lock:
+        if power_state["pending"] is not pending:
+            # Called off by a schedule change while the update was asked about.
+            return None
+    arm()
+    forget_power_pending()
+    log("Switching off by the power schedule.")
+    (poweroff or (lambda: run_x11(["systemctl", "poweroff"])))()
+    return "off"
+
+
+def power_loop(sleep=time.sleep, now=datetime.now):
+    resumed = take_power_pending(int(time.time()))
+    if resumed is not None:
+        begin_switch_off(datetime.fromtimestamp(resumed), resumed=True)
+    last = now()
+    while True:
+        sleep(POWER_CHECK_SECONDS)
+        # The time zone can change while the agent runs (Language & Region).
+        time.tzset()
+        current = now()
+        with power_lock:
+            week = power_state["week"]
+            idle = power_state["pending"] is None
+        event = switch_off_due(week, last, current) if idle else None
+        last = current
+        if event:
+            begin_switch_off(event)
+        if power_off_step() == "off":
+            return
+
+
+def magic_packet(mac):
+    """The Wake-on-LAN magic packet for one MAC address: six 0xFF bytes, then the address sixteen times."""
+    if not MAC_ADDRESS_PATTERN.match(mac):
+        raise ValueError(f"{mac!r} is not a MAC address")
+    return b"\xff" * 6 + bytes.fromhex(mac.replace(":", "")) * 16
+
+
+def wakeable_macs(raw):
+    """The `wake` command's addresses, validated: unicast, not zero, at most MAX_WAKE_MACS, each once."""
+    macs = []
+    for value in raw if isinstance(raw, list) else []:
+        mac = value.lower() if isinstance(value, str) else ""
+        if not MAC_ADDRESS_PATTERN.match(mac) or mac == "00:00:00:00:00:00" or int(mac[:2], 16) & 1:
+            continue
+        if mac not in macs:
+            macs.append(mac)
+    return macs[:MAX_WAKE_MACS]
+
+
+def wired_broadcast_addresses(net_dir=NET_CLASS_DIR):
+    """(local address, broadcast address) of each IPv4 network on this machine's wired adapters."""
+    pairs = []
+    for name, _mac in wired_adapters(net_dir):
+        if not NET_DEVICE_PATTERN.match(name):
+            continue
+        try:
+            links = _ip_json(["-4", "addr", "show", "dev", name]) or []
+        except (OSError, ValueError, subprocess.SubprocessError) as err:
+            log(f"Could not read the addresses of {name}: {err}")
+            continue
+        for link in links if isinstance(links, list) else []:
+            for info in (link.get("addr_info") or []) if isinstance(link, dict) else []:
+                if not isinstance(info, dict) or info.get("family") != "inet":
+                    continue
+                local, broadcast = info.get("local"), info.get("broadcast")
+                try:
+                    if ipaddress.ip_address(local).version == 4 and ipaddress.ip_address(broadcast).version == 4:
+                        pairs.append((local, broadcast))
+                except ValueError:
+                    continue
+    return pairs
+
+
+def send_magic_packets(raw_macs, networks=None, open_socket=None):
+    """Broadcast a magic packet to each address on every wired IPv4 network. Returns how many were sent."""
+    macs = wakeable_macs(raw_macs)
+    if not macs:
+        log("Ignoring a wake command without a usable MAC address.")
+        return 0
+    networks = wired_broadcast_addresses() if networks is None else networks
+    if not networks:
+        log(f"Cannot wake {', '.join(macs)}: no wired network with an IPv4 address here.")
+        return 0
+    open_socket = open_socket or (lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+    sent = 0
+    for local, broadcast in networks:
+        try:
+            with open_socket() as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.bind((local, 0))
+                for mac in macs:
+                    packet = magic_packet(mac)
+                    # UDP is not acknowledged; a few copies get past a dropped one.
+                    for _ in range(WOL_REPEATS):
+                        sock.sendto(packet, (broadcast, WOL_PORT))
+                    sent += 1
+        except OSError as err:
+            log(f"Could not send the wake signal on {local}: {err}")
+    if sent:
+        log(f"Wake signal sent to {', '.join(macs)} on {len(networks)} wired network(s).")
+    return sent
+
+
+
 def boot_report_loop():
     settled = None
     restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
     disks = {"checked": None, "logged": set()}
+    video = {"report": None, "done": False, "logged": False}
+    hardware = {"report": None, "done": False, "logged": False}
     while True:
         settled = report_boot_outcome(settled)
         report_restarts(restarts)
         report_disk_health(disks)
+        report_video_decoding(video)
+        report_hardware(hardware)
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 
@@ -3552,6 +5037,22 @@ def apply_control_update(data):
     if "lanSharing" in data:
         apply_lan_sharing(data["lanSharing"])
 
+    if "power" in data:
+        apply_power_schedule(data["power"])
+    if "printing" in data:
+        apply_printing(data["printing"])
+
+    if isinstance(data.get("usageSites"), bool) and data["usageSites"] != usage_counter.record_sites:
+        usage_counter.set_record_sites(data["usageSites"])
+        log(f"Usage reports {'now record' if data['usageSites'] else 'no longer record'} the sites visited.")
+
+    if isinstance(data.get("homeReset"), bool):
+        with state_lock:
+            changed = state["homeReset"] != data["homeReset"]
+            state["homeReset"] = data["homeReset"]
+        if changed:
+            log(f"Home in the kiosk bar {'now starts a new session' if data['homeReset'] else 'now only goes back to the start page'}.")
+
     # Apply a just-completed enrolment to the running browser.
     with state_lock:
         needs_restart = state["pendingBrowserRestart"]
@@ -3582,7 +5083,19 @@ def http_heartbeat():
     clear_enrolment_rejected()
     control_plane_reached()
     apply_control_update(data)
+    if isinstance(data, dict):
+        http_pace["seconds"], http_pace["frames"] = http_pace_from(data)
     return "ok"
+
+
+def http_pace_from(data):
+    """The interval (seconds) and frame request an HTTP heartbeat reply asks for."""
+    seconds = data.get("heartbeatSeconds")
+    if isinstance(seconds, bool) or not isinstance(seconds, int):
+        seconds = HEARTBEAT_SECONDS
+    low, high = HTTP_HEARTBEAT_BOUNDS
+    frames = data.get("frames")
+    return min(max(seconds, low), high), frames if isinstance(frames, bool) else True
 
 
 # How one WebSocket session ended, which decides what the loop does next.
@@ -3953,8 +5466,9 @@ def telemetry_loop():
     Keep this workstation in touch with its control plane.
 
     A WebSocket when the image has websocket-client and the server has the
-    route; the HTTP heartbeat every 3 seconds otherwise, and for a while after
-    the WebSocket keeps failing. Both apply the same updates, and both send a
+    route; the HTTP heartbeat otherwise (every 3 seconds while a console is
+    open, slower when the hub says nobody is), and for a while after the
+    WebSocket keeps failing. Both apply the same updates, and both send a
     refused workstation to the re-enrolment form.
     """
     backoff = HEARTBEAT_SECONDS
@@ -3989,7 +5503,7 @@ def telemetry_loop():
         else:
             result = http_heartbeat()
             backoff = HEARTBEAT_SECONDS if result == "ok" else min(backoff * 2, MAX_BACKOFF_SECONDS)
-            wait = backoff
+            wait = http_pace["seconds"] if result == "ok" else backoff
 
         if heartbeat_wakeup.wait(wait):
             heartbeat_wakeup.clear()
@@ -4018,6 +5532,11 @@ def main():
 
     threading.Thread(target=start_local_server, daemon=True).start()
     threading.Thread(target=boot_report_loop, daemon=True).start()
+    threading.Thread(target=usage_loop, daemon=True).start()
+    threading.Thread(target=power_loop, daemon=True).start()
+    threading.Thread(target=printing_loop, daemon=True).start()
+    if is_network_boot():
+        threading.Thread(target=network_boot_enrol_loop, name="network-boot-enrol", daemon=True).start()
 
     try:
         telemetry_loop()

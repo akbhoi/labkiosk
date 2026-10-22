@@ -53,11 +53,29 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /run/systemd/timesync/synchronized r,
   /run/live/medium/boot/grub/** r,
   @{PROC}/cmdline r,
+  # Is a keyboard or a touchscreen attached? (the on-screen keyboard)
+  @{PROC}/bus/input/devices r,
   @{PROC}/@{pid}/mounts r,
   @{PROC}/@{pid}/cmdline r,
   /sys/class/net/** r,
+  # Which GPU each render node is, for the video decoding report.
+  /sys/class/drm/ r,
+  /sys/devices/**/drm/renderD*/ r,
+  /sys/devices/**/vendor r,
+  /sys/devices/**/driver r,
+  /dev/dri/renderD* rw,
   /sys/firmware/efi/ r,
   /sys/firmware/efi/efivars/SecureBoot-* r,
+  # What the machine is, for the hardware report: its firmware's maker and
+  # model, CPU, memory, and its wired adapters' MAC addresses for Wake-on-LAN
+  # (/sys/class/net/* links into /sys/devices).
+  /sys/devices/virtual/dmi/id/sys_vendor r,
+  /sys/devices/virtual/dmi/id/product_name r,
+  /sys/devices/virtual/dmi/id/product_version r,
+  /sys/devices/**/net/*/address r,
+  /sys/devices/**/net/*/type r,
+  @{PROC}/cpuinfo r,
+  @{PROC}/meminfo r,
 
   # Its log, screen thumbnails and the per-boot VNC secret.
   owner /tmp/lab-agent.log w,
@@ -70,13 +88,27 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /usr/bin/nmcli ix,
   /usr/bin/pkill ix,
   /usr/bin/scrot ix,
+  /usr/bin/vainfo ix,
   /usr/bin/setxkbmap ix,
   /usr/bin/systemctl ix,
   /usr/sbin/ip ix,
   /usr/bin/ip ix,
+  # The installer's disk list in a live session: drives, partitions, what is
+  # mounted or in use, and whether this boot was UEFI (dual boot needs it).
+  /usr/local/bin/labkiosk-install ix,
+  /usr/bin/lsblk ix,
+  /run/udev/data/* r,
+  /sys/class/block/ r,
+  /sys/devices/**/block/** r,
+  @{PROC}/swaps r,
 
   # Root's helpers, through their sudoers entries. They are not confined by
   # this profile: each re-validates its arguments against the system's own
-  # tables (01-lockdown.hook.chroot).
+  # tables (01-lockdown.hook.chroot). labkiosk-wake-alarm, a power schedule's
+  # switch-on, is one of them; its postponed shutdown (power-pending.json) is
+  # under /etc/labkiosk above, and Wake-on-LAN is a UDP broadcast (inet dgram).
+  # labkiosk-printing is how printing is turned on and off: the agent has no
+  # rule for /etc/cups or the spool, and leaves zz-labkiosk-printing.json, the
+  # policy that lets Chromium print, to it.
   /usr/bin/sudo Ux,
 }

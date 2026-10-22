@@ -28,6 +28,7 @@ import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASE
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
 import { CONTACT_REASONS } from "./conversations";
+import { HardwareModel, PUBLIC_MODEL_MIN_ORGANIZATIONS } from "./hardware";
 
 /** The public source repository, linked from the navigation and the footer. */
 const SOURCE_REPOSITORY_URL = "https://github.com/akbhoi/labkiosk";
@@ -109,6 +110,36 @@ export interface LandingOptions {
   turnstileSiteKey?: string | null;
   /** False on an organization's own domain, where the sign-in form carries no check (the router says why). */
   loginTurnstile?: boolean;
+  /** On one organization's sign-in page: the single sign-on providers it offers (src/sso.ts). */
+  sso?: { providers: ReadonlyArray<"google" | "microsoft">; tenantSlug: string };
+}
+
+/** Brand marks in their owners' colours (the --brand-* tokens): no external image, no literal colour. */
+const SSO_MARKS: Record<"google" | "microsoft", { label: string; svg: string }> = {
+  google: {
+    label: "Google",
+    svg: `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path class="sso-google-red" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path class="sso-google-blue" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path class="sso-google-yellow" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path class="sso-google-green" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`
+  },
+  microsoft: {
+    label: "Microsoft",
+    svg: `<svg width="18" height="18" viewBox="0 0 23 23" aria-hidden="true"><rect class="sso-microsoft-red" x="1" y="1" width="10" height="10"/><rect class="sso-microsoft-green" x="12" y="1" width="10" height="10"/><rect class="sso-microsoft-blue" x="1" y="12" width="10" height="10"/><rect class="sso-microsoft-yellow" x="12" y="12" width="10" height="10"/></svg>`
+  }
+};
+
+/** "Continue with …" links for an organization's sign-in page; plain links, so they work before any script. */
+function ssoOptionsHtml(sso: LandingOptions["sso"]): string {
+  if (!sso || !sso.providers.length) return "";
+  const links = sso.providers
+    .map(
+      (provider) =>
+        `<a class="btn btn-ghost btn-block sso-btn" href="/api/auth/sso/start?provider=${provider}&amp;tenant=${encodeURIComponent(sso.tenantSlug)}">${SSO_MARKS[provider].svg}<span>Continue with ${SSO_MARKS[provider].label}</span></a>`
+    )
+    .join("\n        ");
+  return `<div class="sso-options" id="login-sso">
+        ${links}
+        <div class="sso-divider" role="separator"><span>or sign in with your password</span></div>
+      </div>
+      `;
 }
 
 function renderPublicShell(
@@ -251,7 +282,7 @@ ${FONT_LINKS}
       <h2 class="modal-title" id="login-modal-title">Admin &amp; Staff Sign In</h2>
       <p class="modal-sub">Sign in to manage your organization's workstations.</p>
       <div class="alert-box" id="login-alert" role="alert"></div>
-      <form id="login-form">
+      ${ssoOptionsHtml(data.sso)}<form id="login-form">
         <div class="form-group">
           <label class="form-label" for="login-email">Email Address</label>
           <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
@@ -265,6 +296,7 @@ ${FONT_LINKS}
       </form>
       <form id="login-2fa-form" hidden>
         <div class="notice-box" id="login-2fa-notice" role="status"></div>
+        <button type="button" class="btn btn-primary btn-block" id="login-2fa-passkey" hidden style="margin-bottom: 14px;">Use your passkey</button>
         <div class="form-group">
           <label class="form-label" for="login-2fa-code" id="login-2fa-label">Sign-in code</label>
           <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
@@ -423,7 +455,7 @@ ${FONT_LINKS}
           <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
         </div>
         <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a> and the <a href="/dpa" target="_blank" rel="noopener">Data Processing Agreement</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
         </div>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
       </form>
@@ -530,6 +562,7 @@ ${FONT_LINKS}
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
         <a href="/content-policy">Content Policy</a>
+        <a href="/dpa">Data Processing Agreement</a>
         <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
         <a href="/#security">Security</a>
       </div>
@@ -936,6 +969,7 @@ ${FONT_LINKS}
 
     // The second step of a two-factor sign-in: the app's code, an emailed one, or a recovery code.
     const loginForm = document.getElementById('login-form');
+    const ssoOptions = document.getElementById('login-sso');
     const secondForm = document.getElementById('login-2fa-form');
     const secondNotice = document.getElementById('login-2fa-notice');
     let loginChallenge = '';
@@ -944,29 +978,156 @@ ${FONT_LINKS}
       alertBox.textContent = message;
       alertBox.style.display = 'block';
     }
-    // The second step is an emailed code unless the account added an authenticator app.
+    // The second step leads with a passkey, then an authenticator app, then an emailed code.
+    const passkeyButton = document.getElementById('login-2fa-passkey');
+    const passkeysWork = Boolean(window.PublicKeyCredential && navigator.credentials);
     function showSecondStep(data) {
       const byEmail = data.method === 'email';
+      const byPasskey = data.method === 'passkey' && passkeysWork;
       loginChallenge = data.challenge;
       loginForm.hidden = true;
+      if (ssoOptions) ssoOptions.hidden = true;
       secondForm.hidden = false;
       secondNotice.textContent = byEmail
         ? 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.'
-        : 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.';
-      document.getElementById('login-2fa-label').textContent = byEmail ? 'Code from the email' : 'Code from your authenticator app';
+        : byPasskey
+          ? 'Your account has a passkey. Use it to finish signing in' + (data.app ? ', or enter a code from your authenticator app.' : ', or have a code emailed to you.')
+          : data.app
+            ? 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.'
+            : 'This browser cannot use your passkey. Have a code emailed to you and enter it below.';
+      passkeyButton.hidden = !byPasskey;
+      document.getElementById('login-2fa-label').textContent = byEmail ? 'Code from the email' : data.app ? 'Code from your authenticator app' : 'Code from the email';
       document.getElementById('login-2fa-email').textContent = byEmail ? 'Send a new code' : 'Email me a code instead';
-      document.getElementById('login-2fa-recovery').hidden = byEmail;
+      document.getElementById('login-2fa-recovery').hidden = !data.app;
       secondNotice.style.display = 'block';
       document.getElementById('login-2fa-code').value = '';
-      document.getElementById('login-2fa-code').focus();
+      if (byPasskey) passkeyButton.focus();
+      else document.getElementById('login-2fa-code').focus();
     }
+    function fromB64url(value) {
+      const text = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from(text, (c) => c.charCodeAt(0));
+    }
+    function toB64url(buffer) {
+      let text = '';
+      new Uint8Array(buffer).forEach((b) => { text += String.fromCharCode(b); });
+      return btoa(text).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+    }
+    passkeyButton.addEventListener('click', async () => {
+      document.getElementById('login-alert').style.display = 'none';
+      passkeyButton.disabled = true;
+      try {
+        const asked = await fetch('/api/auth/login/passkey', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challenge: loginChallenge })
+        });
+        const options = await asked.json();
+        if (!asked.ok) {
+          loginError(options.error || 'The passkey could not be used.');
+          if (asked.status === 401) startOver();
+          return;
+        }
+        let credential;
+        try {
+          credential = await navigator.credentials.get({
+            publicKey: {
+              challenge: fromB64url(options.challenge),
+              rpId: options.rpId,
+              timeout: options.timeout,
+              userVerification: options.userVerification,
+              allowCredentials: options.allowCredentials.map((c) => ({ type: c.type, id: fromB64url(c.id) }))
+            }
+          });
+        } catch (err) {
+          loginError('The passkey was not used. Try again, or use a code instead.');
+          return;
+        }
+        const res = await fetch('/api/auth/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challenge: loginChallenge,
+            trustBrowser: document.getElementById('login-2fa-trust').checked,
+            passkey: {
+              id: toB64url(credential.rawId),
+              clientDataJSON: toB64url(credential.response.clientDataJSON),
+              authenticatorData: toB64url(credential.response.authenticatorData),
+              signature: toB64url(credential.response.signature)
+            }
+          })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          window.location.href = data.redirect || '/admin';
+          return;
+        }
+        loginError(data.error || 'The passkey was not accepted.');
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error during sign-in');
+      } finally {
+        passkeyButton.disabled = false;
+      }
+    });
     function startOver() {
       loginChallenge = '';
       secondForm.hidden = true;
       loginForm.hidden = false;
+      if (ssoOptions) ssoOptions.hidden = false;
       document.getElementById('login-password').value = '';
       document.getElementById('login-password').focus();
     }
+
+    // Back from Google or Microsoft (src/sso.ts): the callback left a one-time code, or why it
+    // refused, in the address. Both leave the address at once; the code is redeemed on this host,
+    // in this browser, and answers as a password sign-in does: the console, or the second step.
+    const SSO_ERRORS = {
+      cancelled: 'The sign-in with your work account was cancelled.',
+      unavailable: 'Single sign-on is not available for this organization right now. Sign in with your password.',
+      directory: 'That account is not in a directory this organization allows. Choose your work account.',
+      no_account: 'No staff account of this organization uses that email address. Ask an administrator to add you.',
+      locked: 'Too many failed sign-in attempts. Try again in a few minutes.',
+      provider: 'Google or Microsoft could not complete the sign-in. Try again.',
+      identity: 'The sign-in could not be verified. Try again.'
+    };
+    (function finishSingleSignOn() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('sso');
+      const refused = params.get('sso_error');
+      if (code === null && refused === null) return;
+      params.delete('sso');
+      params.delete('sso_error');
+      const rest = params.toString();
+      history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+      if (refused !== null) {
+        loginError(Object.prototype.hasOwnProperty.call(SSO_ERRORS, refused) ? SSO_ERRORS[refused] : SSO_ERRORS.identity);
+        return;
+      }
+      if (!/^[0-9a-f]{64}$/.test(code)) {
+        loginError(SSO_ERRORS.identity);
+        return;
+      }
+      (async () => {
+        try {
+          const res = await fetch('/api/auth/sso/redeem', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code })
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            window.location.href = data.redirect || '/admin';
+          } else if (data.status === 'two_factor') {
+            showSecondStep(data);
+          } else {
+            loginError(data.error || SSO_ERRORS.identity);
+          }
+        } catch (err) {
+          loginError('Network error during sign-in');
+        }
+      })();
+    })();
     document.getElementById('login-2fa-back').addEventListener('click', () => {
       document.getElementById('login-alert').style.display = 'none';
       startOver();
@@ -1908,7 +2069,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported).</td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2279,7 +2440,7 @@ function specsMainHtml(): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported).</td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2311,6 +2472,68 @@ function specsMainHtml(): string {
         </div>
       </div>
     </section>`;
+}
+
+function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): string {
+  const percent = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "\u2014");
+  const memory = (mb: number | null) => (mb === null ? "\u2014" : mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${mb} MB`);
+  const rows = models
+    .map(
+      (m) => `
+            <tr>
+              <td><strong>${escapeHtml(m.vendor)}</strong></td>
+              <td>${escapeHtml(m.model)}</td>
+              <td>${m.organizations}</td>
+              <td>${m.workstations}</td>
+              <td>${percent(m.uefi, m.workstations)}</td>
+              <td>${percent(m.touch, m.workstations)}</td>
+              <td>${memory(m.minMemoryMb)}</td>
+            </tr>`
+    )
+    .join("");
+  const updated = computedAt ? new Date(computedAt * 1000).toISOString().slice(0, 10) : null;
+  return `
+    <section class="page-hero">
+      <h1 class="page-hero-title">Hardware <span>organizations run it on</span></h1>
+      <p class="page-hero-desc">
+        Every Lab Kiosk workstation reports its manufacturer and model when it starts. This list shows each model that at least ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run, so no row points at one organization. It is what is in use, not a promise: check a new model with the live USB stick before you buy many.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <div class="specs-table-container">
+        <table class="specs-table">
+          <thead>
+            <tr>
+              <th>Manufacturer</th>
+              <th>Model</th>
+              <th>Organizations</th>
+              <th>Workstations</th>
+              <th>Starting in UEFI mode</th>
+              <th>With a touchscreen</th>
+              <th>Least memory seen</th>
+            </tr>
+          </thead>
+          <tbody>${
+            rows ||
+            `
+            <tr><td colspan="7">No model is run by ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations yet.</td></tr>`
+          }
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-source">${updated ? `Counted on ${escapeHtml(updated)}, from each workstation's latest start. ` : ""}The minimum and recommended hardware are on the <a href="/specs">specifications page</a>.</p>
+    </section>`;
+}
+
+/** /hardware: the models enough organizations run, from their workstations' own reports (src/hardware.ts). */
+export function renderHardwareHtml(data: LandingOptions, models: HardwareModel[], computedAt: number | null): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Hardware Organizations Run It On",
+    description: `The computer models at least ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run Lab Kiosk on, counted from their workstations' own reports.`,
+    activeNav: "specs",
+    mainHtml: hardwareMainHtml(models, computedAt)
+  });
 }
 
 function pricingMainHtml(): string {
@@ -3446,7 +3669,19 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .code-row .btn { white-space: nowrap; }
     .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
     .check-row input { margin-top: 3px; }
-    #login-form[hidden], #login-2fa-form[hidden] { display: none; }
+    #login-form[hidden], #login-2fa-form[hidden], #login-2fa-passkey[hidden], #login-sso[hidden] { display: none; }
+    .sso-options { display: grid; gap: 10px; margin-bottom: 18px; }
+    .sso-btn { min-height: 44px; }
+    .sso-google-blue { fill: var(--brand-google-blue); }
+    .sso-google-red { fill: var(--brand-google-red); }
+    .sso-google-yellow { fill: var(--brand-google-yellow); }
+    .sso-google-green { fill: var(--brand-google-green); }
+    .sso-microsoft-red { fill: var(--brand-microsoft-red); }
+    .sso-microsoft-green { fill: var(--brand-microsoft-green); }
+    .sso-microsoft-blue { fill: var(--brand-microsoft-blue); }
+    .sso-microsoft-yellow { fill: var(--brand-microsoft-yellow); }
+    .sso-divider { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 0.8125rem; color: var(--text-muted); }
+    .sso-divider::before, .sso-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
     #sim-broadcast-form[hidden], #sim-modal-ok[hidden] { display: none; }
     #sim-modal-text { overflow-wrap: anywhere; }
     .check-row a { color: var(--accent-text); }

@@ -18,7 +18,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 
 | Scheme | Mechanism | Used By |
 | :--- | :--- | :--- |
-| **Session Cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
+| **Session Cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
 | **Device Bearer Token** | `Authorization: Bearer <hex32>` | Workstation Client Agent (`agent.py`) for `/api/telemetry` |
 | **Public / Key-Exchanged** | No auth or one-time verification (`enrollmentKey`) | Setup wizard, sign-in, signup, user portal sites, health probe |
 
@@ -55,11 +55,15 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |
 | `/api/auth/change-password` | `POST` | Session | Rotate user password, revoke other active sessions and every trusted browser |
-| `/api/auth/login` | `POST` | Public | `{"email", "password", "tenant"?}`: `{"status":"ok", "redirect"}` with the session cookie, or `{"status":"two_factor", "challenge", "method": "email"\|"app", "sentTo"}` when a second step is needed (always for a super admin; for an organization account that turned it on). With `method: "email"` the code has already been emailed |
-| `/api/auth/login/verify` | `POST` | Public | `{"challenge", "code", "trustBrowser"?}`: the second step of a sign-in; `code` is the emailed code, the app's six digits or a recovery code |
+| `/api/auth/login` | `POST` | Public | `{"email", "password", "tenant"?}`: `{"status":"ok", "redirect"}` with the session cookie, or `{"status":"two_factor", "challenge", "method": "passkey"\|"app"\|"email", "passkey", "app", "sentTo"}` when a second step is needed (always for an administrator: the super admin, an organization's owner, `org_admin` staff; for other staff who turned it on or added an app or passkey). With `method: "email"` the code has already been emailed |
+| `/api/auth/login/verify` | `POST` | Public | `{"challenge", "code" \| "passkey", "trustBrowser"?}`: the second step of a sign-in; `code` is the emailed code, the app's six digits or a recovery code; `passkey` is `navigator.credentials.get()`'s answer `{id, clientDataJSON, authenticatorData, signature}` (base64url) to the options from `/api/auth/login/passkey` |
+| `/api/auth/login/passkey` | `POST` | Public | `{"challenge"}`: WebAuthn request options (`challenge`, `rpId`, `allowCredentials`) for the sign-in's passkeys on this site; each call replaces the challenge, which an answer spends; `409` when the account has none here |
 | `/api/auth/login/email-code` | `POST` | Public | `{"challenge"}`: email a sign-in code to the account (three per sign-in, one a minute) |
-| `/api/auth/two-factor` | `GET` | Session | `emailCodes` (an emailed code is asked for), `required` (it cannot be turned off: a super admin), `mailAvailable`, `enabled` (an authenticator app is on) and recovery codes left |
-| `/api/auth/two-factor/email` | `POST` | Session | `{"password", "enabled"}`: turn the emailed sign-in code on or off for this account; `409` turning it off as a super admin, `503` turning it on where email is not configured |
+| `/api/auth/two-factor` | `GET` | Session | `emailCodes` (an emailed code is asked for), `required` (it cannot be turned off: an administrator), `mailAvailable`, `enabled` (an authenticator app is on), recovery codes left, and `passkeys` (`id`, `name`, `site`, `here`, `createdAt`, `lastUsedAt`) |
+| `/api/auth/two-factor/email` | `POST` | Session | `{"password", "enabled"}`: turn the emailed sign-in code on or off for this account; `409` turning it off as an administrator, `503` turning it on where email is not configured |
+| `/api/auth/two-factor/passkey-options` | `POST` | Session | `{"password"}`: WebAuthn creation options for a new passkey (valid five minutes; ES256 or RS256, attestation `none`); `409` at ten passkeys |
+| `/api/auth/two-factor/passkey-register` | `POST` | Session | `{"name", "credential": {clientDataJSON, attestationObject}}` (base64url): keep the new passkey; signs other browsers out |
+| `/api/auth/two-factor/passkey-delete` | `POST` | Session | `{"password", "id"}`: remove one of this account's passkeys |
 | `/api/auth/two-factor/setup` | `POST` | Session | `{"password"}`: a new authenticator secret and `otpauth://` URI (not on until enabled) |
 | `/api/auth/two-factor/enable` | `POST` | Session | `{"code"}`: turn it on; returns ten recovery codes once and signs other browsers out |
 | `/api/auth/two-factor/recovery-codes` | `POST` | Session | `{"password", "code"}`: replace the recovery codes |
@@ -83,6 +87,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/clients` | `GET` | Organization Admin | List active workstation fleet with live thumbnails |
 | `/api/clients/remove` | `POST` | Organization Admin | Decommission workstation and revoke its device token |
 | `/api/clients/group` | `POST` | Organization Admin | Assign multiple workstations to a named group |
+| `/api/clients/wake` | `POST` | Organization Admin (`workstations`) | `{"clientIds"}`: switch on workstations that are off through one that is on at the same site (Wake-on-LAN); `409` with each one's reason when none could be |
+| `/api/power-schedules` | `GET`, `POST` | Organization Admin (`settings`) | The organization's power schedules and groups; `POST {"id"?, "days", "off", "on"?, "groupId"?}` creates or replaces one (`409` on a day another schedule for the same workstations covers) |
+| `/api/power-schedules/:id` | `DELETE` | Organization Admin (`settings`) | Delete a power schedule |
 | `/api/groups` | `GET` | Organization Admin | List workstation groups for the organization tenant |
 | `/api/groups` | `POST` | Organization Admin | Create a new workstation group |
 | `/api/groups/:id` | `DELETE` | Organization Admin | Delete a workstation group |
@@ -98,6 +105,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
 | `/api/devices/restart-report` | `POST` | Device Token | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | Device Token | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
+| `/api/devices/video-decoding` | `POST` | Device Token | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
+| `/api/devices/power-report` | `POST` | Device Token | `{"problem": "no-rtc"\|"failed", "wakeAt", "detail"?}`: the workstation could not set its hardware clock to switch on by its power schedule; listed under Errors & Warnings |
 | `/api/devices/update` | `GET` | Device Token | The system release this workstation may take (its organization's channel, its line's status, the majors open to it) and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
 | `/api/notifications` | `GET` | Organization staff | The platform's notifications for this organization, newest first (50), each with `read` for this user, and `unread` |
@@ -116,6 +125,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `has_log` (1 when a restart report's log is kept), `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
+| `/api/settings/printing` | `GET` / `POST` | Organization Admin (`settings`) | Settings → Printing. `GET`: `{enabled, printers: [{id, name, uri, groupName}], groups, maxPrinters}`. `POST` `{enabled, printers}` replaces the list (at most 20): `name` 1–64 characters, unique; `uri` `ipp://` or `ipps://` to a host name or private address with a plain path; `groupName` an existing group or null. `400` with the first problem, `404` for an unknown group. Audited as `settings.printing`; workstations get `printing: {enabled, printers}` at once |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/tenant/remote-control/request` | `POST` | Organization Admin (`settings`) | `{"reason"}`: ask the platform to enable Remote Control; `409` when already asked or enabled |
 | `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all\|unread\|read\|deleted&mailbox=<address>&category=<type>`: registrations and Remote Control requests (Tasks) or mail (Mail), open first, oldest first. Mail lists also return `mailboxes` (`{mailbox, open, unread, total}`) and `mailDomain` |
@@ -231,7 +241,7 @@ Authenticates an operator or platform super administrator.
   }
   ```
 
-- **Response `200 OK`:** Sets the `labkiosk_session` cookie and the `labkiosk_device` cookie
+- **Response `200 OK`:** Sets the host-only `__Host-labkiosk_session` cookie and the `labkiosk_device` cookie. When the console is on another host (an organization subdomain signed in to from the apex), no session cookie is set here: `redirect` is that host's `/api/auth/handoff?code=…&next=…`, which spends the one-time code, sets the cookie there and continues to `next`
   (`Path=/api/auth`, the browser's identity for sign-in alerts and "trust this browser").
 
   ```json
@@ -245,8 +255,8 @@ Authenticates an operator or platform super administrator.
 
 - **Two-factor sign-in:** when the account has it on and the browser is not trusted, no cookie is
   set and the answer is `{ "status": "two_factor", "challenge": "<64 hex>", "expiresIn": 600 }`.
-  `POST /api/auth/login/verify` with the challenge and a code completes it (five wrong codes end the
-  challenge); `POST /api/auth/login/email-code` sends a code by email instead.
+  `POST /api/auth/login/verify` with the challenge and a code or a passkey's answer completes it
+  (five wrong answers end the challenge); `POST /api/auth/login/email-code` sends a code by email instead.
 - **New-browser alert:** a successful sign-in from a browser the account has not used before is
   reported to the account's email address (the first browser an account ever uses is not).
 
@@ -425,9 +435,12 @@ polls `POST /api/clients` with the same `watch` list.
 
 #### `POST /api/telemetry`
 
-The HTTP fallback, used by agents without the WebSocket client: a 3-second heartbeat carrying the
-active URL, a screen thumbnail and the remote-control details, answered with the configuration and
-any queued commands.
+The HTTP fallback, used by agents without the WebSocket client or whose network drops WebSocket
+upgrades: a heartbeat carrying the active URL, a screen thumbnail while one is asked for and the
+remote-control details, answered with the configuration and any queued commands. The reply paces
+the next one: `heartbeatSeconds` is 3 while a console is open or was used in the last minute and 15
+otherwise, and `frames` says whether a console is showing this screen (send `thumbnail` only then).
+A workstation is shown offline after 36 seconds without a heartbeat.
 
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`)
 - **Request Body:**
@@ -458,7 +471,9 @@ any queued commands.
     "mode": "portal",
     "targetUrl": "https://oakridge.labkiosk.example.com",
     "broadcastUrl": "",
-    "broadcastEpoch": 0
+    "broadcastEpoch": 0,
+    "heartbeatSeconds": 15,
+    "frames": false
   }
   ```
 
@@ -570,6 +585,30 @@ or one with no health data (a virtual disk), is never sent. Each disk is listed 
   workstation has not checked in yet, sent again later; `429` more than 8 disk issues from this
   workstation in a day, sent again after its next check.
 
+#### `POST /api/devices/video-decoding`
+
+What the workstation's GPUs decode in hardware, as the agent read it with `vainfo --display drm`
+on each render node (`/dev/dri/renderD*`) once per start. Chromium decodes every other video on the
+CPU. The latest report replaces the last on the workstation's row (`client_devices.video_decoding`)
+and is returned as `videoDecoding` by `GET /api/clients`; the Workstations page shows it on each card.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization and the workstation.
+- **Request Body:** `gpus`, 0 to 4 objects with `vendor` (`intel` | `amd` | `nvidia` | `virtual` |
+  `other`, from the PCI vendor id), `kernelDriver` (such as `i915`, `amdgpu`, `nouveau`; may be
+  empty), `vaDriver` (vainfo's driver line, at most 120 characters), `decode` and `encode` (codecs
+  from `h264`, `hevc`, `vp8`, `vp9`, `av1`, `mpeg2`, `vc1`, `jpeg`) and, when vainfo could not say,
+  `problem` (at most 200 characters). A report with no GPU must carry a top-level `problem`.
+
+  ```json
+  { "gpus": [ { "vendor": "intel", "kernelDriver": "i915",
+                "vaDriver": "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()",
+                "decode": ["av1", "h264", "hevc", "vp9"], "encode": ["h264"] } ] }
+  ```
+
+- **Responses:** `200 {"status":"ok"}`; `400` malformed, not sent again; `401` bad token; `409` the
+  workstation has not checked in yet, sent again later.
+
 #### `GET /api/devices/update`
 
 The system release this workstation's organization is offered, asked by the workstation's root
@@ -639,11 +678,20 @@ screens' frames for the next 10 seconds.
         "vncPassword": "randomBootPassword12",
         "imageVersion": "2.9.0",
         "agentVersion": "2.9.0",
-        "update": { "phase": "ready", "version": "2.9.1" }
+        "update": { "phase": "ready", "version": "2.9.1" },
+        "videoDecoding": {
+          "gpus": [ { "vendor": "intel", "kernelDriver": "i915", "vaDriver": "Intel iHD driver …",
+                      "decode": ["h264", "hevc", "vp9", "av1"], "encode": ["h264"] } ],
+          "reportedAt": 1726300000000
+        }
       }
     }
   }
   ```
+
+  `videoDecoding` is the workstation's last
+  [video decoding report](#post-apidevicesvideo-decoding), with `reportedAt` in milliseconds; absent
+  until an agent new enough to send it has started.
 
 #### `POST /api/command`
 
@@ -764,6 +812,32 @@ Assigns multiple workstations to a designated group (or unassigns if `groupName`
 
 - **Response `200 OK`:** `{ "status": "ok", "count": 2 }`
 - **Errors:** `404` when `groupName` is not an existing group; `400` for more than 500 ids.
+
+#### `POST /api/clients/wake`
+
+Switches on workstations that are off, by Wake-on-LAN, through a workstation of the same
+organization that is on at the same LAN site. The MAC addresses are the ones each workstation
+reported in its own hardware report, read from this organization's rows; the request names only
+the workstations.
+
+- **Access:** Organization Admin (requires `workstations` permission)
+- **Request Body:** `{ "clientIds": ["PC-01", "PC-02"] }` (1 to 500)
+- **Response `200 OK`:** `{ "status": "ok", "sent": [{ "clientId": "PC-01", "via": "PC-07" }], "skipped": [{ "clientId": "PC-02", "reason": "It is already on" }] }`
+- **Errors:** `409` `{ "error", "sent": [], "skipped" }` when none could be woken; `400` malformed or more than 500 ids.
+
+#### Power schedules: `GET`/`POST /api/power-schedules`, `DELETE /api/power-schedules/:id`
+
+- **Access:** Organization Admin (requires `settings` permission)
+- **`POST` body:** `{ "id"?: "…", "days": [1,2,3,4,5], "off": "18:00", "on"?: "07:30", "groupId"?: "…" }`;
+  days `0` (Sunday) to `6`, times on each workstation's own clock. Without `groupId` the schedule is
+  for every workstation. For each day a workstation follows its group's schedule when there is one,
+  else the all-workstations one.
+- **Errors:** `400` invalid days or times (switch-on within 15 minutes of switch-off); `404` unknown
+  group or schedule; `409` another schedule for the same workstations covers one of those days, or 50
+  schedules already.
+- Workstations receive `power: { "week": [ { "off": 1080, "on": 450 } | null × 7 ] } | null` in their
+  configuration (control channel and telemetry reply) at once. See
+  [REST-API-Reference](../wiki/REST-API-Reference.md#power-schedules-get--post-apipower-schedules-delete-apipower-schedulesid).
 
 #### `POST /api/clients/remove`
 
@@ -1155,9 +1229,14 @@ on live media, which keeps nothing by design.
     "installRequested": false,
     "secureBoot": "on",
     "clockSynchronized": true,
-    "hostname": "labkiosk-3fa92c"
+    "hostname": "labkiosk-3fa92c",
+    "printing": false
   }
   ```
+
+`printing` is true while Chromium may print: the organization turned printing on, at least one of
+its printers is set up on this workstation, and Chromium has had time to reload the policy that
+allows it. The kiosk bar shows its Print button, and lets Ctrl+P print, only then.
 
 `secureBoot` is `on` when the firmware enforced Secure Boot for this boot, `off` when it did not,
 `legacy-bios` when the machine did not start through UEFI, and `unknown` when the firmware variable

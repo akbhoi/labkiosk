@@ -55,10 +55,14 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
   - Close codes: `4001` removed, `4003` organization not active (→ `mark_enrolment_rejected()`),
     `4000` replaced by a newer connection (back off), `4008` stale (reconnect).
   - Handshake `404`/`426`/`501`, or three failed connects in a row → HTTP for 10 minutes.
-- **HTTP heartbeat** (every 3 s; older agents and the fallback): payload `clientNum`, `activeUrl`,
+- **HTTP heartbeat** (older agents and the fallback): payload `clientNum`, `activeUrl`,
   `isLocked`, `thumbnail`, `vncPassword`, and the same update fields (`current_status()` /
   `post_telemetry()` are the reference); reply
-  `whitelist`, `targetUrl`, `commands`, `broadcastUrl` / `broadcastEpoch`. Both transports apply
+  `whitelist`, `targetUrl`, `commands`, `broadcastUrl` / `broadcastEpoch`, `heartbeatSeconds` and
+  `frames`. The hub paces it: `heartbeatSeconds` is 3 while a console is open or was used in the
+  last minute and 15 otherwise (`HTTP_HEARTBEAT_*_SECONDS`), and `frames` is true only while a
+  console shows that screen, so `thumbnail` is sent only then (`http_pace` in `agent.py`). An agent
+  older than the fields keeps 3 s with a thumbnail every time. Both transports apply
   the reply through one function, `apply_control_update()`.
 - `thumbnail`/frame: base64 JPEG from `scrot -t 20 -q 35`, **dropped** above 256 KB
   (`MAX_THUMBNAIL_BYTES` = `MAX_FRAME_BYTES`); no Pillow, the agent is stdlib-only. Frames are
@@ -169,6 +173,23 @@ yet), other statuses and network errors retry. The Worker (`parseDiskHealthRepor
 and state), severity `warning`, or `error` when failing, details `Disk <model> (<device>): <summary>
 Plan to replace it.` / `… Replace it before it stops working.` Never `pending` for automatic bug
 reports.
+
+## 2e. Video decoding — agent → Worker `POST /api/devices/video-decoding`
+
+Once per agent start (`report_video_decoding()`, in `boot_report_loop()`), after enrolment, the
+agent runs `vainfo --display drm --device /dev/dri/renderDNNN` on each render node (at most 4; the
+`vainfo` package and the AppArmor rules `/usr/bin/vainfo ix`, `/dev/dri/renderD* rw` are in the
+image) and names each GPU from sysfs (`vendor`: `0x8086` intel, `0x1002` amd, `0x10de` nvidia,
+virtual adapters `virtual`, else `other`; `kernelDriver` from the `driver` link). It posts
+`{"gpus":[{vendor, kernelDriver, vaDriver, decode:[codec], encode:[codec], problem?}], problem?}`;
+codecs `h264 hevc vp8 vp9 av1 mpeg2 vc1 jpeg` (decode = `VAEntrypointVLD`, encode = `EncSlice`,
+`EncSliceLP`, `EncPicture`). No render node: `{"gpus": [], "problem": "No GPU render device …"}`.
+`200` and `400`/`404` settle it; `409` (row not written yet) and network errors retry every 30 s.
+The Worker (`parseVideoDecodingReport`, `recordVideoDecoding` in `src/boot_report.ts`) keeps the
+latest on `client_devices.video_decoding` (`0043`) and returns it as `videoDecoding` (plus
+`reportedAt`, ms) from `GET /api/clients`; the card shows `Video: GPU · H.264, HEVC, VP9, AV1`, or
+`Video: CPU · NVIDIA graphics` / `CPU only` in the warning tone. `VA_PROFILE_CODECS` (agent) and
+`VIDEO_CODECS` (Worker) must name the same codecs.
 
 ## 3. Enrolment — wizard → agent `POST /api/setup` → Worker `POST /api/devices/enroll`
 

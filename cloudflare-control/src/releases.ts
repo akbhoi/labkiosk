@@ -855,6 +855,23 @@ export function releaseFolderUrl(env: Env, version: string): string | null {
   return `${validated.replace(/\/+$/, "")}/${RELEASE_PREFIX}${version}`;
 }
 
+/**
+ * Whether RELEASES_BASE_URL is the bucket's r2.dev development address.
+ * Cloudflare rate-limits it and does not cache it, so a fleet update through it
+ * can be refused part-way and reads R2 once per workstation; a custom domain on
+ * the bucket is cached at the edge.
+ */
+export function releaseAddressIsDevelopmentOnly(env: Env): boolean {
+  const validated = safeHttpUrl((env.RELEASES_BASE_URL || "").trim());
+  if (!validated) return false;
+  try {
+    const host = new URL(validated).hostname.toLowerCase();
+    return host === "r2.dev" || host.endsWith(".r2.dev");
+  } catch {
+    return false;
+  }
+}
+
 function isLocalAddress(host: string): boolean {
   return (
     host === "localhost" ||

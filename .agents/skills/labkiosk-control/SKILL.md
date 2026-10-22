@@ -143,6 +143,8 @@ invalid input, and for staff routes a delegate exceeding their permissions. On a
 an anonymous request that names a tenant is refused with `403` before the route's `401`, so assert
 "refused" (`401` or `403`), not one status. A device route needs a forged-token `401` and must
 ignore a `?tenant=` or client id the request claims. Fixtures: `orgSessionCookie` (greenwood),
-`rivalSessionCookie` (riverside), `superSessionCookie`.
+`rivalSessionCookie` (riverside), `superSessionCookie`. Sessions are host-only: take a sign-in's cookie
+with `sessionOf(res)`, which follows the handoff to the organization's host, and use
+`plainCookie()` for a request to a plain-HTTP dev host.
 
 Then check the behaviour in a browser — see `labkiosk-console-ui` §Verify.

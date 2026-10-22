@@ -159,10 +159,10 @@ Lab Kiosk is openly co-developed with AI assistants, and contributions authored 
 
 | Trigger | Workflow | Result |
 | :--- | :--- | :--- |
-| Push to `main` touching `cloudflare-control/**` | `deploy-cloudflare.yml` | Typecheck → test → apply remote migrations → `wrangler deploy` |
-| Push to `main` or a `v*` tag | `docker-publish.yml` | Publishes `labkiosk` and `labkiosk-iso-builder` to GHCR |
-| A `v*` tag, or manual dispatch | `build-iso.yml` | Builds the ISO, verifies the checksum, boot-tests the installed disk in QEMU, then (on a tag) creates a GitHub Release |
-| Any push | `ci.yml` | The full verification triangle |
+| Push to `main` touching either Worker, or `ci.yml` run by hand on `main` | `ci.yml` → `deploy-cloudflare.yml` | After `ci.yml`'s typecheck and tests pass on that commit: apply remote migrations → `wrangler deploy` (both Workers) |
+| A `v*` tag, or manual dispatch | `docker-publish.yml` | Publishes `labkiosk` (amd64 and arm64, each built on its own runner) and `labkiosk-iso-builder` to GHCR |
+| A `v*` tag, or manual dispatch | `build-iso.yml` | Builds the ISO, verifies the checksum, boot-tests the installed disk in QEMU in parallel jobs, then (on a tag) signs it and creates a GitHub Release |
+| Pushes and pull requests to `main`, and daily | `ci.yml` | The full verification triangle; the image builds only when something that goes into an image changed, and daily |
 
 ---
 

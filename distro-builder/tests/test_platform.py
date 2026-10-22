@@ -190,7 +190,7 @@ class Hostname(unittest.TestCase):
     def test_the_wizard_sends_a_typed_name_only_when_the_box_is_ticked(self):
         wizard = read(CHROOT, "opt/labkiosk/setup/wizard.html")
         for marker in ('id="toggle-custom-hostname"', 'id="custom-hostname"',
-                       "JSON.stringify({ targetDisk: disk, grubPasswordHash, hostname })"):
+                       "targetDisk: disk, grubPasswordHash, hostname,"):
             self.assertIn(marker, wizard)
         typed = wizard.index("customHostnameInput.value.trim().toLowerCase()")
         self.assertIn("toggleCustomHostname.checked", wizard[typed - 200:typed])

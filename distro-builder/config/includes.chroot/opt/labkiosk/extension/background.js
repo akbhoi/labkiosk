@@ -19,9 +19,15 @@
  * wiped at every boot -- and surviving both page navigation and this service
  * worker being torn down when idle.
  *
+ * It also relays the on-screen keyboard between frames (labkiosk:osk-focus,
+ * labkiosk:osk-type): the keyboard is drawn in the top frame, a text field can
+ * be in any frame. Ctrl+P pressed in an iframe goes to the top frame the same
+ * way (labkiosk:print-shortcut), which prints only while printing is allowed.
+ *
  * Navigation (back, forward, reload, home) is done by the content script with
  * the History API and never needs the agent, so there is no nav channel to the
- * agent's loopback API.
+ * agent's loopback API. The one exception is Home's "Start over", which asks
+ * the agent for a new session (labkiosk:session-reset).
  */
 
 const AGENT_STATUS_URL = "http://127.0.0.1:8888/api/status";
@@ -32,6 +38,36 @@ async function readStatus() {
   const res = await fetch(AGENT_STATUS_URL, { cache: "no-store" });
   if (!res.ok) throw new Error(`Agent responded ${res.status}`);
   return await res.json();
+}
+
+/*
+ * Usage reports: once a minute the visible page's content script ticks, and
+ * the agent is told that page's hostname and whether someone used the
+ * keyboard, mouse or touchscreen in the last minute (chrome.idle covers the
+ * whole screen, iframes and all). The hostname comes from the sender, never
+ * from the page; the agent keeps no more than it, and only when the
+ * organization records sites.
+ */
+const AGENT_USAGE_TICK_URL = "http://127.0.0.1:8888/api/usage/tick";
+const USAGE_IDLE_SECONDS = 60;
+
+async function sendUsageTick(sender) {
+  if (!sender || sender.frameId !== 0 || !sender.url) return {};
+  let host = "";
+  try {
+    const page = new URL(sender.url);
+    if (page.protocol === "http:" || page.protocol === "https:") host = page.hostname;
+  } catch (err) {
+    console.warn("Lab Kiosk: a usage tick from a page with no readable address:", err);
+  }
+  const state = await chrome.idle.queryState(USAGE_IDLE_SECONDS);
+  const res = await fetch(AGENT_USAGE_TICK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host, active: state === "active" })
+  });
+  if (!res.ok) throw new Error(`Agent responded ${res.status}`);
+  return {};
 }
 
 async function readBroadcast() {
@@ -131,13 +167,98 @@ async function verifyAdmin(password) {
   return body;
 }
 
+/*
+ * Home in the kiosk bar, once the user said Yes to "Start over?": the agent
+ * restarts Chromium, whose watchdog wipes the profile before relaunching. Only
+ * the top frame's bar asks; the agent refuses (409) when the organization has
+ * turned this off.
+ */
+const AGENT_SESSION_RESET_URL = "http://127.0.0.1:8888/api/session/reset";
+
+async function resetSession(sender) {
+  if (!sender || sender.frameId !== 0) throw new Error("Only the kiosk bar can start a new session");
+  const res = await fetch(AGENT_SESSION_RESET_URL, { method: "POST" });
+  if (!res.ok) {
+    let message = `Agent responded ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch (err) {
+      console.warn("Lab Kiosk: the agent's refusal to start a new session had no readable reason:", err);
+    }
+    throw new Error(message);
+  }
+  return {};
+}
+
 async function readNetworkStatus() {
   const res = await fetch(AGENT_NETWORK_STATUS_URL, { cache: "no-store" });
   if (!res.ok) throw new Error(`Network status error (${res.status})`);
   return await res.json();
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+/*
+ * The on-screen keyboard is drawn in the top frame, but a text field can be in
+ * any frame, each with its own copy of content.js. A frame reports its field's
+ * focus here and it is passed to frame 0; frame 0 sends each typed key here and
+ * it is passed to the frame that has the field. Only content scripts of this
+ * extension can send these (there is no externally_connectable), and both
+ * directions are checked again on arrival.
+ */
+const OSK_ACTION_KEYS = new Set(["Backspace", "Enter", "Tab", "ArrowLeft", "ArrowRight"]);
+const OSK_MAX_TEXT = 8;
+
+function oskAction(action) {
+  if (!action || typeof action !== "object") return null;
+  if (action.kind === "text" && typeof action.text === "string" &&
+      action.text.length > 0 && action.text.length <= OSK_MAX_TEXT) {
+    return { kind: "text", text: action.text };
+  }
+  if (action.kind === "key" && OSK_ACTION_KEYS.has(action.key)) {
+    return { kind: "key", key: action.key };
+  }
+  return null;
+}
+
+function oskRect(rect) {
+  if (!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) return null;
+  return { top: rect.top, bottom: rect.bottom };
+}
+
+async function forwardFrameFocus(message, sender) {
+  if (!sender.tab || !Number.isInteger(sender.frameId) || sender.frameId === 0) {
+    throw new Error("Only a subframe reports its focus");
+  }
+  await chrome.tabs.sendMessage(sender.tab.id, {
+    type: "labkiosk:osk-frame-focus",
+    frameId: sender.frameId,
+    editable: message.editable === true,
+    noKeyboard: message.noKeyboard === true,
+    reason: ["focus", "blur", "tap"].includes(message.reason) ? message.reason : "",
+    rect: oskRect(message.rect),
+  }, { frameId: 0 });
+  return {};
+}
+
+async function forwardTypedKey(message, sender) {
+  if (!sender.tab || sender.frameId !== 0) throw new Error("Only the top frame's keyboard types");
+  const action = oskAction(message.action);
+  if (!action) throw new Error("Not a key the keyboard has");
+  if (!Number.isInteger(message.frameId) || message.frameId <= 0) throw new Error("No such frame");
+  const reply = await chrome.tabs.sendMessage(sender.tab.id, { type: "labkiosk:osk-apply", action }, { frameId: message.frameId });
+  return { applied: Boolean(reply && reply.applied) };
+}
+
+async function forwardPrintShortcut(sender) {
+  if (!sender.tab || !Number.isInteger(sender.frameId) || sender.frameId === 0) {
+    throw new Error("Only a subframe relays Ctrl+P");
+  }
+  // The top frame prints only while printing is allowed (kioskPrint in content.js).
+  await chrome.tabs.sendMessage(sender.tab.id, { type: "labkiosk:print-request" }, { frameId: 0 });
+  return {};
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
   const reply = (promise) => {
@@ -151,6 +272,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return reply(readStatus().then((status) => ({ status })));
   }
 
+  if (message.type === "labkiosk:usage-tick") {
+    return reply(sendUsageTick(sender));
+  }
+
   if (message.type === "labkiosk:i18n") {
     return reply(readCatalog().then((catalog) => ({ catalog })));
   }
@@ -159,8 +284,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return reply(verifyAdmin(message.password));
   }
 
+  if (message.type === "labkiosk:session-reset") {
+    return reply(resetSession(sender));
+  }
+
   if (message.type === "labkiosk:network-status") {
     return reply(readNetworkStatus().then((network) => ({ network })));
+  }
+
+  if (message.type === "labkiosk:osk-focus") {
+    return reply(forwardFrameFocus(message, sender));
+  }
+
+  if (message.type === "labkiosk:osk-type") {
+    return reply(forwardTypedKey(message, sender));
+  }
+
+  if (message.type === "labkiosk:print-shortcut") {
+    return reply(forwardPrintShortcut(sender));
   }
 
   if (message.type === "labkiosk:intro-peek") {
@@ -201,7 +342,7 @@ const BLOCKED_PAGE_URL = `${AGENT_ORIGIN}/blocked`;
 const OFFLINE_PAGE_URL = `${AGENT_ORIGIN}/setup#offline`;
 
 // Failures that mean "no network" rather than "this site": the wizard's offline
-// page shows the connection state and returns to the lesson once it is back.
+// page shows the connection state and returns to the page once it is back.
 const NETWORK_ERRORS = new Set([
   "net::ERR_INTERNET_DISCONNECTED",
   "net::ERR_NETWORK_CHANGED",
@@ -222,7 +363,7 @@ const NETWORK_ERRORS = new Set([
  * Where a failed top-level navigation should go instead, or null to leave it.
  * `isOnline` is the agent's view: a DNS or connection failure while the
  * workstation is online means that one site is down, and the offline page --
- * which returns to the lesson once it sees a connection -- would bounce straight
+ * which returns to the page once it sees a connection -- would bounce straight
  * back to the dead site and loop.
  */
 function recoveryUrlFor(details, isOnline) {

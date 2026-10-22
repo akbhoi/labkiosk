@@ -1,7 +1,8 @@
 /**
  * Lab Kiosk Navigation Bar & Lockdown Content Script
  * Injected into top-level pages to provide locked navigation controls,
- * real-time telemetry indicators, and fullscreen lock curtain.
+ * real-time telemetry indicators, fullscreen lock curtain and the on-screen
+ * keyboard for touch workstations.
  */
 
 /**
@@ -23,6 +24,31 @@
  * pastes from the dashboard, and taking Ctrl+V away there would make the one
  * screen that needs it unusable. Users never see that origin.
  */
+/**
+ * Printing, only while the organization allows it (Settings -> Printing) and
+ * the agent reports that Chromium may print (status.printing). The bar's Print
+ * button and Ctrl+P both end here, in the top frame, so the whole page is
+ * printed and never one frame of it. Ctrl+P stays blocked by lockInput below
+ * either way: Chromium's own shortcut is not what prints. Ctrl+Shift+P, the
+ * system dialog's shortcut, is never let through.
+ */
+const kioskPrint = {
+  enabled: false,
+  print() {
+    if (this.enabled && window.self === window.top) window.print();
+  }
+};
+
+if (window.self === window.top) {
+  // Ctrl+P pressed inside an iframe, relayed by background.js.
+  chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message && sender.id === chrome.runtime.id && message.type === "labkiosk:print-request") {
+      kioskPrint.print();
+    }
+    return false;
+  });
+}
+
 (function lockInput() {
   const AGENT_ORIGIN = "http://127.0.0.1:8888";
   const CLIPBOARD_KEYS = new Set(["a", "c", "v", "x", "z", "y"]);
@@ -65,10 +91,30 @@
     return false;
   }
 
+  function isPrintShortcut(event) {
+    return event.type === "keydown" && event.isTrusted && !event.repeat && event.ctrlKey &&
+      !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "p";
+  }
+
   function guard(event) {
     if (permitted(event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (!isPrintShortcut(event)) return;
+    if (window.self === window.top) {
+      kioskPrint.print();
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: "labkiosk:print-shortcut" }, () => {
+        if (chrome.runtime.lastError) {
+          console.warn("[LabKiosk] Ctrl+P not relayed to the page:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (err) {
+      // The extension was reloaded under this frame; its old script has no channel.
+      console.warn("[LabKiosk] Ctrl+P not relayed to the page:", err);
+    }
   }
 
   // Capture phase, so a page's own handler never runs either.
@@ -81,6 +127,386 @@
     event.preventDefault();
     event.stopImmediatePropagation();
   }, true);
+})();
+
+/**
+ * The on-screen keyboard's other half: in every frame, which text field has
+ * the focus, and typing into it.
+ *
+ * The keyboard itself is drawn once, in the top frame (below). A field inside
+ * an iframe belongs to that frame's own copy of this script, which reports its
+ * focus through background.js (chrome.runtime -> chrome.tabs.sendMessage to
+ * frame 0) and receives the typed keys the same way back, addressed by
+ * frameId. Nothing here talks to the agent.
+ *
+ * Text goes in through document.execCommand("insertText") in the field's own
+ * frame, the browser's own editing path for typed text: it keeps maxlength,
+ * undo and the caret, it works in number and email fields (whose selection
+ * APIs throw), and the page sees the same beforeinput/input events as from a
+ * real key. Where the command is refused, input and textarea fall back to
+ * setRangeText (or, for number and email, the value) plus an input event,
+ * and contenteditable to a Range. Each key is framed by synthetic
+ * keydown/keypress/keyup events with no Control, Alt or Meta, so the
+ * lockdown above has nothing to block and no page shortcut is reachable from
+ * here; a page that cancels the keydown cancels the key, as with a real one.
+ */
+const kioskTyping = (function onScreenKeyboardInput() {
+  const isTop = window.self === window.top;
+  const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "tel", "email", "password", "number"]);
+  // HTML gives selectionStart and setRangeText only to text, search, url, tel
+  // and password; on these two they throw.
+  const NO_SELECTION_TYPES = new Set(["email", "number"]);
+  const IMPLICIT_SUBMISSION_BLOCKERS = new Set([
+    "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time",
+    "datetime-local", "number"
+  ]);
+  const ACTION_KEYS = new Set(["Backspace", "Enter", "Tab", "ArrowLeft", "ArrowRight"]);
+  const MAX_ACTION_TEXT = 8;
+  // US layout: the unshifted character on the same key, its KeyboardEvent.code
+  // and legacy keyCode, for the synthetic key events pages still listen to.
+  const SHIFTED_TO_BASE = {
+    "~": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
+    "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\", ":": ";", "\"": "'",
+    "<": ",", ">": ".", "?": "/"
+  };
+  const PUNCTUATION_KEYS = {
+    "`": ["Backquote", 192], "-": ["Minus", 189], "=": ["Equal", 187], "[": ["BracketLeft", 219],
+    "]": ["BracketRight", 221], "\\": ["Backslash", 220], ";": ["Semicolon", 186], "'": ["Quote", 222],
+    ",": ["Comma", 188], ".": ["Period", 190], "/": ["Slash", 191], " ": ["Space", 32]
+  };
+  const NAMED_KEYS = {
+    Backspace: ["Backspace", 8], Enter: ["Enter", 13], Tab: ["Tab", 9],
+    ArrowLeft: ["ArrowLeft", 37], ArrowRight: ["ArrowRight", 39]
+  };
+
+  // Closed shadow roots of the kiosk's own UI (the admin password field), which
+  // document.activeElement cannot see into.
+  const ownRoots = new WeakMap();
+  let listener = null;
+
+  function deepActiveElement() {
+    let el = document.activeElement;
+    for (let depth = 0; el && depth < 32; depth += 1) {
+      const root = ownRoots.get(el) || el.shadowRoot;
+      if (!root || !root.activeElement) break;
+      el = root.activeElement;
+    }
+    return el;
+  }
+
+  function isEditable(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.tagName === "TEXTAREA") return !el.disabled && !el.readOnly;
+    if (el.tagName === "INPUT") {
+      return TEXT_INPUT_TYPES.has(String(el.type || "text").toLowerCase()) && !el.disabled && !el.readOnly;
+    }
+    return Boolean(el.isContentEditable);
+  }
+
+  function focusedEditable() {
+    const el = deepActiveElement();
+    return isEditable(el) ? el : null;
+  }
+
+  function describeFocus() {
+    const el = focusedEditable();
+    if (!el) return { editable: false };
+    const rect = el.getBoundingClientRect();
+    return {
+      editable: true,
+      // A field that asks for no virtual keyboard (inputmode="none") draws its
+      // own; the keyboard still opens from the bar.
+      noKeyboard: String(el.getAttribute("inputmode") || "").toLowerCase() === "none",
+      rect: { top: rect.top, bottom: rect.bottom }
+    };
+  }
+
+  function report(reason) {
+    const info = describeFocus();
+    info.reason = reason;
+    if (isTop) {
+      if (listener) listener(0, info);
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: "labkiosk:osk-focus", ...info }, () => {
+        // No keyboard is listening (the top frame is still loading): nothing to do.
+        if (chrome.runtime.lastError) return;
+      });
+    } catch (err) {
+      console.warn("[LabKiosk] Could not report the focused field to the keyboard:", err);
+    }
+  }
+
+  // Reported a tick later: during focusout, activeElement is not the next
+  // element yet.
+  function watchFocus(target) {
+    target.addEventListener("focusin", () => setTimeout(() => report("focus"), 0), true);
+    target.addEventListener("focusout", () => setTimeout(() => report("blur"), 0), true);
+  }
+  watchFocus(window);
+  // Tapping the field that already has the focus brings a hidden keyboard back.
+  window.addEventListener("click", (event) => {
+    const el = focusedEditable();
+    if (el && event.composedPath().includes(el)) report("tap");
+  }, true);
+
+  function legacyKey(key) {
+    if (NAMED_KEYS[key]) return { code: NAMED_KEYS[key][0], keyCode: NAMED_KEYS[key][1], shiftKey: false };
+    const base = SHIFTED_TO_BASE[key] || key.toLowerCase();
+    const shiftKey = Boolean(SHIFTED_TO_BASE[key]) || (key !== key.toLowerCase());
+    if (/^[a-z]$/.test(base)) return { code: "Key" + base.toUpperCase(), keyCode: base.toUpperCase().charCodeAt(0), shiftKey };
+    if (/^[0-9]$/.test(base)) return { code: "Digit" + base, keyCode: base.charCodeAt(0), shiftKey };
+    if (PUNCTUATION_KEYS[base]) return { code: PUNCTUATION_KEYS[base][0], keyCode: PUNCTUATION_KEYS[base][1], shiftKey };
+    return { code: "", keyCode: 0, shiftKey: false };
+  }
+
+  /** Dispatch one synthetic key event; false when the page cancelled it. */
+  function keyEvent(el, type, key) {
+    const legacy = legacyKey(key);
+    const printable = key.length === 1 || key === "Enter";
+    const charCode = type === "keypress" ? (key === "Enter" ? 13 : key.charCodeAt(0)) : 0;
+    return el.dispatchEvent(new KeyboardEvent(type, {
+      key,
+      code: legacy.code,
+      keyCode: type === "keypress" && printable ? charCode : legacy.keyCode,
+      which: type === "keypress" && printable ? charCode : legacy.keyCode,
+      charCode,
+      shiftKey: legacy.shiftKey,
+      bubbles: true,
+      cancelable: true,
+      composed: true
+    }));
+  }
+
+  function inputEvent(el, inputType, data) {
+    el.dispatchEvent(new InputEvent("input", { inputType, data, bubbles: true, composed: true }));
+  }
+
+  function beforeInputAllowed(el, inputType, data) {
+    return el.dispatchEvent(new InputEvent("beforeinput", { inputType, data, bubbles: true, cancelable: true, composed: true }));
+  }
+
+  function isTextControl(el) {
+    return el.tagName === "INPUT" || el.tagName === "TEXTAREA";
+  }
+
+  function hasSelectionApi(el) {
+    return el.tagName === "TEXTAREA" || !NO_SELECTION_TYPES.has(String(el.type).toLowerCase());
+  }
+
+  function execEdit(el, command, value) {
+    if (el.ownerDocument !== document) return false;
+    try {
+      return document.execCommand(command, false, value);
+    } catch (err) {
+      console.warn(`[LabKiosk] execCommand(${command}) refused:`, err);
+      return false;
+    }
+  }
+
+  function insertIntoTextControl(el, text) {
+    if (!beforeInputAllowed(el, "insertText", text)) return;
+    if (hasSelectionApi(el)) {
+      const start = el.selectionStart === null ? el.value.length : el.selectionStart;
+      const end = el.selectionEnd === null ? start : el.selectionEnd;
+      let insert = text;
+      if (el.maxLength >= 0) {
+        const room = el.maxLength - (el.value.length - (end - start));
+        if (room <= 0) return;
+        insert = insert.slice(0, room);
+      }
+      el.setRangeText(insert, start, end, "end");
+    } else {
+      const before = el.value;
+      const next = before + text;
+      if (el.maxLength >= 0 && next.length > el.maxLength) return;
+      el.value = next;
+      // A number field drops a value that is not a number yet ("-", "1.");
+      // keep what was there rather than lose it.
+      if (el.value !== next) el.value = before;
+    }
+    inputEvent(el, "insertText", text);
+  }
+
+  function insertIntoEditableContent(el, text) {
+    const selection = el.ownerDocument.getSelection();
+    if (!selection || !selection.rangeCount) return;
+    if (!beforeInputAllowed(el, "insertText", text)) return;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = el.ownerDocument.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    inputEvent(el, "insertText", text);
+  }
+
+  function insertText(el, text) {
+    if (execEdit(el, "insertText", text)) return;
+    if (isTextControl(el)) insertIntoTextControl(el, text);
+    else insertIntoEditableContent(el, text);
+  }
+
+  function deleteBackward(el) {
+    if (execEdit(el, "delete")) return;
+    if (!beforeInputAllowed(el, "deleteContentBackward", null)) return;
+    if (isTextControl(el) && hasSelectionApi(el)) {
+      let start = el.selectionStart;
+      const end = el.selectionEnd;
+      if (start === end) {
+        if (start === 0) return;
+        // One character, not half of a surrogate pair.
+        const code = el.value.charCodeAt(start - 1);
+        start -= (code >= 0xdc00 && code <= 0xdfff && start >= 2) ? 2 : 1;
+      }
+      el.setRangeText("", start, end, "end");
+    } else if (isTextControl(el)) {
+      if (!el.value) return;
+      el.value = Array.from(el.value).slice(0, -1).join("");
+    } else {
+      const selection = el.ownerDocument.getSelection();
+      if (!selection || !selection.rangeCount) return;
+      if (selection.isCollapsed) selection.modify("extend", "backward", "character");
+      selection.deleteFromDocument();
+    }
+    inputEvent(el, "deleteContentBackward", null);
+  }
+
+  function moveCaret(el, direction) {
+    if (isTextControl(el) && hasSelectionApi(el)) {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      let at;
+      if (start !== end) at = direction < 0 ? start : end;
+      else at = Math.max(0, Math.min(el.value.length, start + direction));
+      el.setSelectionRange(at, at);
+      return;
+    }
+    const selection = el.ownerDocument.getSelection();
+    if (selection) selection.modify("move", direction < 0 ? "backward" : "forward", "character");
+  }
+
+  function isSubmitButton(el) {
+    if (el.tagName === "BUTTON") return String(el.type).toLowerCase() === "submit";
+    return el.tagName === "INPUT" && ["submit", "image"].includes(String(el.type).toLowerCase());
+  }
+
+  /**
+   * What Enter in a single-line field does (HTML "implicit submission"): click
+   * the form's default button, the first submit button in tree order; with
+   * none, submit only when this is the form's one field that would block it.
+   */
+  function implicitSubmission(input) {
+    const form = input.form;
+    if (!form) return;
+    const elements = Array.from(form.elements);
+    const defaultButton = elements.find(isSubmitButton);
+    if (defaultButton) {
+      if (!defaultButton.disabled) defaultButton.click();
+      return;
+    }
+    const blockers = elements.filter((el) => el.tagName === "INPUT" &&
+      IMPLICIT_SUBMISSION_BLOCKERS.has(String(el.type).toLowerCase()));
+    if (blockers.length > 1) return;
+    form.requestSubmit();
+  }
+
+  function pressEnter(el) {
+    if (el.tagName === "INPUT") {
+      implicitSubmission(el);
+    } else if (el.tagName === "TEXTAREA") {
+      insertText(el, "\n");
+    } else if (!execEdit(el, "insertParagraph") && !execEdit(el, "insertLineBreak")) {
+      insertIntoEditableContent(el, "\n");
+    }
+  }
+
+  function focusNext(el) {
+    const doc = el.ownerDocument;
+    const candidates = Array.from(doc.querySelectorAll(
+      "input, select, textarea, button, a[href], [tabindex], [contenteditable]"
+    )).filter((node) => node.tabIndex >= 0 && !node.disabled && node.getClientRects().length > 0 &&
+      !(node.tagName === "INPUT" && String(node.type).toLowerCase() === "hidden"));
+    const index = candidates.indexOf(el);
+    if (index >= 0 && candidates[index + 1]) candidates[index + 1].focus();
+  }
+
+  function actionIsValid(action) {
+    if (!action || typeof action !== "object") return false;
+    if (action.kind === "text") {
+      return typeof action.text === "string" && action.text.length > 0 && action.text.length <= MAX_ACTION_TEXT;
+    }
+    return action.kind === "key" && ACTION_KEYS.has(action.key);
+  }
+
+  /** Type one key into whatever field of this frame has the focus. */
+  function apply(action) {
+    if (!actionIsValid(action)) return false;
+    const el = focusedEditable();
+    if (!el) return false;
+    const key = action.kind === "text" ? action.text : action.key;
+    if (!keyEvent(el, "keydown", key)) {
+      keyEvent(el, "keyup", key);
+      return true;
+    }
+    const typesSomething = action.kind === "text" || key === "Enter";
+    if (typesSomething && !keyEvent(el, "keypress", key)) {
+      keyEvent(el, "keyup", key);
+      return true;
+    }
+    if (action.kind === "text") insertText(el, action.text);
+    else if (key === "Backspace") deleteBackward(el);
+    else if (key === "Enter") pressEnter(el);
+    else if (key === "Tab") focusNext(el);
+    else moveCaret(el, key === "ArrowLeft" ? -1 : 1);
+    keyEvent(el, "keyup", key);
+    return true;
+  }
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || sender.id !== chrome.runtime.id) return false;
+    if (message.type === "labkiosk:osk-apply" && !isTop) {
+      sendResponse({ ok: true, applied: apply(message.action) });
+      return false;
+    }
+    if (message.type === "labkiosk:osk-frame-focus" && isTop) {
+      if (listener && Number.isInteger(message.frameId) && message.frameId > 0) {
+        listener(message.frameId, {
+          editable: message.editable === true,
+          noKeyboard: message.noKeyboard === true,
+          reason: String(message.reason || ""),
+          rect: message.rect && Number.isFinite(message.rect.top) && Number.isFinite(message.rect.bottom)
+            ? { top: message.rect.top, bottom: message.rect.bottom }
+            : null
+        });
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+    return false;
+  });
+
+  return {
+    apply,
+    focusedEditable,
+    describeFocus,
+    actionIsValid,
+    /** Top frame only: called with (frameId, focus) whenever a field's focus changes. */
+    onFocusChange(callback) {
+      listener = callback;
+    },
+    /** A closed shadow root of the kiosk's own UI whose fields the keyboard may type into. */
+    addOwnRoot(host, root) {
+      if (ownRoots.has(host)) return;
+      ownRoots.set(host, root);
+      // Focus moving between two elements of one shadow tree never reaches
+      // the window (both ends retarget to the host), so listen inside it too.
+      watchFocus(root);
+    }
+  };
 })();
 
 (function () {
@@ -116,6 +542,19 @@
       }
     });
   }
+
+  // Usage reports: a tick a minute while this page is the one on screen
+  // (background.js adds whether someone is using the workstation).
+  const USAGE_TICK_MS = 60 * 1000;
+  function usageTick() {
+    if (document.visibilityState !== "visible") return;
+    askAgent({ type: "labkiosk:usage-tick" }).catch((err) => {
+      console.warn("Lab Kiosk: usage tick not counted:", err && err.message ? err.message : err);
+    });
+  }
+  usageTick();
+  setInterval(usageTick, USAGE_TICK_MS);
+  document.addEventListener("visibilitychange", usageTick);
   let lastTargetUrl = null;
   let isLocked = false;
   let lastReloadEpoch = null;
@@ -270,7 +709,9 @@ const BAR_INTRO_MS = 2500;
         e.stopPropagation();
       } else if (
         (e.altKey && e.key === "ArrowLeft") ||
-        (e.key === "Backspace" && !["INPUT", "TEXTAREA"].includes((document.activeElement && document.activeElement.tagName) || ""))
+        // Backspace outside a text field is Back -- but in a contenteditable
+        // editor it deletes, from a real key and the on-screen keyboard alike.
+        (e.key === "Backspace" && !kioskTyping.focusedEditable())
       ) {
         if (isAtBroadcastRoot()) {
           e.preventDefault();
@@ -306,6 +747,9 @@ const BAR_INTRO_MS = 2500;
     shadow.innerHTML = `
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        /* A printed page is the page, without the bar or the curtain. */
+        @media print { :host { display: none !important; } }
+        .kiosk-btn[hidden] { display: none !important; }
         
         #kiosk-sensor {
           position: fixed;
@@ -377,6 +821,11 @@ const BAR_INTRO_MS = 2500;
 
         .kiosk-btn:active {
           transform: scale(0.96);
+        }
+
+        .kiosk-btn[aria-pressed="true"] {
+          background: #2563eb;
+          border-color: #3b82f6;
         }
 
         .domain-pill {
@@ -623,6 +1072,55 @@ const BAR_INTRO_MS = 2500;
           color: #9ca3af;
           line-height: 1.6;
         }
+
+        /* A power schedule's switch-off: five minutes' notice, then shutdown. */
+        #power-notice {
+          position: fixed;
+          left: 50%;
+          bottom: 24px;
+          transform: translateX(-50%);
+          width: min(560px, calc(100vw - 32px));
+          box-sizing: border-box;
+          background: #111827;
+          border: 1px solid #f59e0b;
+          border-radius: 12px;
+          padding: 16px 20px;
+          color: #ffffff;
+          z-index: 2147483646;
+          box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.8);
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+
+        #power-notice.hidden {
+          display: none;
+        }
+
+        .power-head {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 6px;
+        }
+
+        .power-title {
+          font-size: 17px;
+          font-weight: 700;
+        }
+
+        .power-countdown {
+          font-size: 22px;
+          font-weight: 800;
+          color: #fbbf24;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .power-msg {
+          font-size: 14px;
+          color: #d1d5db;
+          line-height: 1.5;
+          margin: 0;
+        }
       </style>
 
       <div id="kiosk-sensor"></div>
@@ -644,6 +1142,21 @@ const BAR_INTRO_MS = 2500;
           <button class="kiosk-btn" id="btn-reload" title="Reload Page" data-i18n-title="bar.reloadTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
             <span data-i18n="bar.reload">Reload</span>
+          </button>
+          <!--
+            Always there, keyboard or not: a touchscreen workstation with a
+            keyboard attached may still be used by touch. Without a keyboard
+            the keyboard also opens by itself on a text field.
+          -->
+          <button class="kiosk-btn" id="btn-keyboard" title="Show or hide the on-screen keyboard"
+                  data-i18n-title="bar.keyboardTitle" aria-pressed="false">
+            <svg width="17" height="15" viewBox="0 0 26 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="1.5" y="2" width="23" height="16" rx="2.5"></rect><path d="M6 7h.01M10 7h.01M14 7h.01M18 7h.01M6 11h.01M10 11h.01M14 11h.01M18 11h.01M8 14.5h10"></path></svg>
+            <span data-i18n="bar.keyboard">Keyboard</span>
+          </button>
+          <!-- Only while the organization allows printing (kioskPrint). -->
+          <button class="kiosk-btn" id="btn-print" title="Print this page" data-i18n-title="bar.printTitle" hidden>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+            <span data-i18n="bar.print">Print</span>
           </button>
         </div>
 
@@ -690,6 +1203,14 @@ const BAR_INTRO_MS = 2500;
         </div>
       </div>
 
+      <div id="power-notice" class="hidden" role="alert" aria-live="assertive">
+        <div class="power-head">
+          <span class="power-title" data-i18n="bar.power-off-title">This workstation is switching off</span>
+          <span class="power-countdown" id="power-countdown"></span>
+        </div>
+        <p class="power-msg" id="power-text" data-i18n="bar.power-off-text">The organization's power schedule switches it off in a few minutes. Save your work now.</p>
+      </div>
+
       <div id="admin-modal" class="modal-overlay hidden">
         <div class="modal-card">
           <div class="modal-header">
@@ -708,11 +1229,31 @@ const BAR_INTRO_MS = 2500;
           </div>
         </div>
       </div>
+
+      <div id="home-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="home-modal-title">
+        <div class="modal-card">
+          <div class="modal-header">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+              <polyline points="3 3 3 9 9 9"></polyline>
+            </svg>
+            <h3 class="modal-title" id="home-modal-title" data-i18n="home.title">Start over?</h3>
+          </div>
+          <p class="modal-desc" data-i18n="home.prompt">This signs out of every site and clears what was opened on this workstation.</p>
+          <div id="home-modal-err" class="modal-err hidden"></div>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn modal-btn-cancel" id="btn-home-modal-cancel" data-i18n="home.cancel">Cancel</button>
+            <button type="button" class="modal-btn modal-btn-confirm" id="btn-home-modal-confirm" data-i18n="home.confirm">Start over</button>
+          </div>
+        </div>
+      </div>
     `;
 
     document.documentElement.appendChild(host);
     uiHost = host;
     uiShadow = shadow;
+    // So the on-screen keyboard can type the admin password too.
+    kioskTyping.addOwnRoot(host, shadow);
 
     const domainLabel = shadow.getElementById("kiosk-domain");
     if (domainLabel) {
@@ -825,11 +1366,64 @@ const BAR_INTRO_MS = 2500;
       if (curtain) curtain.setAttribute("dir", dir);
       const adminModal = shadow.getElementById("admin-modal");
       if (adminModal) adminModal.setAttribute("dir", dir);
+      const homeModal = shadow.getElementById("home-modal");
+      if (homeModal) homeModal.setAttribute("dir", dir);
+      const powerNotice = shadow.getElementById("power-notice");
+      if (powerNotice) powerNotice.setAttribute("dir", dir);
+      keyboard.relabel();
     }).catch(() => { /* English stands */ });
+
+    // Home goes back to the start page; where the organization lets it
+    // (homeReset), it first asks "Start over?" and, on Yes, the agent restarts
+    // the browser with a wiped profile, which opens the start page signed out.
+    const homeModal = shadow.getElementById("home-modal");
+    const homeErr = shadow.getElementById("home-modal-err");
+    const btnHomeConfirm = shadow.getElementById("btn-home-modal-confirm");
+    const btnHomeCancel = shadow.getElementById("btn-home-modal-cancel");
+
+    function openHomeModal() {
+      if (!homeModal) return;
+      if (homeErr) homeErr.classList.add("hidden");
+      if (btnHomeConfirm) {
+        btnHomeConfirm.disabled = false;
+        btnHomeConfirm.textContent = t("home.confirm", "Start over");
+      }
+      homeModal.classList.remove("hidden");
+      // Cancel has the focus, so a stray Enter keeps the session.
+      if (btnHomeCancel) setTimeout(() => btnHomeCancel.focus(), 60);
+    }
+
+    function closeHomeModal() {
+      if (homeModal) homeModal.classList.add("hidden");
+    }
+
+    async function confirmStartOver() {
+      if (!btnHomeConfirm) return;
+      btnHomeConfirm.disabled = true;
+      btnHomeConfirm.textContent = t("home.starting", "Starting over…");
+      if (homeErr) homeErr.classList.add("hidden");
+      try {
+        // On success the browser is ended under this page; nothing follows.
+        await askAgent({ type: "labkiosk:session-reset" });
+      } catch (err) {
+        console.warn("[LabKiosk] Could not start a new session:", err);
+        btnHomeConfirm.disabled = false;
+        btnHomeConfirm.textContent = t("home.confirm", "Start over");
+        btnHomeConfirm.focus();
+        if (homeErr) {
+          homeErr.textContent = t("home.failed", "This workstation could not start over. Ask an administrator.");
+          homeErr.classList.remove("hidden");
+        }
+      }
+    }
 
     shadow.getElementById("btn-home").onclick = async () => {
       try {
         const { status } = await askAgent({ type: "labkiosk:status" });
+        if (status.homeReset === true) {
+          openHomeModal();
+          return;
+        }
         const target = status.targetUrl || broadcastState.url;
         const safeTarget = httpUrlOrNull(target);
         if (safeTarget) {
@@ -839,6 +1433,16 @@ const BAR_INTRO_MS = 2500;
         console.warn("[LabKiosk] Home target unavailable:", e);
       }
     };
+    if (btnHomeCancel) btnHomeCancel.onclick = closeHomeModal;
+    if (btnHomeConfirm) btnHomeConfirm.onclick = confirmStartOver;
+    // Escape cancels wherever the focus is: the disabled "Starting over…"
+    // button gives the focus back to the page.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && homeModal && !homeModal.classList.contains("hidden")) {
+        e.preventDefault();
+        closeHomeModal();
+      }
+    }, true);
     shadow.getElementById("btn-back").onclick = () => {
       if (isAtBroadcastRoot()) {
         console.log("[LabKiosk] Back navigation blocked at broadcast root");
@@ -848,6 +1452,16 @@ const BAR_INTRO_MS = 2500;
     };
     shadow.getElementById("btn-forward").onclick = () => window.history.forward();
     shadow.getElementById("btn-reload").onclick = () => window.location.reload();
+    const btnKeyboard = shadow.getElementById("btn-keyboard");
+    if (btnKeyboard) {
+      // Pressing it must not take the focus from the field it is opened for.
+      btnKeyboard.addEventListener("pointerdown", (e) => e.preventDefault());
+      btnKeyboard.addEventListener("mousedown", (e) => e.preventDefault());
+      btnKeyboard.onclick = () => keyboard.toggle();
+      keyboard.bindButton(btnKeyboard);
+    }
+    const btnPrint = shadow.getElementById("btn-print");
+    if (btnPrint) btnPrint.onclick = () => kioskPrint.print();
 
     const adminModal = shadow.getElementById("admin-modal");
     const adminInput = shadow.getElementById("admin-modal-input");
@@ -970,9 +1584,429 @@ const BAR_INTRO_MS = 2500;
     }
   }
 
+  /**
+   * The on-screen keyboard, docked at the bottom of the top frame in a closed
+   * shadow root of its own (beside the bar's, so the bar's rebuild never takes
+   * it down and it can sit above the admin modal).
+   *
+   * It opens from the bar's Keyboard button on any workstation, and by itself
+   * when the agent reports keyboardPresent: false and a text field gets the
+   * focus; then it also closes when the focus leaves text, unless it was opened
+   * from the button. Hide closes it until a field is tapped or focused again.
+   * Keys act on pointerdown, whose default is cancelled, so the field keeps the
+   * focus; the typing itself is kioskTyping's, in the field's own frame.
+   *
+   * One layout, US QWERTY, with the US shifted symbols and a ?123 layer.
+   * Another layout is another LAYERS table chosen from the workstation's
+   * keymap (localization.json), plus dead keys for accented letters.
+   */
+  function createOnScreenKeyboard() {
+    const REPEAT_DELAY_MS = 450;
+    const REPEAT_EVERY_MS = 70;
+    const HIDE_AFTER_BLUR_MS = 250;
+    const DOUBLE_SHIFT_MS = 400;
+    const FIELD_MARGIN_PX = 12;
+    const REPEATING = new Set(["Backspace", "ArrowLeft", "ArrowRight"]);
+
+    const chars = (text, shifted) => Array.from(text).map((base, i) => ({
+      base,
+      shifted: shifted ? shifted[i] : (/^[a-z]$/.test(base) ? base.toUpperCase() : base),
+      letter: /^[a-z]$/.test(base),
+      width: 1
+    }));
+    const fn = (action, width) => ({ action, width });
+    const LAYERS = {
+      letters: [
+        [...chars("`1234567890-=", "~!@#$%^&*()_+"), fn("Backspace", 2)],
+        [fn("Tab", 1.5), ...chars("qwertyuiop[]", "QWERTYUIOP{}"), { ...chars("\\", "|")[0], width: 1.5 }],
+        [fn("CapsLock", 1.75), ...chars("asdfghjkl;'", "ASDFGHJKL:\""), fn("Enter", 2.25)],
+        [fn("Shift", 2.25), ...chars("zxcvbnm,./", "ZXCVBNM<>?"), fn("Shift", 2.75)],
+        [fn("Symbols", 2), fn("ArrowLeft", 1.25), fn("Space", 8.5), fn("ArrowRight", 1.25), fn("Hide", 2)]
+      ],
+      symbols: [
+        [...chars("1234567890"), fn("Backspace", 2)],
+        [fn("Tab", 2), ...chars("@#$%&*-+()")],
+        [...chars("!\"':;/?_="), fn("Enter", 3)],
+        [...chars("~`\\|{}[]<>^.")],
+        [fn("Letters", 2), fn("ArrowLeft", 1.5), fn("Space", 5), fn("ArrowRight", 1.5), fn("Hide", 2)]
+      ]
+    };
+
+    let host = null;
+    let panel = null;
+    let rows = null;
+    const keyDefs = new Map();
+    let button = null;
+    let layer = "letters";
+    let shift = false;
+    let caps = false;
+    let lastShiftAt = 0;
+    let visible = false;
+    let manual = false;
+    let autoMode = false;
+    let dismissed = false;
+    let focus = { frameId: 0, editable: false, rect: null, noKeyboard: false };
+    let blurTimer = null;
+    let repeatTimer = null;
+    let savedPadding = null;
+
+    function label(def) {
+      switch (def.action) {
+        case "Backspace": return { text: "⌫", title: t("keyboard.backspaceTitle", "Delete") };
+        case "Tab": return { text: t("keyboard.tab", "Tab") };
+        case "CapsLock": return { text: t("keyboard.caps", "Caps") };
+        case "Enter": return { text: t("keyboard.enter", "Enter") };
+        case "Shift": return { text: "⇧ " + t("keyboard.shift", "Shift") };
+        case "Symbols": return { text: t("keyboard.symbols", "?123") };
+        case "Letters": return { text: t("keyboard.letters", "ABC") };
+        case "ArrowLeft": return { text: "←", title: t("keyboard.leftTitle", "Move left") };
+        case "ArrowRight": return { text: "→", title: t("keyboard.rightTitle", "Move right") };
+        case "Space": return { text: t("keyboard.space", "Space") };
+        case "Hide": return { text: t("keyboard.hide", "Hide"), title: t("keyboard.hideTitle", "Hide the keyboard") };
+        default: return { text: output(def) };
+      }
+    }
+
+    function output(def) {
+      if (def.letter) return shift !== caps ? def.shifted : def.base;
+      return shift ? def.shifted : def.base;
+    }
+
+    function renderLabels() {
+      for (const [el, def] of keyDefs) {
+        const { text, title } = label(def);
+        el.textContent = text;
+        if (title) {
+          el.title = title;
+          el.setAttribute("aria-label", title);
+        }
+        el.classList.toggle("on", (def.action === "Shift" && shift) || (def.action === "CapsLock" && caps));
+      }
+    }
+
+    function renderLayer() {
+      if (!rows) return;
+      keyDefs.clear();
+      rows.replaceChildren();
+      for (const row of LAYERS[layer]) {
+        const rowEl = document.createElement("div");
+        rowEl.className = "osk-row";
+        for (const def of row) {
+          const key = document.createElement("div");
+          key.className = def.action ? "osk-key fn" : "osk-key";
+          if (def.action === "Enter") key.classList.add("enter");
+          key.setAttribute("role", "button");
+          key.style.flexGrow = String(def.width);
+          keyDefs.set(key, def);
+          rowEl.appendChild(key);
+        }
+        rows.appendChild(rowEl);
+      }
+      renderLabels();
+    }
+
+    function stopRepeat() {
+      if (repeatTimer) clearTimeout(repeatTimer);
+      repeatTimer = null;
+      if (rows) rows.querySelectorAll(".pressed").forEach((el) => el.classList.remove("pressed"));
+    }
+
+    function send(action) {
+      if (focus.frameId === 0 || !focus.editable) {
+        kioskTyping.apply(action);
+        return;
+      }
+      askAgent({ type: "labkiosk:osk-type", frameId: focus.frameId, action }).catch((err) => {
+        console.warn("[LabKiosk] Could not type into the frame:", err);
+      });
+    }
+
+    function press(def) {
+      switch (def.action) {
+        case "Shift": {
+          const now = Date.now();
+          if (!shift && !caps && now - lastShiftAt < DOUBLE_SHIFT_MS) {
+            caps = true;
+          } else if (caps) {
+            caps = false;
+            shift = false;
+          } else {
+            shift = !shift;
+          }
+          lastShiftAt = now;
+          renderLabels();
+          return;
+        }
+        case "CapsLock":
+          caps = !caps;
+          shift = false;
+          renderLabels();
+          return;
+        case "Symbols":
+        case "Letters":
+          layer = def.action === "Symbols" ? "symbols" : "letters";
+          shift = false;
+          renderLayer();
+          return;
+        case "Hide":
+          hide(true);
+          return;
+        case "Space":
+          send({ kind: "text", text: " " });
+          return;
+        case undefined:
+          send({ kind: "text", text: output(def) });
+          if (shift) {
+            shift = false;
+            renderLabels();
+          }
+          return;
+        default:
+          send({ kind: "key", key: def.action });
+      }
+    }
+
+    function build() {
+      if (host && host.isConnected) return;
+      host = document.createElement("div");
+      host.id = "labkiosk-keyboard";
+      host.style.cssText = "all: initial; position: fixed; z-index: 2147483647; display: none;";
+      const shadow = host.attachShadow({ mode: "closed" });
+      shadow.innerHTML = `
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+          @media print { :host { display: none !important; } }
+          .osk {
+            position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483647;
+            background: rgba(15, 23, 42, 0.98);
+            border-top: 1px solid #334155;
+            box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
+            padding: 8px 8px calc(10px + env(safe-area-inset-bottom));
+            user-select: none; -webkit-user-select: none; touch-action: none;
+          }
+          .osk.top { top: 0; bottom: auto; border-top: 0; border-bottom: 1px solid #334155; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+          .osk-rows { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
+          .osk-row { display: flex; gap: 6px; }
+          .osk-key {
+            flex: 1 1 0; min-width: 0;
+            height: clamp(46px, 7.4vh, 68px);
+            display: flex; align-items: center; justify-content: center;
+            background: #1e293b; color: #f8fafc;
+            border: 1px solid #334155; border-bottom-width: 3px; border-radius: 8px;
+            font-size: clamp(17px, 2.7vh, 25px); font-weight: 600;
+            white-space: nowrap; overflow: hidden; cursor: pointer;
+          }
+          .osk-key.fn { background: #273449; color: #cbd5e1; font-size: clamp(14px, 2.1vh, 18px); }
+          .osk-key.enter { background: #1d4ed8; border-color: #2563eb; color: #ffffff; }
+          .osk-key.on { background: #2563eb; border-color: #60a5fa; color: #ffffff; }
+          .osk-key.pressed { background: #3b82f6; border-color: #93c5fd; color: #ffffff; transform: translateY(1px); }
+        </style>
+        <div class="osk" dir="ltr" role="group">
+          <div class="osk-rows"></div>
+        </div>
+      `;
+      panel = shadow.querySelector(".osk");
+      rows = shadow.querySelector(".osk-rows");
+      panel.setAttribute("aria-label", t("keyboard.title", "On-screen keyboard"));
+
+      panel.addEventListener("pointerdown", (event) => {
+        // Never take the focus from the field being typed into.
+        event.preventDefault();
+        const key = event.target instanceof Element ? event.target.closest(".osk-key") : null;
+        const def = key ? keyDefs.get(key) : null;
+        if (!def) return;
+        stopRepeat();
+        key.classList.add("pressed");
+        press(def);
+        if (REPEATING.has(def.action)) {
+          const again = () => {
+            press(def);
+            repeatTimer = setTimeout(again, REPEAT_EVERY_MS);
+          };
+          repeatTimer = setTimeout(again, REPEAT_DELAY_MS);
+        }
+      });
+      panel.addEventListener("mousedown", (event) => event.preventDefault());
+      // Also no scrolling, no synthesized mouse events and no click that could
+      // land on the page once Hide has taken the keyboard away.
+      panel.addEventListener("touchstart", (event) => event.preventDefault(), { passive: false });
+      for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
+        panel.addEventListener(type, stopRepeat);
+      }
+      document.documentElement.appendChild(host);
+      renderLayer();
+    }
+
+    function setPagePadding(px) {
+      const style = document.documentElement.style;
+      if (savedPadding === null) {
+        savedPadding = { value: style.getPropertyValue("padding-bottom"), priority: style.getPropertyPriority("padding-bottom") };
+      }
+      style.setProperty("padding-bottom", `${px}px`, "important");
+    }
+
+    function restorePagePadding() {
+      if (savedPadding === null) return;
+      const style = document.documentElement.style;
+      if (savedPadding.value) style.setProperty("padding-bottom", savedPadding.value, savedPadding.priority);
+      else style.removeProperty("padding-bottom");
+      savedPadding = null;
+    }
+
+    /** The focused field's top and bottom in this window, or null. */
+    function fieldRect() {
+      if (!focus.editable) return null;
+      if (focus.frameId === 0) {
+        const el = kioskTyping.focusedEditable();
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom };
+      }
+      // A field in a frame: its position in that frame, moved by where the
+      // frame is (exact for one level of frames, close for deeper ones).
+      const frame = document.activeElement;
+      if (!frame || !["IFRAME", "FRAME"].includes(frame.tagName) || !focus.rect) return null;
+      const offset = frame.getBoundingClientRect().top + frame.clientTop;
+      return { top: offset + focus.rect.top, bottom: offset + focus.rect.bottom };
+    }
+
+    /**
+     * Keep the field above the keyboard: room at the bottom of the page, then
+     * scroll; a page that cannot scroll (a fixed, full-height layout) gets the
+     * keyboard at the top instead when the field fits below it.
+     */
+    function reveal() {
+      if (!visible || !panel) return;
+      panel.classList.remove("top");
+      const height = panel.offsetHeight;
+      setPagePadding(height);
+      const rect = fieldRect();
+      if (!rect) return;
+      const limit = window.innerHeight - height - FIELD_MARGIN_PX;
+      if (rect.bottom <= limit) return;
+      window.scrollBy(0, rect.bottom - limit);
+      const after = fieldRect();
+      if (after && after.bottom > limit && after.top > height + FIELD_MARGIN_PX) {
+        panel.classList.add("top");
+      }
+    }
+
+    function updateButton() {
+      if (button) button.setAttribute("aria-pressed", visible ? "true" : "false");
+    }
+
+    function show(fromButton) {
+      if (isLocked) return;
+      build();
+      if (fromButton) manual = true;
+      if (document.documentElement.lastElementChild !== host) document.documentElement.appendChild(host);
+      if (!visible) {
+        visible = true;
+        host.style.display = "block";
+      }
+      updateButton();
+      requestAnimationFrame(reveal);
+    }
+
+    function hide(byPerson) {
+      manual = false;
+      // Hidden on purpose while a field has the focus: stay hidden until a
+      // field is tapped or focused again.
+      if (byPerson && focus.editable) dismissed = true;
+      stopRepeat();
+      if (!visible) return;
+      visible = false;
+      if (host) host.style.display = "none";
+      if (panel) panel.classList.remove("top");
+      restorePagePadding();
+      updateButton();
+    }
+
+    function onFocus(frameId, info) {
+      if (info.editable) {
+        if (blurTimer) clearTimeout(blurTimer);
+        blurTimer = null;
+        focus = { frameId, editable: true, rect: info.rect || null, noKeyboard: Boolean(info.noKeyboard) };
+        if (info.reason === "focus" || info.reason === "tap") dismissed = false;
+        if (visible) requestAnimationFrame(reveal);
+        else if (autoMode && !dismissed && !focus.noKeyboard) show(false);
+        return;
+      }
+      // A late report from a frame the field has already left.
+      if (focus.editable && frameId !== focus.frameId) return;
+      if (blurTimer) clearTimeout(blurTimer);
+      // Not at once: moving between two fields (or into a frame's field) is
+      // a blur here and a focus there, which arrives a moment later.
+      blurTimer = setTimeout(() => {
+        blurTimer = null;
+        focus = { frameId, editable: false, rect: null, noKeyboard: false };
+        if (!manual) hide(false);
+      }, HIDE_AFTER_BLUR_MS);
+    }
+
+    kioskTyping.onFocusChange(onFocus);
+
+    return {
+      bindButton(el) {
+        button = el;
+        updateButton();
+      },
+      toggle() {
+        if (visible) hide(true);
+        else show(true);
+      },
+      /** Called every sync with the agent's keyboardPresent === false. */
+      setAutoMode(on) {
+        if (on === autoMode) return;
+        autoMode = on;
+        if (on && focus.editable && !dismissed && !focus.noKeyboard) show(false);
+        else if (!on && visible && !manual) hide(false);
+      },
+      setLocked(locked) {
+        if (locked && visible) hide(false);
+      },
+      relabel() {
+        if (panel) panel.setAttribute("aria-label", t("keyboard.title", "On-screen keyboard"));
+        renderLabels();
+      }
+    };
+  }
+
+  const keyboard = createOnScreenKeyboard();
+
   let shadowRoot = null;
 
   // 3. Periodic Synchronization with local agent
+  /*
+   * A power schedule's switch-off, as the agent reports it: {at: ms, postponed}.
+   * A countdown to the shutdown, or, while a system update is installing, a
+   * note that it waits for the update. Hidden when nothing is under way.
+   */
+  function showPowerNotice(root, powerOff) {
+    const notice = root.getElementById("power-notice");
+    if (!notice) return;
+    const at = powerOff && typeof powerOff === "object" ? Number(powerOff.at) : NaN;
+    if (!Number.isFinite(at) || at <= 0) {
+      notice.classList.add("hidden");
+      return;
+    }
+    const countdown = root.getElementById("power-countdown");
+    const text = root.getElementById("power-text");
+    if (powerOff.postponed) {
+      if (countdown) countdown.textContent = "";
+      if (text) text.textContent = t("bar.power-off-postponed", "A system update is installing, so it waits for the update to finish and then switches off.");
+    } else {
+      const left = Math.max(0, Math.round((at - Date.now()) / 1000));
+      if (countdown) {
+        countdown.textContent = left > 0
+          ? Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0")
+          : t("bar.power-off-now", "Now");
+      }
+      if (text) text.textContent = t("bar.power-off-text", "The organization's power schedule switches it off in a few minutes. Save your work now.");
+    }
+    notice.classList.remove("hidden");
+  }
+
   async function syncLoop() {
     try {
       // A hostile or merely over-eager page can remove our host node; rebuild it
@@ -1057,6 +2091,17 @@ const BAR_INTRO_MS = 2500;
             curtain.classList.add("hidden");
           }
         }
+        keyboard.setLocked(isLocked);
+        showPowerNotice(shadowRoot, data.powerOff);
+        // No keyboard attached (the agent read /proc/bus/input/devices): the
+        // on-screen keyboard opens by itself on a text field. Unknown (null)
+        // and true leave it to the bar's button.
+        keyboard.setAutoMode(data.keyboardPresent === false);
+        // Printing: the agent says true only once Chromium may print, and
+        // never behind the lock curtain.
+        kioskPrint.enabled = data.printing === true && !isLocked;
+        const btnPrint = shadowRoot.getElementById("btn-print");
+        if (btnPrint) btnPrint.hidden = !kioskPrint.enabled;
 
         updateNavButtonStates(shadowRoot);
 

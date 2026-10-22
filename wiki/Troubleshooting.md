@@ -9,6 +9,7 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set` | There is no default super admin once a D1 binding exists | `wrangler secret put` both |
+| `PASSWORD_PEPPER must be set as a Wrangler secret` | Password hashes are peppered and production has no pepper | `openssl rand -hex 32 \| npx wrangler secret put PASSWORD_PEPPER` |
 | `The D1 database is missing the current schema` | Migrations not applied | `wrangler d1 migrations apply labkiosk-db --remote` (or `--local`) |
 | `No D1 database bound` on startup | `env.DB` missing | Bind `DB` in `wrangler.jsonc`, or set `ALLOW_LOCAL_DB=1` for local dev and tests only |
 | `D1_EXEC_ERROR: incomplete input` | Miniflare/workerd parses multiline SQL poorly with CRLF | Split on `;`, `replace(/\r\n/g, "\n")`, run each via `db.prepare(stmt).run()` |

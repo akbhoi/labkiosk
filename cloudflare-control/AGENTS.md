@@ -31,7 +31,9 @@ cloudflare-control/
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration and the contact form, each with an email code; Remote Control requests
 │   ├── geo.ts                          # Countries for registration: calling codes, states, postal and tax ID formats; one table for the server's checks and the form (/assets/geo-<hash>.json)
-│   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
+│   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional passkeys and TOTP app, recovery codes), sign-in alerts
+│   ├── webauthn.ts                     # Passkeys: CBOR, authenticator data, ES256/RS256 verification with crypto.subtle
+│   ├── sso.ts                          # Staff single sign-on (Google Workspace, Microsoft Entra ID): OIDC code flow + PKCE, ID tokens verified with crypto.subtle, then continueSignIn
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
@@ -60,9 +62,10 @@ cloudflare-control/
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_two_factor.ts                # The Two-factor sign-in tab (Settings, and System in the super console)
+│   ├── ui_admin_sso.ts                 # Settings → Security: the Single sign-on card
 │   ├── ui_super_inbox.ts               # Its Tasks and Mail panes (/super/tasks, /super/mail)
 │   ├── ui_super_releases.ts            # Its Releases pane (/super/releases): classify, withdraw, revoke
-│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
+│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /content-policy, /dpa, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/
@@ -98,7 +101,7 @@ cloudflare-control/
 - **Delegation Never Escalates**: a staff member holding `staff` who is not a co-administrator may only grant permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another organization's user, and removing staff ends that account's sessions.
 - **Customizable Subdomain & Settings**: Organization admins can customize their subdomain (`POST /api/tenant/subdomain`) and default home route (`home_route`: e.g. `/` vs `/home`). Remote Control needs no per-organization setting: it goes through the console's `RemoteRelay` Durable Object, and a `tunnelDomain` sent to `POST /api/tenant/settings` is ignored.
 - **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (who may then open only the platform-owned demos), for a session that already owns that tenant, or on an explicitly public route.
-- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry`, `/api/devices/ws`, `/api/devices/remote`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` call `requireDevice()`. A route with no guard is a security vulnerability.
+- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry`, `/api/devices/ws`, `/api/devices/remote`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health` and `/api/devices/video-decoding` call `requireDevice()`. A route with no guard is a security vulnerability.
 - A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims, and a WebSocket carries only the identity the Worker verified (`hubUpgrade()` builds a fresh request).
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
@@ -161,8 +164,12 @@ cloudflare-control/
 - **What D1 still owns:** everything two requests must agree on (Rule 2) and the `client_devices`
   registry, written on connect, on disconnect, on a status change (batched by a 20 s alarm) and
   every 5 minutes for an unchanged workstation — never per ping or per frame.
-  `tenants.online_workstations` is the hub's count, so the super admin list needs no query per
-  organization.
+  `tenants.online_workstations` is the hub's count, and `http_workstations` how many of those are
+  on the HTTP heartbeat, so the super admin list needs no query per organization.
+- **The HTTP heartbeat is paced by the hub.** Every heartbeat is a billed Worker request that wakes
+  the hub, so its reply carries `heartbeatSeconds` (3 while a console is open or was used in the
+  last minute, 15 otherwise) and `frames` (whether a console is showing that screen). An HTTP
+  workstation is offline after missing two idle heartbeats (36 s).
 - **Hibernation rules.** Sockets are accepted with `ctx.acceptWebSocket()` and tags (`device`,
   `device:<id>`, `console`); per-socket state lives in `serializeAttachment()` (≤ 16 KB); timers are
   alarms; the ping is `setWebSocketAutoResponse('{"type":"ping"}' → '{"type":"pong"}')`, which the
@@ -226,6 +233,10 @@ cloudflare-control/
 - **A disk health report** (`POST /api/devices/disk-health`) lists the disks `labkiosk-health` found
   wearing out or failing: one `disk_health` row per disk and state (warning, or error when failing),
   at most 8 a day per workstation, never `pending` for bug reports. Healthy disks are never sent.
+- **A video decoding report** (`POST /api/devices/video-decoding`) is not an issue: the latest one
+  replaces the last on `client_devices.video_decoding` (`0043`, validated JSON) and `/api/clients`
+  returns it as `videoDecoding`; the Workstations card shows it, in the warning tone when videos
+  play on the CPU.
 - **Automatic bug reports are opt-in per organization** (`POST /api/settings/bug-reports`,
   `settings` permission, `{ enabled, acceptTerms }`). Turning them on requires `acceptTerms` equal
   to `BUG_REPORT_TERMS_VERSION`; bumping that constant pauses every organization's reports until
@@ -241,7 +252,10 @@ cloudflare-control/
   Never add a tenant's name, workstation id or unredacted detail to it.
 - **Every outside service is disclosed.** `/privacy` names each Cloudflare product the Worker
   binds plus GitHub and Google Fonts, and a test holds that list. Adding a binding or an outside
-  service means adding it to the Privacy Policy (`ui_legal.ts`) and to that test.
+  service means adding it to the Privacy Policy (`ui_legal.ts`) and to that test, and, when it
+  handles organization data, to the subprocessor list of the Data Processing Agreement (`/dpa`),
+  which promises organizations 30 days' notice. The DPA is part of the Terms: changing its text is
+  a new `terms` version in `LEGAL_DOCUMENTS`.
 
 ### Rule 3: The Schema Has Two Homes
 
@@ -339,7 +353,8 @@ cloudflare-control/
   - **Settings Page Layout (`/admin/settings`)**:
     - **Semantic Tab Panes & Segmented Nav**: Converted 9 fragile vertical scroll jumps into distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Two-factor sign-in`, `Errors & Warnings`, and `Updates` for accounts holding `updates`) with instant client-side switching, companion in-canvas `.segmented-nav` tabs, and deep linking (`?tab=...`).
     - **Two-factor sign-in is a tab, not a dialog** (`ui_two_factor.ts`): `?tab=two-factor` here and `/super/system?tab=system-two-factor` in the super console, linked from the profile menu. It is the signed-in account's own, so `/admin/settings` opens for every staff account: without the `settings` permission it renders that tab alone (`accountOnly`), and nothing of the organization's.
-    - **The second factor is an emailed code by default** (`two_factor.ts`): a super admin is always asked; an organization account turns it on in that tab (`users.two_factor_email`, migration `0023`, `POST /api/auth/two-factor/email { password, enabled }`). An authenticator app is optional on top. Where email is not configured, an account with no app signs in with its password alone and the server logs why.
+    - **The second factor is an emailed code by default** (`two_factor.ts`): every administrator is always asked (`isAdministratorAccount()`: the super admin, an organization's owner, `org_admin` staff); other staff turn it on in that tab (`users.two_factor_email`, migration `0023`, `POST /api/auth/two-factor/email { password, enabled }`). Passkeys (`webauthn.ts`, migration `0042`) and an authenticator app are optional on top; a passkey is offered first. The relying party is `DEFAULT_DOMAIN` on every host under it and the host itself on a custom domain; the origin must be the request's own. Every WebAuthn challenge is spent by the first answer, right or wrong, and the signature counter must move forward unless both sides are 0. Where email is not configured, an account with no app and no passkey signs in with its password alone and the server logs why.
+    - **Single sign-on ends in the same second step** (`sso.ts`, migration `0046`): Google Workspace or Microsoft Entra ID for organization staff only, configured under Settings → Security (`GET`/`POST /api/settings/sso`: `settings` to read, an administrator to change). The callback is on the platform host and never sets a session: it leaves a one-time code (two minutes, bound to the sign-in page's host and to a `SameSite=Strict` browser cookie) that the sign-in page redeems on its own host through `continueSignIn`, so the second-factor rule, trusted browsers and the handoff are the password's. Match by verified email to an existing account of that organization only; Google needs `email_verified` and an allowed `hd`, Microsoft an allowed `tid` whose issuer matches. A provider without both Worker secrets is never offered. "Require single sign-on" never applies to the owner and lifts while no chosen provider is offered.
     - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode | Kiosk Routing & Home URL; Subdomain | Custom Domain; Homepage Identity | Content Blocks; Enrollment Key & Admin Password | Recent Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
@@ -470,6 +485,14 @@ cloudflare-control/
 
 ### Rule 6: State-Changing Requests Prove Their Origin
 
+- Sessions are host-only (`src/session_handoff.ts`): `__Host-labkiosk_session` on HTTPS, never a
+  `Domain` attribute, 12 hours for a super admin and 7 days otherwise. A sign-in whose console is on
+  another host sets no cookie where it happened; it redirects through that host's
+  `/api/auth/handoff`, whose code is sealed with a key derived from `PASSWORD_PEPPER`, bound to the
+  host, valid 60 s, and spent by replacing the session. Never reintroduce a parent-domain cookie.
+- `SUPER_ADMIN_HOST` (optional, `superAdminHost()` in `guard.ts`) confines `/super` and
+  `/api/super/*` to one host under `DEFAULT_DOMAIN`; it is checked before any other routing, and a
+  bad value stops the worker.
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host or the platform domain. A dev-host origin (`localhost`, ...) is accepted **only when the request itself is on a dev host**; in production it would admit any page served from the operator's own machine. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.
 
@@ -477,7 +500,7 @@ cloudflare-control/
 
 - Missing configuration is an error, not a reason to fall back to something weaker.
 - `getDatabase()` throws without a D1 binding unless `ALLOW_LOCAL_DB=1`.
-- With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
+- With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and `PASSWORD_PEPPER` (32+ characters, `passwordPepper()` in `auth.ts`) keys the HMAC over every stored password hash, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
 - In production it also refuses to serve without every platform resource (`requiredBindingsProblem()` in `hub.ts`, Rule 2d), naming each one that is missing. `ALLOW_LOCAL_DB=1` lets a missing one fall back to an in-process stand-in.
 - Public endpoints are throttled per source address (`rateLimitWait` / `recordRateLimitHit` in `db.ts`): registration and failed enrolments. Reserved slugs (`RESERVED_SLUGS` in `guard.ts`) can neither be registered nor assigned.
 

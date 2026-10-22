@@ -60,7 +60,7 @@ jobs:
       lines: ${{ steps.lines.outputs.lines }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -163,10 +163,10 @@ jobs:
 
     steps:
       - name: Checkout the tools
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout ${{ matrix.tag }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.tag }}
           path: rebuild-src
@@ -181,7 +181,7 @@ jobs:
       # package list as `dpkg-status`; a feature release, its ISO.
       - name: Cache the packages of ${{ matrix.tag }}
         id: cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/base/status
           key: security-rebuild-dpkg-status-${{ matrix.tag }}
@@ -288,13 +288,13 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.rebuild == 'true'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # The builder image of the rebuilt source: the Dockerfile COPYs the source
       # in, so it is built from that tree and nothing else.
       - name: Build the ISO builder image
         if: steps.check.outputs.rebuild == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: rebuild-src/distro-builder
           file: rebuild-src/distro-builder/Dockerfile
@@ -342,7 +342,7 @@ jobs:
 
       - name: Upload ISO Artifact
         if: steps.check.outputs.rebuild == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: labkiosk-${{ matrix.version }}-iso
           path: |
@@ -361,7 +361,7 @@ jobs:
 
       - name: Upload boot-test screenshots
         if: failure() && steps.check.outputs.rebuild == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boot-test-screenshots-${{ matrix.version }}
           path: ${{ runner.temp }}/boot-test/*.ppm
@@ -446,7 +446,7 @@ jobs:
       # newest release that has an ISO.
       - name: Create GitHub Release
         if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ matrix.version }}
           name: "Lab Kiosk v${{ matrix.version }} (security)"

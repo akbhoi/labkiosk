@@ -63,6 +63,9 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
 - **Disk health** (same loop): `report_disk_health()` reads `/run/labkiosk-health/disks.json`
   (root-owned, ≤ 16 KiB, written by `labkiosk-health`) once per check and posts the `warning` /
   `failing` disks to `POST /api/devices/disk-health`. Contract: `labkiosk-core` §2d.
+- **Video decoding** (same loop): `report_video_decoding()` runs `vainfo` on each render node once
+  per start and posts what each GPU decodes to `POST /api/devices/video-decoding`. NVIDIA decodes
+  on the CPU (no out-of-tree driver). Contract: `labkiosk-core` §2e.
 - The session runs the agent as `/opt/labkiosk/agent/agent.py` itself (shebang, 0755), never
   `python3 agent.py`: its AppArmor profile (`labkiosk-agent`, complain mode) attaches to that path.
 - Enrolment reply names the organization via `organization_name()` (`organizationName`, falling
@@ -92,9 +95,20 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `\\Z` (that demands a literal backslash; it once rejected every language tag and broke installs).
   A test scans the client scripts for it.
 
+## Printing (`usr/local/sbin/labkiosk-printing`)
+
+Off until Settings → Printing turns it on; the configuration's `printing: {enabled, printers}` goes
+to `apply_printing()`, malformed means off. `printing_loop()` runs the helper through sudo
+(`/etc/sudoers.d/52-labkiosk-printing`) one change at a time and retries failures every 5 min;
+`/api/status.printing` (`printing_ready()`) turns true 6 s after the helper wrote
+`zz-labkiosk-printing.json`, and the bar's `#btn-print` and Ctrl+P (`kioskPrint` in `content.js`)
+follow it. The helper re-validates everything; keep `PRINTER_URI_PATTERN` equal to its
+`URI_PATTERN` (a test pins both, and the Worker's `printerUriProblem` applies the same rules).
+Never write `PrintingEnabled` from the agent and never let CUPS listen on TCP.
+
 ## Language & Region (`usr/local/sbin/labkiosk-localization`)
 
-The only program the agent may run through sudo (`/etc/sudoers.d/51-labkiosk-localization`); it
+One of the two programs the agent may run through sudo (`/etc/sudoers.d/51-labkiosk-localization`); it
 **re-validates every argument** (zone against
 zoneinfo + `zone1970.tab`, locale against `/usr/share/i18n/SUPPORTED`, keymap against X11 rules,
 language tag against `UI_LANGUAGE_PATTERN`, which must equal the agent's). A locale has three
@@ -142,6 +156,16 @@ the wizard origin. Layers below it: Openbox `rc.xml` at `~/.config/openbox` **an
 and `labkiosk-lock-keys` (`xkbcomp`: F keys, Super, menu, Print, Pause, Scroll Lock, Insert and
 `XF86*` become `NoSymbol`; judge a key by its first symbol, strip higher levels individually so
 `KP_Multiply` keeps typing; re-run after any `setxkbmap`).
+
+**On-screen keyboard** (`wiki/Browser-Extension.md`): `createOnScreenKeyboard()` draws it in the
+top frame (own closed shadow root, `#labkiosk-keyboard`); the bar's `#btn-keyboard` toggles it, and
+it opens by itself on a text field while `/api/status` `keyboardPresent === false`
+(`input_devices_report()`: a `kbd` device with every letter, Space and Enter in its `KEY=` bitmap;
+`null` when `/proc/bus/input/devices` lists nothing). `kioskTyping` (all frames) types with
+`execCommand("insertText")` framed by modifier-free synthetic key events; subframe fields go
+through `background.js` (`labkiosk:osk-focus` → frame 0, `labkiosk:osk-type` → that `frameId`).
+Keys act on a cancelled `pointerdown` so the field keeps the focus. Tests:
+`distro-builder/tests/test_input_devices.py`.
 
 ## Verify
 

@@ -1,3 +1,5 @@
+import type { VideoDecoding } from "./boot_report";
+import type { Hardware } from "./hardware";
 import type { UpdateReport } from "./releases";
 export type UserRole = "super_admin" | "org_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
@@ -64,6 +66,7 @@ export interface Tenant {
   homepage_blocks?: string | null;
   /** Workstations online, as the organization's OrgHub last counted them. */
   online_workstations?: number;
+  http_workstations?: number;
   /** Cloudflare for SaaS custom hostname id for `custom_domain`, once provisioned. */
   custom_hostname_id?: string | null;
   /** none, pending (certificate being issued), active, failed, or local (development). */
@@ -87,6 +90,12 @@ export interface Tenant {
   security_updates?: SecurityUpdateMode;
   /** 1 when its workstations at one site share a new system image over the LAN (phase 5). */
   lan_sharing?: number;
+  /** 1 when its usage reports record the sites visited, by hostname (0044). */
+  usage_sites?: number;
+  /** 1 when its workstations may print to its network printers; 0 by default (0047, src/printing.ts). */
+  printing_enabled?: number;
+  /** 1 when Home in the kiosk bar asks "Start over?" and signs everyone out; on by default (0048). */
+  home_reset?: number;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */
@@ -175,6 +184,14 @@ export interface ClientDevice {
   update_since?: number | null;
   /** The workstation agent's own version. */
   agent_version?: string | null;
+  /** Its last video decoding report, as JSON (0043; parseVideoDecodingReport). */
+  video_decoding?: string | null;
+  /** When that report arrived, seconds. */
+  video_decoding_at?: number | null;
+  /** Its last hardware report, as JSON (0044; parseHardwareReport). */
+  hardware?: string | null;
+  /** When that report arrived, seconds. */
+  hardware_at?: number | null;
 }
 
 export interface WorkstationGroup {
@@ -264,6 +281,10 @@ export interface ClientTelemetry {
   update?: UpdateReport;
   /** It waits for a workstation at its site to fetch the release it is due, since (ms; phase 5). */
   updateWaitingSince?: number;
+  /** What its GPUs decode in hardware, from its last start; absent until an agent new enough reports it. */
+  videoDecoding?: VideoDecoding & { reportedAt: number };
+  /** The machine it runs on, from its last start; absent until an agent new enough reports it. */
+  hardware?: Hardware & { reportedAt: number };
 }
 
 export interface RemoteCommand {
@@ -348,6 +369,12 @@ export interface Env {
   CF_ZONE_ID?: string;
   SUPER_ADMIN_EMAIL?: string;
   SUPER_ADMIN_PASSWORD?: string;
+  /** HMAC key over every stored password hash; required in production (auth.ts passwordPepper). */
+  PASSWORD_PEPPER?: string;
+  /** Optional: confine /super and /api/super to this host, e.g. "super.labkiosk.org" (guard.ts superAdminHost). */
+  SUPER_ADMIN_HOST?: string;
+  /** "off" skips the Have I Been Pwned check on new passwords (auth.ts breachedPasswordProblem). */
+  BREACHED_PASSWORD_CHECK?: string;
   DEFAULT_DOMAIN?: string; // e.g. "labkiosk.org"
   /**
    * The host the public pages are listed under in search results, when the zone
@@ -379,6 +406,16 @@ export interface Env {
    * answers 503 and /download picks a new release up on the next hourly run.
    */
   RELEASE_NOTES_TOKEN?: string;
+  /**
+   * Staff sign-in with Google Workspace or Microsoft Entra ID (src/sso.ts), secrets.
+   * One OAuth client per provider for the whole platform, its redirect URI
+   * https://<CANONICAL_HOST or DEFAULT_DOMAIN>/api/auth/sso/callback. A provider without both
+   * of its values is not offered.
+   */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
   /**
    * Outbound email through Cloudflare Email Service (src/mail.ts): signup codes,
    * approval decisions and replies written in the Super Admin console. Without

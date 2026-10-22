@@ -61,7 +61,10 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    on `LABKIOSK_ROOT`, outside every system image, so image updates and rollbacks keep it. To lock the
    live USB menu as well, build a per-customer ISO with `LABKIOSK_GRUB_PBKDF2` (or `grub.pin` for a
    single organization's own image); see `distro-builder/README.md`. Booting never prompts: only
-   editing an entry or opening the GRUB shell asks for the password.
+   editing an entry or opening the GRUB shell asks for the password. **The live USB is not a trust
+   boundary:** anyone holding it can boot it, so keep release USBs with your administration kit. The
+   release workflow locks the published ISO's live menu when the repository has a `LABKIOSK_GRUB_PBKDF2`
+   secret, warns when it has none, and fails instead when the variable `REQUIRE_LOCKED_LIVE_MENU` is `true`.
 7. **Keep noVNC Pinned:** The console serves the Remote Control viewer from the exactly pinned
    `@novnc/novnc` devDependency in `cloudflare-control/package.json`. Do not relax this to a version
    range or an unpinned "latest" download.
@@ -75,8 +78,11 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    only to that organization's operators, carries the same sensitivity as the live screen thumbnails, and
    changes on every reboot.
 9. **Set the Super Admin Secrets Before the First Deploy:** with a D1 database bound, the worker
-   refuses to start until `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are both set. There is no
-   default account in production. Change the password from the `/super` console afterwards; doing so
+   refuses to start until `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` and `PASSWORD_PEPPER` are all
+   set. There is no default account in production. `PASSWORD_PEPPER` keys an HMAC over every stored
+   password hash, so a leaked database export cannot be cracked offline; keep a copy, because losing
+   it invalidates every password. New passwords are refused when they appear in Have I Been Pwned's
+   breach corpus (only a 5-character hash prefix is sent). Change the password from the `/super` console afterwards; doing so
    signs out every other browser holding the account.
 10. **Browser-side defences are part of the design:** every page ships a nonce-based
     Content-Security-Policy with no inline event handlers, HSTS and `frame-ancestors 'none'`; a
@@ -94,3 +100,16 @@ Instead, please submit your findings privately via GitHub Security Advisories:
     host names and identifiers are masked before anything leaves the control plane, but issues in a
     public repository are public: point `GITHUB_ISSUES_REPO` at a private repository if that matters,
     and give the token access to that one repository only (`docs/DEPLOYMENT.md`).
+13. **Keep GitHub Actions Pinned to Commit SHAs:** the deploy and release workflows hold the
+    Cloudflare token, the R2 keys and the update signing key, so every `uses:` line names a full commit
+    SHA followed by its version (`@3d3c42e… # v7.0.1`), never a tag that can be moved. Dependabot
+    proposes new pins weekly, and `distro-builder/tests/test_workflows.py` fails on an unpinned action.
+14. **Know the Base OS's Support Status:** the workstation image is built on Debian 12 (Bookworm).
+    Debian's regular security support for it ended on 12 July 2026; it is now maintained by Debian
+    LTS until 30 June 2028, which covers most but not every package
+    (<https://www.debian.org/News/2026/20260712.en.html>). The daily security rebuild keeps taking
+    fixes from `bookworm-security`, which LTS publishes to. Moving the image to Debian 13 (Trixie) is
+    planned as a new major release. Only then does the data partition's TPM key bind to more than
+    PCR 7, through systemd's `pcrlock` policies, which keep Debian's signed shim, GRUB and kernel
+    and so keep Secure Boot and unattended boot working. A self-signed unified kernel image would
+    need a key enrolled at every workstation.

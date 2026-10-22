@@ -80,7 +80,7 @@ Clicking a card navigates **top-level, natively**. It is not an iframe — Khan 
 
 Once on the site, the kiosk's own chrome comes from the browser extension: an auto-hiding 44 px bar with Home, Back, Forward, Reload, and a status shield, injected into a closed Shadow DOM.
 
-**Home** returns to the portal. That is the user's only reliable route back, which is why the bar exists at all.
+**Home** returns to the portal. That is the user's only reliable route back, which is why the bar exists at all. While the organization has **Home starts a new session** on (Settings → General, on by default), Home first asks "Start over?"; Yes signs out of every site and reopens the portal in a fresh browser, so the next person does not inherit the last one's sign-ins.
 
 → [Browser Extension](Browser-Extension)
 
@@ -132,6 +132,6 @@ The test suite renders the portal with a hostile app title and asserts it comes 
 
 A user's session leaves nothing behind. `overlayroot="tmpfs"` sends every write to RAM: browser profile, cache, history, downloads, and any file they saved. At power-off it is all gone, and the next user gets a genuinely fresh machine.
 
-What the organization *does* see is a screen thumbnail every three seconds while a workstation is powered on, visible to any organization admin of that organization, plus the currently active URL. That is the supervision the product exists to provide — worth being explicit about in a lab's acceptable-use policy.
+What the organization *does* see is the currently active URL and, while someone in the organization's console has that screen open, a screen thumbnail every few seconds. That is the supervision the product exists to provide — worth being explicit about in a lab's acceptable-use policy.
 
 → [Admin Console Guide](Admin-Console-Guide) · [Kiosk Hardening](Kiosk-Hardening) · [Control Plane Internals](Control-Plane-Internals)

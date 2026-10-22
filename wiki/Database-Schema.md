@@ -55,7 +55,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0020_signup_approvals_support.sql` | Registration review and the platform inbox: `tenants.remote_control_status`, `organization_profiles`, `email_codes`, `conversations`, `conversation_messages` |
 | `0021_two_factor.sql` | `user_two_factor` (authenticator app, recovery codes), `login_challenges`, `user_devices` (new-browser alerts, trusted browsers) |
 | `0022_mail_deleted.sql` | `conversations.deleted_at`: Mail's Deleted folder (delete moves there first) |
-| `0023_two_factor_email.sql` | `users.two_factor_email`: an organization account asked for an emailed sign-in code (a super admin is always asked) |
+| `0023_two_factor_email.sql` | `users.two_factor_email`: an organization account asked for an emailed sign-in code (administrators are always asked) |
 | `0024_conversation_category.sql` | `conversations.category`: what a conversation is about, which names its tracking ID's prefix (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`) |
 | `0025_release_notes.sql` | `release_notes`: each GitHub release with its change list and a summary written for customers, for `/download`. A platform table, no `tenant_id` |
 | `0026_contact_email_code.sql` | `email_codes` rebuilt so its `purpose` also allows `contact`: the contact page proves its sender's address with a code, as registration does |
@@ -73,6 +73,14 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0038_notifications.sql` | `notifications` and `notification_reads` (the platform's notifications in organization consoles); `release_lines.eol_reminder_days` |
 | `0039_major_upgrade_pipeline.sql` | `major_upgrade_grants` gains `requested_by`/`requested_at` (an organization asked for a closed major) and `pilot_group`/`pilot_by`/`pilot_at` (the workstation group it tries a major on before confirming it) |
 | `0040_release_support_per_major.sql` | `release_support`: support status and end of life per major release, replacing `release_lines` (dropped; it never reached a release, so its rows are not carried over) |
+| `0041_http_fallback_count.sql` | `tenants.http_workstations`: how many of an organization's online workstations are on the HTTP heartbeat instead of the WebSocket |
+| `0042_passkeys.sql` | `user_passkeys` (credential id, relying party, public key as JWK, COSE algorithm, signature counter), `passkey_registrations` (a registration's challenge), `login_challenges.passkey_challenge` |
+| `0043_video_decoding.sql` | `client_devices.video_decoding`, `video_decoding_at` (what the workstation's GPUs decode in hardware, from `POST /api/devices/video-decoding`) |
+| `0044_usage_and_hardware.sql` | Usage reports: `usage_daily`, `usage_sites`, `tenants.usage_sites`, and the anonymous platform tables `platform_usage_daily` and `platform_usage_sites`. Hardware: `client_devices.hardware`, `hardware_at`, and the platform table `hardware_models` behind `/hardware` |
+| `0045_power_schedules.sql` | `power_schedules`: when an organization's workstations switch themselves off and on again (Settings → Power), for every workstation or one group |
+| `0046_single_sign_on.sql` | `sso_settings` (an organization's Google Workspace / Microsoft Entra ID sign-in) and `sso_states` (sign-ins in flight) |
+| `0047_printing.sql` | `tenants.printing_enabled` (default `0` for every organization) and `printers`: the organization's network printers (Settings → Printing) |
+| `0048_home_reset.sql` | `tenants.home_reset` (default `1` for every organization): Home in the kiosk bar asks "Start over?" and signs everyone out (Settings → General) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -120,6 +128,7 @@ One row per organization. This table has accumulated the most columns because it
 | `custom_hostname_id` | TEXT | The Cloudflare for SaaS custom hostname id, once created |
 | `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
 | `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
+| `http_workstations` | INTEGER | Of those online, how many are on the HTTP heartbeat (each one a billed request), kept by the OrgHub and shown in Super Admin |
 | `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
 | `bug_reports_terms_version` / `bug_reports_terms_accepted_at` | TEXT / INTEGER | The Automatic Bug Report Terms version accepted, and when; reports are sent only under the current version |
 | `update_channel` | TEXT | `stable` (default) \| `beta`: which classified releases its workstations are offered; `beta` also takes `stable` ones |
@@ -137,6 +146,9 @@ One row per organization. This table has accumulated the most columns because it
 | `homepage_takedown_at` / `homepage_takedown_reason` | INTEGER / TEXT | Set while a super admin has the homepage taken down (`0036`); it shows a neutral notice |
 | `license_plan` | TEXT | Which grant of `LICENSE` applies: `education`, `evaluation`, `subscriber`, `commercial`; NULL until a super admin records it (`0037`) |
 | `license_expires_at` | INTEGER | When the license ends (00:00 UTC of the date set); NULL for no end date. Once passed, new enrolments and Remote Control are refused; enrolled workstations keep working (`0037`, `src/license.ts`) |
+| `usage_sites` | INTEGER | `1` (default): workstations send the hostnames they spend time on with their usage reports; `0`: only time on and in use (`0044`) |
+| `printing_enabled` | INTEGER | `1` when the organization's workstations may print (Settings → Printing); `0` by default, `CHECK (printing_enabled IN (0, 1))` (`0047`, `src/printing.ts`) |
+| `home_reset` | INTEGER | `1` (default): Home in the kiosk bar asks "Start over?" and, on Yes, wipes the browser session as Clear Session does; `0`: Home only navigates. Sent to workstations as `homeReset`, `CHECK (home_reset IN (0, 1))` (`0048`) |
 | `created_at` / `updated_at` | INTEGER | |
 
 `broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
@@ -194,6 +206,8 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `update_version` / `update_progress` / `update_detail` | TEXT / INTEGER / TEXT | The release that phase is about, the download's percent, and why the last attempt failed |
 | `agent_version` | TEXT | The agent version the workstation reports |
 | `update_kind` / `update_since` | TEXT / INTEGER | For `ready` and `staged`: the release's kind (`feature` or `security`, from its signed manifest), and since when (unix seconds) the workstation has held it in this boot |
+| `video_decoding` / `video_decoding_at` | TEXT / INTEGER | What its GPUs decode in hardware, as validated JSON (`parseVideoDecodingReport`), and when that arrived (unix seconds); written by `POST /api/devices/video-decoding` once per agent start, `NULL` before |
+| `hardware` / `hardware_at` | TEXT / INTEGER | The machine it runs on, as validated JSON (`parseHardwareReport` in `src/hardware.ts`: maker, model, CPU, cores, memory, boot mode, keyboard and touchscreen attached, wired MAC addresses), and when that arrived (unix seconds); written by `POST /api/devices/hardware` once per agent start, `NULL` before (`0044`) |
 
 ### `workstation_issues`
 
@@ -269,6 +283,37 @@ Operator-defined quick-launch shortcuts: `id`, `tenant_id`, `title`, `url`, `cre
 | `failed_count` | INTEGER | |
 | `last_failed_at` | INTEGER | |
 | `locked_until` | INTEGER | Exponential back-off; drives `429` |
+
+### `sso_settings`
+
+One row per organization that configured single sign-on (`src/sso.ts`); no row means it is off. Deleted with the organization.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `tenant_id` | TEXT PK | FK `tenants`, cascade |
+| `google_enabled` / `microsoft_enabled` | INTEGER | 0 or 1 |
+| `google_domains` | TEXT | JSON list of Google Workspace domains (the ID token's `hd`) |
+| `microsoft_tenants` | TEXT | JSON list of Entra tenant IDs (the ID token's `tid`) |
+| `require_sso` | INTEGER | 1: staff other than the owner may not sign in with a password while a provider is on and offered |
+| `updated_at` / `updated_by` | INTEGER / TEXT | `updated_by` FK `users`, set null |
+
+### `sso_states`
+
+A single sign-on in flight; purged hourly once expired.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `state_hash` | TEXT PK | SHA-256 of the `state` sent to the provider |
+| `tenant_id` | TEXT | FK `tenants`, cascade |
+| `provider` | TEXT | `google` or `microsoft` |
+| `code_verifier` / `nonce` | TEXT | PKCE verifier; the nonce the ID token must carry |
+| `redirect_uri` | TEXT | The callback the provider was given (the token exchange repeats it) |
+| `return_origin` | TEXT | The sign-in page's origin the browser goes back to |
+| `browser_hash` | TEXT | SHA-256 of the cookie binding the sign-in to the browser that started it |
+| `used_at` | INTEGER | Set when the callback spends the state |
+| `user_id` | TEXT | FK `users`, cascade: the matched account, after the callback |
+| `handoff_hash` | TEXT | SHA-256 of the one-time code the sign-in page redeems (UNIQUE) |
+| `created_at` / `expires_at` | INTEGER | Ten minutes for the provider; two once the code is issued |
 
 ### `ui_catalogs`
 
@@ -350,6 +395,22 @@ The evidence of what each organization agreed to (`0035`, `src/legal.ts`). **App
 | `accepted_at` | INTEGER | |
 | `ip` / `user_agent` | TEXT | Where it came from |
 
+### `usage_daily`
+
+How long each workstation was switched on and in use per day (`0044`, `src/usage.ts`). Columns: `tenant_id` (FK, cascade), `client_id`, `day` (`YYYY-MM-DD`, the workstation's own calendar day), `on_seconds`, `active_seconds` (someone used the keyboard, mouse or touchscreen in the last minute), `sessions` (starts and session clears); PK (`tenant_id`, `client_id`, `day`). `POST /api/devices/usage` adds to a row rather than replacing it. Rows older than 400 days are deleted by the hourly cron.
+
+### `usage_sites`
+
+Time in use per hostname per day for one organization (`0044`): `tenant_id` (FK, cascade), `day`, `domain` (a hostname, never a path or full address), `active_seconds`, `visits`; PK (`tenant_id`, `day`, `domain`). Written only while `tenants.usage_sites` is `1`; **Delete recorded sites** in the console empties it for the organization. Kept 400 days.
+
+### `platform_usage_daily` / `platform_usage_sites`
+
+Anonymous totals across organizations for the platform's administrators (`0044`). **No `tenant_id`**, so they survive an organization's deletion. The hourly cron rebuilds the last 8 days from `usage_daily` and `usage_sites`, leaving out the platform's demos. `platform_usage_daily`: `day` (PK), `organizations`, `workstations`, `on_seconds`, `active_seconds`, `sessions`, `computed_at`. `platform_usage_sites`: `day`, `domain`, `organizations`, `active_seconds`, `visits`; PK (`day`, `domain`); a site is written only when at least 3 organizations visited it that day, so no row points at one organization.
+
+### `hardware_models`
+
+The hardware compatibility list (`0044`, `src/hardware.ts`). **No `tenant_id`.** One row per maker and model, rebuilt hourly from `client_devices.hardware` (demos and machines whose firmware names no model left out): `vendor`, `model` (PK together), `organizations`, `workstations`, `uefi` (how many start in UEFI mode), `touch` (how many have a touchscreen), `min_memory_mb`, `computed_at`. The public page `/hardware` lists the models at least 3 organizations run.
+
 ### `notifications`
 
 Notifications the platform shows in organization consoles (`0038`, `src/notifications.ts`). Columns: `id` (PK), `tenant_id` (FK, cascade; **NULL = every organization**, shown only to organizations that existed when it was written), `kind` (`general`, `account`, `release`, `legal`, `license`, `content`, `remote_control`), `title`, `body`, `created_at`, `created_by` (NULL when the platform wrote it by itself).
@@ -389,6 +450,38 @@ An `org_admin` row, or owning the organization (`tenants.user_id`), means full a
 | `name` | TEXT | 1–50 characters, unique per organization case-insensitively (index `idx_workstation_groups_tenant_name`; membership is by name) |
 | `created_at` | INTEGER | |
 
+### `power_schedules`
+
+An organization's power schedules (Settings → Power, `src/power.ts`). Times are on each workstation's own clock; there is no time zone column.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `group_id` | TEXT → `workstation_groups.id` | `ON DELETE CASCADE`; NULL for every workstation |
+| `days` | INTEGER | Bitmask, bit 0 Sunday to bit 6 Saturday; `CHECK 1..127` |
+| `off_minute` | INTEGER | Switch-off, minutes after midnight, `0..1439` |
+| `on_minute` | INTEGER | Switch-on, `0..1439`, or NULL (switched on by hand) |
+| `created_at`, `updated_at` | INTEGER | |
+
+For each day a workstation follows its group's schedule for that day when there is one, else the all-workstations one. Two schedules for the same workstations never share a day (the route answers `409`), and switch-on and switch-off are at least 15 minutes apart. At most 50 per organization. A later cascade-safe rebuild of `tenants` or `workstation_groups` must hold this table too.
+
+### `printers`
+
+The organization's network printers (`0047`, `src/printing.ts`). Read by the OrgHub only while `tenants.printing_enabled = 1`; a save replaces the whole list in one batch.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT | 16 lower-case hex digits, also the queue name on the workstation (`labkiosk-<id>`); kept across saves so a workstation keeps its queue. Primary key `(tenant_id, id)` |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `name` | TEXT | 1–64 characters, no control characters, unique per organization case-insensitively (checked on save) |
+| `uri` | TEXT | `ipp://` or `ipps://` to a host name or private address, at most 255 characters, scheme stored in lower case (`printerUriProblem`) |
+| `group_name` | TEXT | Only the workstations in this group get it; NULL for every workstation. Matched by name, like `client_devices.group_name` |
+| `position` | INTEGER | Order in the console |
+| `created_at` | INTEGER | |
+
+At most 20 per organization (`MAX_PRINTERS`).
+
 ### `audit_logs`
 
 | Column | Type | Notes |
@@ -418,16 +511,23 @@ idx_tenant_whitelist_tenant        tenant_whitelist(tenant_id)
 idx_broadcast_presets_tenant       broadcast_presets(tenant_id)
 idx_audit_logs_tenant              audit_logs(tenant_id, created_at)
 idx_workstation_issues_tenant      workstation_issues(tenant_id, created_at)
+idx_power_schedules_tenant         power_schedules(tenant_id)
 idx_bug_reports_issue              bug_reports(issue_number)   -- platform table, no tenant_id
+idx_usage_daily_tenant_day         usage_daily(tenant_id, day)
+idx_usage_daily_day                usage_daily(day)            -- the cron's platform rollup and retention only
+idx_usage_sites_day                usage_sites(day)            -- the cron's platform rollup and retention only
+idx_sso_states_expires             sso_states(expires_at)
+idx_sso_states_handoff             sso_states(handoff_hash)    -- UNIQUE
+idx_printers_tenant                printers(tenant_id, position)
 ```
 
-Every index leads with `tenant_id` wherever the table is tenant-scoped, matching the query shape that `db.ts` always uses.
+Every index leads with `tenant_id` wherever the table is tenant-scoped, matching the query shape that `db.ts` always uses. The two `day` indexes are the exception: only the hourly cron reads by day across organizations, to build the anonymous platform totals and delete old rows.
 
 ---
 
 ## Adding a schema change
 
-1. Create `migrations/0041_<description>.sql` (the next number after `0040`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0049_<description>.sql` (the next number after `0048`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

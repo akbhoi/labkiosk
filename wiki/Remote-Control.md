@@ -28,7 +28,7 @@ A session is opened only by an administrator of the organization (its owner or `
 
 An organization has as many **seats** as the platform approved: that many sessions may be open at once, counted by its OrgHub (one per workstation; a session's relay gives the seat back when it ends, and its four-hour limit frees it if that notice is lost). One more answers `429` naming the workstations in use. A super admin can revoke Remote Control (every open session ends at once, close code `4009`, and the owner is emailed), and an organization can turn it off itself under Settings.
 
-Remote Control needs an agent on the WebSocket control channel (`/api/devices/ws`), because the request to join travels over it. An agent still on the three-second HTTP heartbeat cannot join.
+Remote Control needs an agent on the WebSocket control channel (`/api/devices/ws`), because the request to join travels over it. An agent still on the HTTP heartbeat cannot join.
 
 ---
 
@@ -75,6 +75,14 @@ The password is sent **only when present**, so the control plane keeps what it a
 ## Everything else needs nothing extra
 
 Live thumbnails, the lock curtain, broadcast, reload, reboot, shutdown, clear session, mute and allowlist sync all travel over the same control channel as Remote Control. None of it needs a port, a DNS record or any per-workstation setup.
+
+---
+
+## Performance
+
+x11vnc encodes the screen on the workstation's CPU (Tight, ZRLE and the other classic VNC encodings), and noVNC decodes it in the operator's browser. That is light for what Remote Control is for: helping a user with a form or a setting. It is heavy for full-screen video, which is not the use case.
+
+Hardware encoding is not a flag away. noVNC (1.7.0 here) can display an H.264 stream, but x11vnc cannot produce one; getting the workstation's GPU to encode would mean replacing x11vnc with another VNC server or with WebRTC and a GStreamer VA-API pipeline, and changing the relay. That is only worth doing if operators report lag on real networks, so measure first: how smooth the session feels and how busy the workstation's CPU is during a typical help session, on the organization's own network. Under Wayland, planned with the Debian 13 release, `wayvnc` replaces x11vnc and the question is reopened then.
 
 ---
 

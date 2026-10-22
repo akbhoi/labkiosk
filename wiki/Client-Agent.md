@@ -64,8 +64,10 @@ answers exactly that without waking the hub. → [REST API Reference](REST-API-R
 
 It needs Debian's `python3-websocket`. Without it, or when the server has no WebSocket route
 (an older Worker, or the Node development server), or after three failed connections in a row,
-the agent uses the older HTTP heartbeat for ten minutes and then tries again: every three seconds,
-`post_telemetry()` sends the same state with a thumbnail and receives the same updates back.
+the agent uses the older HTTP heartbeat for ten minutes and then tries again: `post_telemetry()`
+sends the same state and receives the same updates back, every 3 seconds while a console is open
+and every 15 seconds otherwise, as the reply's `heartbeatSeconds` says. It captures a thumbnail
+only while the reply's `frames` says a console is showing this screen.
 
 ```text
          +-----------------------------------------------+
@@ -96,7 +98,7 @@ the agent uses the older HTTP heartbeat for ten minutes and then tries again: ev
 
 ## Command execution
 
-`execute_command()` handles exactly seven actions. Anything else is logged and ignored.
+`execute_command()` handles the actions below. Anything else is logged and ignored.
 
 | Action | Implementation |
 | :--- | :--- |
@@ -107,6 +109,7 @@ the agent uses the older HTTP heartbeat for ten minutes and then tries again: ev
 | `reboot` | `systemctl reboot` via logind |
 | `shutdown` | Powers off via logind |
 | `mute` | Mutes output through `alsa-utils` |
+| `wake` | Sends a Wake-on-LAN magic packet for each MAC address in the command (validated: unicast, at most 64) as a UDP broadcast to port 9 on each wired IPv4 network, three times |
 
 `reboot` and `shutdown` work because `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user exactly those two logind actions and nothing else. The agent runs as `kiosk`; without that rule the command would be accepted and then silently do nothing.
 
@@ -204,7 +207,9 @@ That is what keeps a visited web page from reaching the installer.
 | Endpoint | Method | Notes |
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
-| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname and `clockSynchronized` (whether a time server has set the clock since boot) |
+| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown), `printing` (`printing_ready()`: Chromium may print now), and `homeReset` (the organization's `homeReset` from the configuration; `false` until the control plane has sent it) |
+| `/api/session/reset` | POST | Home in the kiosk bar, confirmed by the user, through the extension's service worker: `clear_session()`, the same as the `clear-session` command. `409` while the organization's `homeReset` is off |
+| `/api/usage/tick` | POST | `{ host, active }` from the extension's service worker once a minute while a page is shown: the top frame's hostname and whether `chrome.idle` saw input in the last minute. Counted into the next usage report |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |
 | `/api/install` | POST | `400` when already installed on an internal drive, or when `hostname` is not one lowercase DNS label |
@@ -254,6 +259,23 @@ The clock also takes the network's own time servers. The NetworkManager dispatch
 
 ---
 
+## Printing
+
+Off until an administrator turns it on in Settings → Printing. The configuration carries `printing: { enabled, printers: [{ id, name, uri }] }`, only the printers meant for this workstation. `apply_printing()` turns it into the helper's list, `[(labkiosk-<id>, uri, name)]`; anything malformed means off, and an unusable printer (an id that is not 16 hex digits, an address that is not `ipp://`/`ipps://` with a plain path, an empty or over-long name, a control character) is dropped and logged. An update without the key changes nothing.
+
+`printing_loop()`, a thread of its own, applies each change one at a time through `sudo -n /usr/local/sbin/labkiosk-printing` (`/etc/sudoers.d/52-labkiosk-printing`):
+
+- `apply --printer <queue> <uri> <name> …` writes Lab Kiosk's `cupsd.conf` (the local socket `/run/cups/cups.sock` only: no TCP port, no web interface, no sharing or discovery, no job history), unmasks and starts CUPS, deletes every queue not listed, and creates each listed one with `lpadmin -p <queue> -E -v <uri> -m everywhere -D <name> -o printer-is-shared=false` (driverless IPP Everywhere: CUPS asks the printer for its capabilities). A queue already set up with the same address and name is not asked again. Once at least one queue exists it writes `/etc/chromium/policies/managed/zz-labkiosk-printing.json` with `PrintingEnabled: true`.
+- `disable` removes that file, stops and masks `cups.service` and `cups.socket`, and deletes every queue, PPD and job left in the spool.
+
+The helper checks every argument again (it is the trust boundary, not the agent) and answers one JSON object. A printer that could not be set up (switched off, not reachable from this network) is tried again every 5 minutes; so is a helper that failed. Without the helper (the Docker simulator) the agent logs once that it cannot print.
+
+**Why Chromium needs no restart.** Chromium merges every file in the managed policy directory, the last in name order winning a key two files set, so `zz-labkiosk-printing.json` overrides `PrintingEnabled: false` in `policies.json` whatever the agent writes there. Chromium watches the directory and reloads it about five seconds after a change (`ConfigDirPolicyLoader`, `AsyncPolicyLoader`'s settle interval), and `PrintingEnabled` applies to a running browser. `/api/status` reports `printing: true` only six seconds after the helper first allowed printing (`PRINTING_POLICY_SETTLE_SECONDS`), so the bar's Print button never appears before Chromium allows it; turning printing off hides it before the policy goes. A browser restart would end every signed-in session, so none is made.
+
+CUPS keeps its queues and jobs in `/etc/cups` and `/var/spool/cups`, in the RAM overlay: nothing survives a reboot, and the agent sets the queues up again from the configuration at every start.
+
+---
+
 ## Boot reports
 
 On an installed disk, `labkiosk-boot-slots check` (root, run by `labkiosk-boot-ok.service`) records what this boot did with its system image in `/run/labkiosk-update/status.json`. `boot_report_loop()` reads it — refusing a file not owned by root or over 4 KiB — and posts the outcomes worth an administrator's attention to `POST /api/devices/boot-report` with the device token: `installed`, `failed`, `rolled-back`, `fallback` and `error`. Routine boots are not sent.
@@ -269,6 +291,32 @@ An installed disk keeps its system journal on `LABKIOSK_DATA` for seven days (`l
 `labkiosk-health` (root, run by `labkiosk-health.timer` 90 s after boot and every six hours) checks the machine's own disks — not removable or USB ones: SMART through `smartctl` for SATA and NVMe, the card's wear figures in sysfs for eMMC. A disk is **failing** when its self-assessment failed, NVMe raises a critical warning or its spare is below threshold, and **warning** at 90 % or more of its rated life used, reallocated, pending or uncorrectable sectors, NVMe media errors or a pre-fail attribute past its threshold. A disk with no data (a virtual one) is `unknown` and never reported. The result goes to `/run/labkiosk-health/disks.json`, and `[HEALTH] …` lines to the journal, with the user Xorg runs as and the AppArmor labels of the agent and x11vnc.
 
 The same loop as the boot reports reads that file (root-owned, at most 16 KiB) after each check and posts the warning and failing disks to `POST /api/devices/disk-health`. A `200`, `400` or `404` settles that check, as does `429` (too many disk reports today; the next check sends again); `409` (the workstation is not written yet), any other status and a network failure are retried next round. The Worker lists each disk once per state under Settings → **Errors & Warnings**.
+
+## Video decoding
+
+Chromium decodes video through VA-API when the GPU has a driver for it, and on the CPU otherwise, which a thin client notices at once. Once per agent start, after enrolment, the same loop as the boot reports runs `vainfo --display drm --device /dev/dri/renderDNNN` on each render node (at most four), names the GPU from sysfs (Intel, AMD, NVIDIA, a virtual adapter, or other, with its kernel driver) and posts what each decodes and encodes (H.264, HEVC, VP8, VP9, AV1, MPEG-2, VC-1, JPEG) to `POST /api/devices/video-decoding`. A machine with no render node, a GPU without a VA-API driver, or a `vainfo` that fails says so in `problem`. `200`, `400` and `404` settle it; `409` (the workstation is not written yet) and network failures are retried every 30 s. The log line `Hardware video decoding: av1, h264, hevc, vp9.` (or `none, Chromium decodes on the CPU.`) says the same on the workstation.
+
+The admin console shows the result on the workstation's card: `Video: GPU · H.264, HEVC, VP9, AV1`, or `Video: CPU · NVIDIA graphics` or `Video: CPU only` in the warning colour. `vainfo` reports what the driver offers; Chromium uses it for the codecs and resolutions its own decoder supports, so a codec listed here is decoded in hardware in practice but not guaranteed for every stream.
+
+---
+
+## Hardware
+
+Once per agent start, after enrolment, the same loop as the boot reports reads what the machine is and posts it to `POST /api/devices/hardware`: the maker and model from DMI (`/sys/devices/virtual/dmi/id/`; Lenovo names the model in `product_version`), the CPU model from `/proc/cpuinfo`, the core count, memory from `/proc/meminfo`, UEFI or BIOS boot, whether a keyboard and a touchscreen are attached (`input_devices_report()`, `null` when it cannot tell), and the MAC addresses of up to 8 physical wired adapters (for Wake-on-LAN). Placeholder firmware names such as "To be filled by O.E.M." are sent but treated as unknown by the control plane. `200`, `400` and `404` settle it; `409` and network failures are retried every 30 s. The log line `Hardware: LENOVO ThinkCentre M720q, 6 cores, 7851 MB, UEFI, 1 wired adapters.` says the same on the workstation.
+
+## Usage reports
+
+`UsageCounter` adds up, per local calendar day, how long the workstation was switched on (credited every minute by `usage_loop`, at most 2 minutes at a time so a suspend or a stopped clock does not count), how long it was in use (the extension's `/api/usage/tick`: someone used the keyboard, mouse or touchscreen in the last minute; capped at the time switched on), sessions (each agent start and each `clear-session`), and, while the organization records sites (`usageSites` in the configuration), seconds in use and visits per hostname (at most 100 a day; IP addresses and `localhost` are never recorded). Every 15 minutes `usage_loop` sends what has accumulated to `POST /api/devices/usage` and starts again from zero; a network failure or any status but `200`, `400` and `404` (a control plane without usage reports) puts the report back to be sent with the next one, and days more than 7 days old are dropped. Nothing is sent before enrolment. The counts live in memory, so at most 15 minutes are lost when the workstation is switched off at the button.
+
+## Power schedules
+
+The configuration carries `power`: `{"week": [...]}`, seven entries from Sunday, each `null` or `{"off": minutes, "on": minutes|null}` on the workstation's own clock, or `null` for no schedule (`normalize_power_week()` drops anything malformed). `power_loop` looks every 15 s; when the clock passes a switch-off time it starts a five-minute warning (`/api/status` `powerOff`: `{"at": ms, "postponed": bool}`), which the extension shows in its Shadow DOM with a countdown. A jump of more than five minutes, or the clock going back (the first time sync after boot), fires nothing, so a workstation switched on after its switch-off time stays on. A schedule change that no longer asks for the switch-off under way calls it off.
+
+When the warning is over the agent shuts down with `systemctl poweroff`, **never while a system update installs or stages** (`state.updateInstalling`, the updater's `installing` phase, or either update unit running): it waits and looks again every minute, and keeps `/etc/labkiosk/power-pending.json` so that the restart the update makes picks the shutdown up again (within two hours).
+
+Just before shutting down — by the schedule or by an operator's `shutdown` — `prepare_wake_alarm()` runs `sudo -n /usr/local/sbin/labkiosk-wake-alarm set <epoch>` for the next switch-on (or `clear` when there is none). The helper accepts only a plain number of seconds 60 s to 8 days and an hour ahead, writes `/sys/class/rtc/rtc0/wakealarm` (cleared first, then read back) and allows for an RTC kept in local time (`/etc/adjtime`). Exit `3` (no RTC) and any other failure are logged and sent to `POST /api/devices/power-report`.
+
+Wake-on-LAN is armed on the wired adapters at boot: `/etc/systemd/network/99-default.link.d/labkiosk-wake-on-lan.conf` (`WakeOnLan=magic`) and `/etc/NetworkManager/conf.d/50-labkiosk-wake-on-lan.conf` (`ethernet.wake-on-lan=magic`).
 
 ---
 

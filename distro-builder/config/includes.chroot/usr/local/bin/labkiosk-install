@@ -24,6 +24,11 @@ STATUS_FILE = "/tmp/labkiosk-install-status.json"
 # directly with NOPASSWD, so the argument is re-validated here rather than
 # trusted. Keep the two patterns identical.
 TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)\Z")
+# One partition of such a disk, which an install beside another system may
+# replace. Kept identical to REPLACE_PARTITION_PATTERN in agent.py.
+PARTITION_PATTERN = re.compile(
+    r"^/dev/(sd[a-z][0-9]{1,3}|vd[a-z][0-9]{1,3}|nvme[0-9]+n[0-9]+p[0-9]{1,3}|mmcblk[0-9]+p[0-9]{1,3})\Z"
+)
 
 # A grub-mkpasswd-pbkdf2 digest: grub.pbkdf2.sha512.<rounds>.<salt hex>.<hash hex>.
 # Only the digest ever reaches this program -- the setup wizard derives it in the
@@ -77,6 +82,33 @@ TARGET_DATA_MOUNT = "/mnt/target_kiosk_data"
 MIN_DISK_BYTES = 7 * 1024 * 1024 * 1024
 # On the kernel command line of every installed system (the boot menu adds it).
 INSTALLED_ARG = "labkiosk.installed=1"
+# On the command line of a workstation started over the network, which is
+# never installed to a drive. Kept identical to NETBOOT_KERNEL_ARG in agent.py.
+NETBOOT_ARG = "labkiosk.netboot=1"
+
+# Installing beside another system (dual boot): UEFI and GPT only. Lab Kiosk
+# takes free space, or one partition the administrator gives up, and leaves
+# every other partition alone. Its boot loader goes onto an EFI system
+# partition of its own inside that space, never onto the other system's:
+# Debian's signed GRUB reads EFI/debian/grub.cfg on the partition it started
+# from, so beside another Debian-family system on a shared ESP it would boot
+# that system's menu. The firmware gets Lab Kiosk's own boot entry, first in
+# the boot order; the other system is chosen from the firmware's boot menu.
+# Nothing is written to the disk's boot sector or to the other system's ESP.
+MIB = 1024 * 1024
+MIN_BESIDE_MIB = MIN_DISK_BYTES // MIB
+DATA_PARTITION_MIB = 512
+ESP_TYPE_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+# shim, GRUB and MokManager take about 4 MiB; FAT32 needs at least 65525
+# clusters, and 128 MiB holds 262144 of 512 bytes.
+BESIDE_ESP_MIB = 128
+BESIDE_ESP_LABEL = "LABKIOSKESP"
+# Seconds to wait for the kernel to add the new partitions' device nodes.
+PARTITION_NODE_ATTEMPTS = 30
+EFI_FIRMWARE_DIR = "/sys/firmware/efi"
+BOOT_ENTRY_LABEL = "Lab Kiosk"
+BOOT_ENTRY_LOADER = "\\EFI\\LabKiosk\\shimx64.efi"
+BESIDE_PARTITION_NAMES = ("LABKIOSK_ESP", "LABKIOSK_ROOT", "LABKIOSK_DATA", "LABKIOSK_SWAP")
 
 def write_status(state, step, progress, error=None):
     data = {
@@ -222,6 +254,9 @@ def live_medium_disks():
 
 def list_disks():
     """Detect candidate internal drives, excluding the live boot medium."""
+    if NETBOOT_ARG in kernel_args():
+        print("[INSTALL] Started over the network. Internal installation is disabled.", file=sys.stderr)
+        return []
     if not is_live_session():
         print("[INSTALL] System is running from an installed disk. Internal installation is disabled.", file=sys.stderr)
         return []
@@ -264,7 +299,8 @@ def list_disks():
                 "path": path,
                 "size": f"{size_gb} GB",
                 "model": model,
-                "removable": bool(dev.get("rm", False))
+                "removable": bool(dev.get("rm", False)),
+                "dualBoot": describe_dual_boot(path),
             })
             seen.add(name)
     except Exception as e:
@@ -302,7 +338,8 @@ def list_disks():
                         "path": f"/dev/{b}",
                         "size": f"{size_gb} GB",
                         "model": model,
-                        "removable": removable
+                        "removable": removable,
+                        "dualBoot": describe_dual_boot(f"/dev/{b}"),
                     })
                 except Exception:
                     pass
@@ -315,6 +352,368 @@ def list_disks():
     # be the default selection in the wizard.
     disks.sort(key=lambda d: (bool(d.get("removable")), d.get("name", "")))
     return disks
+
+
+def booted_with_uefi():
+    return os.path.isdir(EFI_FIRMWARE_DIR)
+
+
+def format_gb(size_bytes):
+    return f"{round(size_bytes / (1024 * 1024 * 1024), 1)} GB"
+
+
+def read_layout_unprivileged(disk_path):
+    """
+    A disk's partition table as the wizard's listing sees it, without root:
+    types and labels from lsblk (udev's database), offsets from sysfs, which
+    always counts in 512-byte units.
+    """
+    out = run_cmd(["lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,PTTYPE,PARTTYPE,FSTYPE,LABEL", disk_path])
+    devices = json.loads(out).get("blockdevices") or []
+    if len(devices) != 1:
+        raise RuntimeError(f"lsblk described {len(devices)} devices for {disk_path}")
+    disk = devices[0]
+    size = int(disk.get("size") or 0)
+    partitions = []
+    for child in disk.get("children") or []:
+        if child.get("type") != "part":
+            continue
+        name = child.get("name", "")
+        with open(os.path.join("/sys/class/block", name, "start"), "r", encoding="ascii") as handle:
+            start = int(handle.read().strip()) * 512
+        partitions.append({
+            "path": child.get("path") or f"/dev/{name}",
+            "start": start,
+            "size": int(child.get("size") or 0),
+            "esp": (child.get("parttype") or "").lower() == ESP_TYPE_GUID,
+            "fstype": child.get("fstype") or "",
+            "label": child.get("label") or "",
+        })
+    # GPT keeps its header and table in the first and last 34 sectors; one MiB
+    # at either end covers both on any sector size, and keeps partitions aligned.
+    return {"label": disk.get("pttype") or "", "usable": (MIB, size - MIB), "partitions": partitions}
+
+
+def read_partition_table(disk_path):
+    """
+    The same layout, as root, straight from the partition table: parted's
+    machine-readable listing, in bytes. parted marks the EFI system partition
+    with its `esp` flag, which is its GPT type.
+    """
+    no_table = RuntimeError(
+        f"{disk_path} has no partition table that can be read, so there is no other system "
+        "to install beside. Choose 'Erase the drive' instead."
+    )
+    try:
+        out = run_cmd(["parted", "-s", "-m", disk_path, "unit", "B", "print"])
+    except RuntimeError as err:
+        raise no_table from err
+    lines = [line.rstrip(";") for line in out.splitlines() if line.strip()]
+    if len(lines) < 2 or lines[0] != "BYT":
+        raise RuntimeError(f"parted printed an unexpected listing for {disk_path}: {out[:200]!r}")
+    header = lines[1].split(":")
+    if len(header) < 6 or header[5] in ("", "unknown"):
+        raise no_table
+    size = int(header[1].rstrip("B"))
+    partitions = []
+    for line in lines[2:]:
+        fields = line.split(":")
+        if len(fields) < 7 or not fields[0].isdigit():
+            raise RuntimeError(f"parted printed an unexpected partition line for {disk_path}: {line!r}")
+        flags = {flag.strip() for flag in fields[-1].split(",")}
+        partitions.append({
+            "path": partition_node(disk_path, int(fields[0])),
+            "start": int(fields[1].rstrip("B")),
+            "size": int(fields[3].rstrip("B")),
+            "esp": "esp" in flags,
+            "fstype": fields[4],
+            "label": ":".join(fields[5:-1]),
+        })
+    return {"label": header[5], "usable": (MIB, size - MIB), "partitions": partitions}
+
+
+def free_regions(layout, without=None):
+    """
+    Unallocated stretches of the disk as (start MiB, end MiB), end exclusive,
+    rounded inwards to whole MiB. `without` names a partition to count as free:
+    the stretch an install would get by replacing it.
+    """
+    first = -(-layout["usable"][0] // MIB)
+    last = layout["usable"][1] // MIB
+    regions = []
+    cursor = first
+    for part in sorted(layout["partitions"], key=lambda p: p["start"]):
+        if part["path"] == without:
+            continue
+        part_first = part["start"] // MIB
+        part_end = -(-(part["start"] + part["size"]) // MIB)
+        if min(part_first, last) > cursor:
+            regions.append((cursor, min(part_first, last)))
+        cursor = max(cursor, part_end)
+    if last > cursor:
+        regions.append((cursor, last))
+    return regions
+
+
+def beside_region(layout, replace=None):
+    """
+    Where an install beside another system goes: the largest free stretch, or
+    the stretch the partition `replace` leaves when it is removed. None when
+    it is smaller than an installation needs.
+    """
+    if replace is None:
+        regions = free_regions(layout)
+    else:
+        part_first = replace["start"] // MIB
+        part_end = -(-(replace["start"] + replace["size"]) // MIB)
+        regions = [r for r in free_regions(layout, without=replace["path"]) if r[0] < part_end and r[1] > part_first]
+    best = max(regions, key=lambda r: r[1] - r[0], default=None)
+    if best is None or best[1] - best[0] < MIN_BESIDE_MIB:
+        return None
+    return best
+
+
+def find_esp(layout):
+    return next((p for p in layout["partitions"] if p["esp"]), None)
+
+
+def busy_partitions(paths):
+    """
+    The partitions among `paths` that something is using: mounted, active swap,
+    or held by device-mapper (an open LUKS container, an active LVM volume).
+    An install beside another system refuses to touch a disk with any of them
+    rather than unmount another system's file systems out from under it.
+    """
+    by_real = {os.path.realpath(path): path for path in paths}
+    busy = set()
+    for proc_file, skip in (("/proc/mounts", 0), ("/proc/swaps", 1)):
+        try:
+            with open(proc_file, "r", encoding="utf-8") as handle:
+                lines = handle.read().splitlines()[skip:]
+        except OSError as err:
+            raise RuntimeError(f"cannot read {proc_file}: {err}") from err
+        for line in lines:
+            fields = line.split()
+            if fields and os.path.realpath(fields[0]) in by_real:
+                busy.add(by_real[os.path.realpath(fields[0])])
+    for path in paths:
+        holders = os.path.join("/sys/class/block", os.path.basename(path), "holders")
+        if os.path.isdir(holders) and os.listdir(holders):
+            busy.add(path)
+    return busy
+
+
+def dual_boot_info(layout, uefi, busy=frozenset()):
+    """Whether, and where, the wizard can offer to install beside the disk's other system."""
+    info = {"possible": False, "reason": None, "freeBytes": 0, "free": format_gb(0), "partitions": []}
+    if not uefi:
+        info["reason"] = ("This computer started in legacy BIOS mode. Installing beside another system "
+                          "needs UEFI: start the computer in UEFI mode, or erase the drive.")
+        return info
+    if layout["label"] == "dos":
+        info["reason"] = ("The drive has an MBR partition table. Installing beside another system needs GPT; "
+                          "erase the drive instead.")
+        return info
+    if layout["label"] != "gpt":
+        info["reason"] = "The drive has no partition table, so there is no other system on it to keep."
+        return info
+    esp = find_esp(layout)
+    if esp is None:
+        info["reason"] = ("The drive has no EFI system partition, so its other system cannot be kept "
+                          "in the firmware's boot menu. Erase the drive instead.")
+        return info
+    largest = max((end - start for start, end in free_regions(layout)), default=0)
+    info["freeBytes"] = largest * MIB
+    info["free"] = format_gb(largest * MIB)
+    for part in layout["partitions"]:
+        replaceable = not part["esp"] and part["path"] not in busy and beside_region(layout, part) is not None
+        info["partitions"].append({
+            "path": part["path"],
+            "size": format_gb(part["size"]),
+            "sizeBytes": part["size"],
+            "fstype": part["fstype"],
+            "label": part["label"],
+            "replaceable": replaceable,
+        })
+    info["possible"] = largest >= MIN_BESIDE_MIB or any(p["replaceable"] for p in info["partitions"])
+    if not info["possible"]:
+        info["reason"] = (f"The drive has no free space of at least {MIN_BESIDE_MIB // 1024} GiB and no "
+                          "partition that large to replace. Shrink a partition from the other system first.")
+    return info
+
+
+def describe_dual_boot(disk_path):
+    try:
+        layout = read_layout_unprivileged(disk_path)
+        busy = busy_partitions([p["path"] for p in layout["partitions"]])
+        return dual_boot_info(layout, booted_with_uefi(), busy)
+    except (OSError, ValueError, RuntimeError) as err:
+        print(f"[INSTALL] Cannot read the partitions of {disk_path}: {err}", file=sys.stderr)
+        return {"possible": False, "reason": f"The drive's partitions could not be read: {err}",
+                "freeBytes": 0, "free": format_gb(0), "partitions": []}
+
+
+def partition_node(disk, number):
+    return f"{disk}p{number}" if disk[-1].isdigit() else f"{disk}{number}"
+
+
+def partition_number(node):
+    with open(os.path.join("/sys/class/block", os.path.basename(node), "partition"), "r",
+              encoding="ascii") as handle:
+        return int(handle.read().strip())
+
+
+def partition_numbers(disk):
+    out = run_cmd(["parted", "-s", "-m", disk, "unit", "MiB", "print"])
+    return {int(line.split(":", 1)[0]) for line in out.splitlines() if line.split(":", 1)[0].isdigit()}
+
+
+def plan_beside_install(target_disk, replace_partition=None):
+    """
+    Check everything an install beside another system needs, before anything
+    is written: UEFI, a GPT disk whose other system boots from an EFI system
+    partition, nothing on the disk in use, and a stretch of at least
+    MIN_BESIDE_MIB.
+    """
+    if not booted_with_uefi():
+        raise RuntimeError("This computer started in legacy BIOS mode; installing beside another system needs UEFI.")
+    layout = read_partition_table(target_disk)
+    if layout["label"] != "gpt":
+        raise RuntimeError(f"{target_disk} has a {layout['label'] or 'unknown'} partition table; "
+                           "installing beside another system needs GPT.")
+    esp = find_esp(layout)
+    if esp is None:
+        raise RuntimeError(f"{target_disk} has no EFI system partition.")
+    busy = busy_partitions([p["path"] for p in layout["partitions"]])
+    if busy:
+        raise RuntimeError(f"{', '.join(sorted(busy))} on {target_disk} is in use. Nothing on the drive may be "
+                           "mounted while Lab Kiosk installs beside it; restart the installer and try again.")
+
+    replace = None
+    if replace_partition is not None:
+        if not PARTITION_PATTERN.match(replace_partition):
+            raise ValueError(f"Refusing to replace {replace_partition!r}: not a partition device node.")
+        real = os.path.realpath(replace_partition)
+        replace = next((p for p in layout["partitions"] if os.path.realpath(p["path"]) == real), None)
+        if replace is None:
+            raise ValueError(f"{replace_partition} is not a partition of {target_disk}.")
+        if replace["esp"]:
+            raise ValueError(f"{replace_partition} is the EFI system partition; every system on the drive boots from it.")
+    region = beside_region(layout, replace)
+    if region is None:
+        where = f"replacing {replace_partition}" if replace else "in the drive's free space"
+        raise RuntimeError(f"There is not enough room {where}: Lab Kiosk needs {MIN_BESIDE_MIB // 1024} GiB.")
+    return {
+        "region": region,
+        "replace": replace and {"path": replace["path"], "number": partition_number(replace["path"])},
+    }
+
+
+def partition_beside(target_disk, plan):
+    """
+    Create Lab Kiosk's own ESP and its image store, data and swap partitions
+    inside the planned stretch; returns the ESP's number and the ESP, root,
+    data and swap nodes. New partition numbers
+    are read back from the table rather than assumed: they fill the lowest
+    numbers the other system left free.
+    """
+    if plan["replace"]:
+        write_status("running", f"Removing partition {plan['replace']['path']}...", 18)
+        run_cmd(["wipefs", "-a", plan["replace"]["path"]])
+        run_cmd(["parted", "-s", target_disk, "rm", str(plan["replace"]["number"])])
+
+    start, end = plan["region"]
+    swap_end = end - DATA_PARTITION_MIB
+    swap_start = swap_end - SWAP_PARTITION_MIB
+    root_start = start + BESIDE_ESP_MIB
+    esp_name, root_name, data_name, swap_name = BESIDE_PARTITION_NAMES
+
+    def make(name, fs_type, first, last):
+        before = partition_numbers(target_disk)
+        run_cmd(["parted", "-s", target_disk, "--", "mkpart", name, fs_type, f"{first}MiB", f"{last}MiB"])
+        added = partition_numbers(target_disk) - before
+        if len(added) != 1:
+            raise RuntimeError(f"parted reported {len(added)} new partitions after creating {name}")
+        return added.pop()
+
+    write_status("running", "Creating Lab Kiosk's partitions beside the other system...", 20)
+    esp_number = make(esp_name, "fat32", start, root_start)
+    run_cmd(["parted", "-s", target_disk, "set", str(esp_number), "esp", "on"])
+    part_esp = partition_node(target_disk, esp_number)
+    part_root = partition_node(target_disk, make(root_name, "ext4", root_start, swap_start))
+    part_data = partition_node(target_disk, make(data_name, "ext4", swap_end, end))
+    part_swap = partition_node(target_disk, make(swap_name, "linux-swap", swap_start, swap_end))
+    wait_for_partition_nodes(target_disk, (part_esp, part_root, part_data, part_swap))
+    return esp_number, part_esp, part_root, part_data, part_swap
+
+
+def is_block_device(node):
+    try:
+        return stat.S_ISBLK(os.stat(node).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def wait_for_partition_nodes(target_disk, nodes, attempts=PARTITION_NODE_ATTEMPTS):
+    """
+    Wait until every new partition's device node is there, and still there a
+    second later. parted tells the kernel about each partition itself; a
+    re-read of the table (partprobe) removes and re-adds every partition node,
+    so it is asked for only while a node is missing, and a node seen just
+    after one may vanish again. Formatting a node that is not there would
+    fail half-way through the install.
+    """
+    seen_in_a_row = 0
+    missing = list(nodes)
+    for _ in range(attempts):
+        time.sleep(1)
+        missing = [node for node in nodes if not is_block_device(node)]
+        if missing:
+            seen_in_a_row = 0
+            run_cmd(["partprobe", target_disk], check=False)
+            continue
+        seen_in_a_row += 1
+        if seen_in_a_row == 2:
+            return
+    raise RuntimeError(f"The new partitions {', '.join(missing or nodes)} did not settle on {target_disk}.")
+
+
+def boot_entries(listing):
+    """efibootmgr's output as (BootOrder, {number: label})."""
+    order = []
+    entries = {}
+    for line in listing.splitlines():
+        if line.startswith("BootOrder:"):
+            order = [n.strip().upper() for n in line.split(":", 1)[1].split(",") if n.strip()]
+            continue
+        match = re.match(r"^Boot([0-9A-Fa-f]{4})\*?\s(.*)\Z", line)
+        if match:
+            entries[match.group(1).upper()] = re.split(r"\t|\s{2,}", match.group(2), maxsplit=1)[0].strip()
+    return order, entries
+
+
+def register_boot_entry(target_disk, esp_number):
+    """
+    Give Lab Kiosk its own firmware boot entry, first in the boot order, so the
+    workstation starts into the kiosk unattended; the other system stays in the
+    firmware's boot menu. Entries an earlier Lab Kiosk install left are removed
+    first, so there is exactly one.
+    """
+    _, entries = boot_entries(run_cmd(["efibootmgr"]))
+    for number, label in entries.items():
+        if label == BOOT_ENTRY_LABEL:
+            run_cmd(["efibootmgr", "--bootnum", number, "--delete-bootnum"])
+    run_cmd(["efibootmgr", "--create", "--disk", target_disk, "--part", str(esp_number),
+             "--label", BOOT_ENTRY_LABEL, "--loader", BOOT_ENTRY_LOADER])
+    order, entries = boot_entries(run_cmd(["efibootmgr"]))
+    ours = {number for number, label in entries.items() if label == BOOT_ENTRY_LABEL}
+    if len(ours) != 1 or not order or order[0] not in ours:
+        raise RuntimeError(
+            "Lab Kiosk is on the drive, but the firmware did not keep its boot entry first in the boot order. "
+            f"Choose '{BOOT_ENTRY_LOADER}' in the firmware's boot settings to start it."
+        )
+    print(f"[INSTALL] Firmware boot entry Boot{ours.pop()} '{BOOT_ENTRY_LABEL}' is first in the boot order.",
+          file=sys.stderr)
 
 def locate_running_image():
     """
@@ -363,7 +762,13 @@ def copy_image_file(source, destination, report):
     os.chmod(destination, 0o644)
 
 
-def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
+def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_boot=False,
+                    replace_partition=None):
+    """
+    Install onto target_disk: the whole drive, erased, or -- with dual_boot or
+    replace_partition -- beside the system already on it.
+    """
+    beside = dual_boot or replace_partition is not None
     if os.geteuid() != 0:
         raise PermissionError("Installer must run as root")
 
@@ -373,6 +778,8 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
             "not starting or ending with a hyphen."
         )
 
+    if NETBOOT_ARG in kernel_args():
+        raise RuntimeError("This computer was started over the network; it is not installed to a drive.")
     if not is_live_session():
         raise RuntimeError("Lab Kiosk OS is already installed on this computer. Re-installation is disabled.")
 
@@ -399,6 +806,7 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
             f"Refusing to install to {target_disk}: {size_bytes // (1024 * 1024)} MiB is smaller than the "
             f"{MIN_DISK_BYTES // (1024 ** 3)} GiB minimum, which holds two system images."
         )
+    plan = plan_beside_install(target_disk, replace_partition) if beside else None
 
     # Everything the new disk needs is found before anything is erased, so a
     # broken medium fails here and not halfway through with a wiped disk.
@@ -411,72 +819,19 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
           file=sys.stderr)
     write_status("running", f"Preparing target disk {target_disk}...", 10)
 
-    write_status("running", "Unmounting target partitions...", 15)
-    run_cmd(["swapoff", "-a"], check=False)
-    for mount_point in (TARGET_ROOT_MOUNT, TARGET_ESP_MOUNT, TARGET_DATA_MOUNT):
-        run_cmd(["umount", "-R", mount_point], check=False)
-    for part in range(1, 16):
-        p_name = f"{target_disk}p{part}" if ("nvme" in target_disk or "mmcblk" in target_disk) else f"{target_disk}{part}"
-        if os.path.exists(p_name):
-            run_cmd(["umount", "-f", p_name], check=False)
-
-    write_status("running", "Creating GPT partition table (BIOS & UEFI compatible)...", 20)
-    run_cmd(["wipefs", "-a", "-f", target_disk], check=False)
-    run_cmd(["parted", "-s", target_disk, "mklabel", "gpt"])
-    # Partition 1: BIOS boot partition for legacy GRUB embedding (1MiB - 2MiB)
-    run_cmd(["parted", "-s", target_disk, "mkpart", "bios_grub", "1MiB", "2MiB"])
-    run_cmd(["parted", "-s", target_disk, "set", "1", "bios_grub", "on"])
-    # Partition 2: EFI System Partition (2MiB - 514MiB)
-    run_cmd(["parted", "-s", target_disk, "mkpart", "ESP", "fat32", "2MiB", "514MiB"])
-    run_cmd(["parted", "-s", target_disk, "set", "2", "esp", "on"])
-    # Partition 3: the image store (514MiB up to the swap partition). It holds the
-    # boot menu and whole system images as files, never a root filesystem:
-    #   boot/grub/                grub.cfg, grubenv, the boot-menu password
-    #   images/<version>/         filesystem.squashfs, vmlinuz, initrd.img
-    # The "--" is required, not stylistic: the end offset is negative (measured
-    # back from the end of the disk) and parted's option parser otherwise reads
-    # "-1537MiB" as a bundle of single-letter flags and aborts.
-    swap_end = -512
-    swap_start = swap_end - SWAP_PARTITION_MIB
-    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "ROOT", "ext4", "514MiB", f"{swap_start - 1}MiB"])
-    # Partition 4: the only writable-across-reboots area on the machine.
-    #
-    # The installed system runs from its squashfs under a RAM overlay, so every
-    # write to / is gone at power-off. That is the whole point for user state,
-    # but it would also discard the device token: a workstation enrolled *after*
-    # installation would come back unenrolled on the next boot, with nothing in
-    # the UI to say so. /etc/labkiosk is mounted from here instead (by
-    # etc-labkiosk.mount in the image), so the enrolment survives while the rest
-    # of the OS stays immutable. 512 MiB is far more than the config needs and
-    # keeps the partition comfortably alignable.
-    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "DATA", "ext4", f"{swap_end}MiB", "100%"])
-    # Partition 5, between the image store and the data partition: swap, used
-    # only when compressed RAM is full, and encrypted at every boot with a key
-    # that never leaves RAM (labkiosk-swap). Created last so the data partition
-    # keeps number 4. parted gives it the GPT Linux swap type, which
-    # labkiosk-swap checks before it touches it; nothing is formatted here.
-    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "SWAP", "linux-swap", f"{swap_start}MiB", f"{swap_end}MiB"])
-    time.sleep(2)
-    run_cmd(["partprobe", target_disk], check=False)
-    time.sleep(1)
-
-    # Partition 1 is the bios_grub area: it holds no filesystem and is never
-    # mounted, so only the ESP, ROOT and DATA node names are needed here.
-    is_p_style = "nvme" in target_disk or "mmcblk" in target_disk or target_disk[-1].isdigit()
-    part_esp  = f"{target_disk}p2" if is_p_style else f"{target_disk}2"
-    part_root = f"{target_disk}p3" if is_p_style else f"{target_disk}3"
-    part_data = f"{target_disk}p4" if is_p_style else f"{target_disk}4"
-    part_swap = f"{target_disk}p5" if is_p_style else f"{target_disk}5"
-
-    for _ in range(10):
-        if os.path.exists(part_root) and os.path.exists(part_esp) and os.path.exists(part_data) \
-                and os.path.exists(part_swap):
-            break
-        time.sleep(0.5)
+    if beside:
+        print(f"[INSTALL] Installing beside the existing system in MiB {plan['region'][0]}-{plan['region'][1]}"
+              f"{' replacing ' + plan['replace']['path'] if plan['replace'] else ''}, with its own ESP.",
+              file=sys.stderr)
+        esp_number, part_esp, part_root, part_data, part_swap = partition_beside(target_disk, plan)
+    else:
+        part_esp, part_root, part_data, part_swap = partition_whole_disk(target_disk)
 
     write_status("running", "Formatting file systems (FAT32 & ext4)...", 25)
-    run_cmd(["mkfs.vfat", "-F", "32", "-n", "ESP", part_esp])
+    # Beside another system this is Lab Kiosk's own ESP, new and empty.
+    run_cmd(["mkfs.vfat", "-F", "32", "-n", BESIDE_ESP_LABEL if beside else "ESP", part_esp])
     run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_ROOT", part_root])
+
     # With a TPM 2.0 chip the data partition is encrypted (labkiosk-data-unlock);
     # data_fs is the device that holds its ext4 either way.
     encrypt_data = tpm2_available()
@@ -559,22 +914,27 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
                 "--no-nvram",
                 "--recheck",
             ], check=True)
-            run_cmd([
-                "grub-install",
-                "--target=x86_64-efi",
-                f"--efi-directory={esp_dir}",
-                f"--boot-directory={boot_dir}",
-                "--uefi-secure-boot",
-                "--removable",
-                "--recheck",
-            ], check=True)
+            # The fallback path EFI/BOOT is what firmware without a boot entry
+            # starts; on a shared drive that stays the other system, and the
+            # firmware entry below starts Lab Kiosk.
+            if not beside:
+                run_cmd([
+                    "grub-install",
+                    "--target=x86_64-efi",
+                    f"--efi-directory={esp_dir}",
+                    f"--boot-directory={boot_dir}",
+                    "--uefi-secure-boot",
+                    "--removable",
+                    "--recheck",
+                ], check=True)
             uefi_installed = True
         except Exception as err:
             print(f"[INSTALL] WARNING: UEFI bootloader installation failed: {err}", file=sys.stderr)
             bootloader_errors.append(f"UEFI: {err}")
 
-        # Install Legacy BIOS bootloader into MBR / bios_grub
-        if not ("nvme" in target_disk or "mmcblk" in target_disk):
+        # Install Legacy BIOS bootloader into MBR / bios_grub. Never beside
+        # another system: the boot sector is that system's.
+        if not beside and not ("nvme" in target_disk or "mmcblk" in target_disk):
             try:
                 run_cmd([
                     "grub-install",
@@ -605,6 +965,12 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
                 "Bootloader installation failed (both UEFI and BIOS failed, and no EFI binaries found on ESP). "
                 f"Details: {'; '.join(bootloader_errors)}"
             )
+        if beside:
+            # Only a firmware entry starts this loader, so it must be there.
+            if not uefi_installed or not os.path.isfile(os.path.join(esp_dir, "EFI", "LabKiosk", "shimx64.efi")):
+                raise RuntimeError(f"Lab Kiosk's boot loader was not installed: {'; '.join(bootloader_errors)}")
+            write_status("running", "Adding Lab Kiosk to the computer's boot menu...", 85)
+            register_boot_entry(target_disk, esp_number)
 
         write_status("running", "Configuring the boot menu...", 90)
         # One menu for every image: it reads which one to boot from grubenv, so
@@ -637,6 +1003,66 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
 
     write_status("completed", "Lab Kiosk OS successfully installed to internal drive!", 100)
     print("[INSTALL] SUCCESS! Installation complete.", file=sys.stderr)
+
+
+def partition_whole_disk(target_disk):
+    """Erase target_disk and lay it out; returns the ESP, root, data and swap nodes."""
+    write_status("running", "Unmounting target partitions...", 15)
+    run_cmd(["swapoff", "-a"], check=False)
+    for mount_point in (TARGET_ROOT_MOUNT, TARGET_ESP_MOUNT, TARGET_DATA_MOUNT):
+        run_cmd(["umount", "-R", mount_point], check=False)
+    for part in range(1, 16):
+        p_name = f"{target_disk}p{part}" if ("nvme" in target_disk or "mmcblk" in target_disk) else f"{target_disk}{part}"
+        if os.path.exists(p_name):
+            run_cmd(["umount", "-f", p_name], check=False)
+
+    write_status("running", "Creating GPT partition table (BIOS & UEFI compatible)...", 20)
+    run_cmd(["wipefs", "-a", "-f", target_disk], check=False)
+    run_cmd(["parted", "-s", target_disk, "mklabel", "gpt"])
+    # Partition 1: BIOS boot partition for legacy GRUB embedding (1MiB - 2MiB)
+    run_cmd(["parted", "-s", target_disk, "mkpart", "bios_grub", "1MiB", "2MiB"])
+    run_cmd(["parted", "-s", target_disk, "set", "1", "bios_grub", "on"])
+    # Partition 2: EFI System Partition (2MiB - 514MiB)
+    run_cmd(["parted", "-s", target_disk, "mkpart", "ESP", "fat32", "2MiB", "514MiB"])
+    run_cmd(["parted", "-s", target_disk, "set", "2", "esp", "on"])
+    # Partition 3: the image store (514MiB up to the swap partition). It holds the
+    # boot menu and whole system images as files, never a root filesystem:
+    #   boot/grub/                grub.cfg, grubenv, the boot-menu password
+    #   images/<version>/         filesystem.squashfs, vmlinuz, initrd.img
+    # The "--" is required, not stylistic: the end offset is negative (measured
+    # back from the end of the disk) and parted's option parser otherwise reads
+    # "-1537MiB" as a bundle of single-letter flags and aborts.
+    swap_end = -512
+    swap_start = swap_end - SWAP_PARTITION_MIB
+    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "ROOT", "ext4", "514MiB", f"{swap_start - 1}MiB"])
+    # Partition 4: the only writable-across-reboots area on the machine.
+    #
+    # The installed system runs from its squashfs under a RAM overlay, so every
+    # write to / is gone at power-off. That is the whole point for user state,
+    # but it would also discard the device token: a workstation enrolled *after*
+    # installation would come back unenrolled on the next boot, with nothing in
+    # the UI to say so. /etc/labkiosk is mounted from here instead (by
+    # etc-labkiosk.mount in the image), so the enrolment survives while the rest
+    # of the OS stays immutable. 512 MiB is far more than the config needs and
+    # keeps the partition comfortably alignable.
+    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "DATA", "ext4", f"{swap_end}MiB", "100%"])
+    # Partition 5, between the image store and the data partition: swap, used
+    # only when compressed RAM is full, and encrypted at every boot with a key
+    # that never leaves RAM (labkiosk-swap). Created last so the data partition
+    # keeps number 4. parted gives it the GPT Linux swap type, which
+    # labkiosk-swap checks before it touches it; nothing is formatted here.
+    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "SWAP", "linux-swap", f"{swap_start}MiB", f"{swap_end}MiB"])
+
+    # Partition 1 is the bios_grub area: it holds no filesystem and is never
+    # mounted, so only the ESP, ROOT and DATA node names are needed here.
+    is_p_style = "nvme" in target_disk or "mmcblk" in target_disk or target_disk[-1].isdigit()
+    part_esp  = f"{target_disk}p2" if is_p_style else f"{target_disk}2"
+    part_root = f"{target_disk}p3" if is_p_style else f"{target_disk}3"
+    part_data = f"{target_disk}p4" if is_p_style else f"{target_disk}4"
+    part_swap = f"{target_disk}p5" if is_p_style else f"{target_disk}5"
+
+    wait_for_partition_nodes(target_disk, (part_esp, part_root, part_data, part_swap))
+    return part_esp, part_root, part_data, part_swap
 
 
 def disk_size_bytes(target_disk):
@@ -926,6 +1352,15 @@ if __name__ == "__main__":
         "--hostname",
         help="The workstation's hostname (one lowercase DNS label); generated when omitted",
     )
+    parser.add_argument(
+        "--dual-boot",
+        action="store_true",
+        help="Install beside the system already on the disk, into its largest free space (UEFI and GPT only)",
+    )
+    parser.add_argument(
+        "--replace-partition",
+        help="Install beside the disk's other system in place of this partition (e.g. /dev/sda3); implies --dual-boot",
+    )
 
     args = parser.parse_args()
 
@@ -933,6 +1368,10 @@ if __name__ == "__main__":
         parser.error("--grub-password-hash requires --target")
     if args.hostname is not None and not args.target:
         parser.error("--hostname requires --target")
+    if (args.dual_boot or args.replace_partition is not None) and not args.target:
+        parser.error("--dual-boot and --replace-partition require --target")
+    if args.replace_partition is not None and not PARTITION_PATTERN.match(args.replace_partition):
+        parser.error("--replace-partition must name one partition, such as /dev/sda3 or /dev/nvme0n1p3")
 
     if args.list_disks:
         print(json.dumps(list_disks()))
@@ -950,7 +1389,7 @@ if __name__ == "__main__":
             )
             sys.exit(1)
         try:
-            install_to_disk(args.target, grub_hash, args.hostname)
+            install_to_disk(args.target, grub_hash, args.hostname, args.dual_boot, args.replace_partition)
             sys.exit(0)
         except Exception as err:
             print(f"[INSTALL] ERROR: {err}", file=sys.stderr)

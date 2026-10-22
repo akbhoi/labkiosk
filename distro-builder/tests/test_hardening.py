@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -498,6 +499,352 @@ class AgentReportsDiskHealth(unittest.TestCase):
         self.write([{"device": "sda", "state": "failing"}], 2_000_000_000)
         agent.report_disk_health(self.progress, self.path)
         self.assertEqual(self.sent, [], "a disk without its fields is not sent")
+
+
+INTEL_VAINFO = """libva info: VA-API version 1.17.0
+libva info: va_openDriver() returns 0
+vainfo: VA-API version: 1.17 (libva 2.12.0)
+vainfo: Driver version: Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()
+vainfo: Supported profile and entrypoints
+      VAProfileNone                   :\tVAEntrypointVideoProc
+      VAProfileMPEG2Simple            :\tVAEntrypointVLD
+      VAProfileH264Main               :\tVAEntrypointVLD
+      VAProfileH264Main               :\tVAEntrypointEncSliceLP
+      VAProfileH264High               :\tVAEntrypointVLD
+      VAProfileHEVCMain10             :\tVAEntrypointVLD
+      VAProfileVP9Profile0            :\tVAEntrypointVLD
+      VAProfileAV1Profile0            :\tVAEntrypointVLD
+      VAProfileJPEGBaseline           :\tVAEntrypointEncPicture
+      VAProfileH264StereoHigh         :\tVAEntrypointFEI
+"""
+
+
+class AgentReportsVideoDecoding(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.drm = os.path.join(self.tmp.name, "drm")
+        os.mkdir(self.drm)
+        saved = {name: getattr(agent, name) for name in ("probe_video_decoding", "post_video_decoding", "log")}
+        saved_state = dict(agent.state)
+
+        def restore():
+            for name, value in saved.items():
+                setattr(agent, name, value)
+            agent.state.clear()
+            agent.state.update(saved_state)
+
+        self.addCleanup(restore)
+        self.logged = []
+        agent.log = self.logged.append
+        agent.state["isConfigured"] = True
+
+    def gpu(self, node, vendor, driver):
+        device = os.path.join(self.tmp.name, "devices", node)
+        os.makedirs(os.path.join(self.tmp.name, "drivers", driver), exist_ok=True)
+        os.makedirs(device)
+        with open(os.path.join(device, "vendor"), "w", encoding="ascii") as handle:
+            handle.write(vendor + "\n")
+        os.symlink(os.path.join(self.tmp.name, "drivers", driver), os.path.join(device, "driver"))
+        os.makedirs(os.path.join(self.drm, node))
+        os.symlink(device, os.path.join(self.drm, node, "device"))
+
+    def test_vainfo_output_becomes_codec_lists(self):
+        self.assertEqual(agent.parse_vainfo(INTEL_VAINFO), {
+            "vaDriver": "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()",
+            "decode": ["av1", "h264", "hevc", "mpeg2", "vp9"],
+            "encode": ["h264", "jpeg"],
+        })
+
+    def test_vainfo_without_a_driver_is_a_problem(self):
+        with self.assertRaises(ValueError):
+            agent.parse_vainfo("libva info: VA-API version 1.17.0\nlibva error: vaGetDriverNameByIndex() failed\n")
+
+    def test_each_render_node_is_asked_and_named(self):
+        self.gpu("renderD128", "0x8086", "i915")
+        self.gpu("renderD129", "0x10de", "nouveau")
+        os.makedirs(os.path.join(self.drm, "card0"))
+        asked = []
+
+        def vainfo(device):
+            asked.append(device)
+            if device.endswith("129"):
+                raise ValueError("vaInitialize failed with error code -1 (unknown libva error),exit")
+            return INTEL_VAINFO
+
+        report = agent.probe_video_decoding(self.drm, vainfo)
+        self.assertEqual(asked, ["/dev/dri/renderD128", "/dev/dri/renderD129"])
+        intel, nvidia = report["gpus"]
+        self.assertEqual((intel["vendor"], intel["kernelDriver"]), ("intel", "i915"))
+        self.assertIn("av1", intel["decode"])
+        self.assertNotIn("problem", intel)
+        self.assertEqual((nvidia["vendor"], nvidia["kernelDriver"], nvidia["decode"]), ("nvidia", "nouveau", []))
+        self.assertIn("vaInitialize failed", nvidia["problem"])
+
+    def test_no_gpu_or_no_vainfo_says_why(self):
+        report = agent.probe_video_decoding(self.drm, lambda device: INTEL_VAINFO)
+        self.assertEqual(report, {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."})
+        self.gpu("renderD128", "0x1af4", "virtio-pci")
+
+        def missing(device):
+            raise FileNotFoundError("vainfo")
+
+        gpu = agent.probe_video_decoding(self.drm, missing)["gpus"][0]
+        self.assertEqual((gpu["vendor"], gpu["problem"]), ("virtual", "vainfo is not installed."))
+
+    def test_the_report_is_sent_until_the_control_plane_answers(self):
+        probes = []
+        agent.probe_video_decoding = lambda: probes.append(1) or {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."}
+        answers = [OSError("offline"), 409, 200]
+        sent = []
+
+        def post(report):
+            sent.append(report)
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        agent.post_video_decoding = post
+        progress = {"report": None, "done": False, "logged": False}
+        for _ in range(5):
+            agent.report_video_decoding(progress)
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(len(probes), 1, "the GPUs are read once per agent start")
+        self.assertTrue(progress["done"])
+        self.assertIn("Hardware video decoding: none, Chromium decodes on the CPU.", self.logged)
+
+    def test_a_refused_report_is_not_sent_again_and_nothing_goes_before_enrolment(self):
+        agent.probe_video_decoding = lambda: {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."}
+        sent = []
+        agent.post_video_decoding = lambda report: sent.append(report) or 400
+        progress = {"report": None, "done": False, "logged": False}
+        agent.state["isConfigured"] = False
+        agent.report_video_decoding(progress)
+        self.assertEqual(sent, [])
+        agent.state["isConfigured"] = True
+        agent.report_video_decoding(progress)
+        agent.report_video_decoding(progress)
+        self.assertEqual(len(sent), 1)
+
+    def test_the_image_ships_vainfo_and_lets_the_agent_run_it(self):
+        self.assertIn("vainfo", package_list())
+        profile = read(CHROOT, "etc/apparmor.d/labkiosk-agent")
+        self.assertIn("\n  /usr/bin/vainfo ix,\n", profile)
+        self.assertIn("\n  /dev/dri/renderD* rw,\n", profile)
+
+
+class AgentReportsHardware(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        saved = {name: getattr(agent, name) for name in ("probe_hardware", "post_device_json", "log")}
+        saved_state = dict(agent.state)
+
+        def restore():
+            for name, value in saved.items():
+                setattr(agent, name, value)
+            agent.state.clear()
+            agent.state.update(saved_state)
+
+        self.addCleanup(restore)
+        agent.log = lambda message: None
+        agent.state["isConfigured"] = True
+
+    def write(self, path, text):
+        full = os.path.join(self.tmp.name, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return full
+
+    def adapter(self, name, mac, wireless=False, physical=True, kind="1"):
+        self.write(f"net/{name}/address", mac + "\n")
+        self.write(f"net/{name}/type", kind + "\n")
+        if physical:
+            os.makedirs(os.path.join(self.tmp.name, "net", name, "device"))
+        if wireless:
+            os.makedirs(os.path.join(self.tmp.name, "net", name, "wireless"))
+
+    def test_the_machine_is_read_from_firmware_cpu_memory_and_wired_adapters(self):
+        self.write("dmi/sys_vendor", "LENOVO\n")
+        self.write("dmi/product_name", "10T7S0B500\n")
+        self.write("dmi/product_version", "ThinkCentre M720q\n")
+        cpuinfo = self.write("cpuinfo", "processor\t: 0\nmodel name\t: Intel(R) Core(TM) i5-8500T  CPU @ 2.10GHz\n")
+        meminfo = self.write("meminfo", "MemTotal:        8040128 kB\nMemFree: 1 kB\n")
+        self.adapter("enp1s0", "8C:16:45:AA:BB:CC")
+        self.adapter("wlp2s0", "8c:16:45:00:00:01", wireless=True)
+        self.adapter("docker0", "02:42:00:00:00:01", physical=False)
+        self.adapter("lo", "00:00:00:00:00:00", physical=False, kind="772")
+        os.makedirs(os.path.join(self.tmp.name, "efi"))
+        report = agent.probe_hardware(
+            os.path.join(self.tmp.name, "dmi"), os.path.join(self.tmp.name, "net"),
+            os.path.join(self.tmp.name, "efi"), cpuinfo, meminfo,
+            {"keyboardPresent": True, "touchPresent": False},
+        )
+        self.assertEqual((report["vendor"], report["model"]), ("LENOVO", "ThinkCentre M720q"))
+        self.assertEqual((report["keyboard"], report["touch"]), (True, False), "from /proc/bus/input/devices")
+        self.assertEqual(report["cpu"], "Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz")
+        self.assertEqual((report["memoryMb"], report["bootMode"]), (7851, "uefi"))
+        self.assertEqual(report["macs"], ["8c:16:45:aa:bb:cc"], "only the physical wired adapter")
+        self.assertGreaterEqual(report["cores"], 1)
+
+    def test_other_makers_name_the_model_in_product_name_and_bios_has_no_efi_directory(self):
+        self.write("dmi/sys_vendor", "Dell Inc.\n")
+        self.write("dmi/product_name", "OptiPlex 7050\n")
+        self.write("dmi/product_version", "Not Specified\n")
+        report = agent.probe_hardware(
+            os.path.join(self.tmp.name, "dmi"), os.path.join(self.tmp.name, "net"),
+            os.path.join(self.tmp.name, "efi"), os.path.join(self.tmp.name, "none"), os.path.join(self.tmp.name, "none"),
+            {"keyboardPresent": None, "touchPresent": None},
+        )
+        self.assertEqual((report["model"], report["bootMode"], report["macs"]), ("OptiPlex 7050", "bios", []))
+        self.assertEqual((report["keyboard"], report["touch"]), (None, None), "unknown stays unknown")
+        self.assertEqual(report["memoryMb"], 64, "an unreadable size is reported as the smallest the control plane takes")
+
+    def test_the_report_is_sent_once_the_control_plane_answers(self):
+        probes = []
+        agent.probe_hardware = lambda: probes.append(1) or {
+            "vendor": "", "model": "", "cpu": "", "cores": 2, "memoryMb": 2048, "bootMode": "bios",
+            "keyboard": None, "touch": None, "macs": [],
+        }
+        answers = [OSError("offline"), 409, 200]
+        sent = []
+
+        def post(path, report):
+            sent.append(path)
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        agent.post_device_json = post
+        progress = {"report": None, "done": False, "logged": False}
+        for _ in range(5):
+            agent.report_hardware(progress)
+        self.assertEqual(sent, ["/api/devices/hardware"] * 3)
+        self.assertEqual(len(probes), 1)
+        self.assertTrue(progress["done"])
+
+    def test_the_agent_may_read_what_it_reports(self):
+        profile = read(CHROOT, "etc/apparmor.d/labkiosk-agent")
+        for rule in ("/sys/devices/virtual/dmi/id/product_name r,", "/sys/devices/**/net/*/address r,", "@{PROC}/meminfo r,"):
+            self.assertIn(rule, profile)
+
+
+class AgentCountsUsage(unittest.TestCase):
+    def setUp(self):
+        self.now = [1000.0]
+        self.day = ["2026-10-20"]
+        self.counter = agent.UsageCounter(clock=lambda: self.now[0], today=lambda: self.day[0])
+        saved = {name: getattr(agent, name) for name in ("post_device_json", "log")}
+        saved_state = dict(agent.state)
+
+        def restore():
+            for name, value in saved.items():
+                setattr(agent, name, value)
+            agent.state.clear()
+            agent.state.update(saved_state)
+
+        self.addCleanup(restore)
+        agent.log = lambda message: None
+        agent.state["isConfigured"] = True
+
+    def advance(self, seconds):
+        self.now[0] += seconds
+        self.counter.count_on()
+
+    def days(self):
+        return {d["day"]: d for d in self.counter.take()}
+
+    def test_only_real_hostnames_are_kept(self):
+        self.assertEqual(agent.usage_host("Docs.Example.ORG."), "docs.example.org")
+        for host in ("127.0.0.1", "localhost", "", "192.168.1.10", "bad host.org", None, "a" * 300 + ".org"):
+            self.assertEqual(agent.usage_host(host), "")
+
+    def test_each_tick_credits_the_minute_before_it_to_what_the_last_one_said(self):
+        self.counter.set_record_sites(True)
+        self.counter.tick("docs.example.org", True)
+        self.advance(60)
+        self.counter.tick("docs.example.org", False)
+        self.advance(60)
+        self.counter.tick("video.example.org", True)
+        self.advance(600)  # asleep or switched off: only a bounded credit
+        self.counter.tick("video.example.org", True)
+        day = self.days()["2026-10-20"]
+        self.assertEqual(day["activeSeconds"], 60 + agent.USAGE_TICK_MAX_CREDIT_SECONDS)
+        self.assertEqual(day["onSeconds"], 60 + 60 + agent.USAGE_ON_MAX_CREDIT_SECONDS)
+        self.assertEqual(day["sites"], [
+            {"domain": "docs.example.org", "seconds": 60, "visits": 1},
+            {"domain": "video.example.org", "seconds": agent.USAGE_TICK_MAX_CREDIT_SECONDS, "visits": 1},
+        ])
+        self.assertEqual(self.counter.take(), [], "taken once")
+
+    def test_no_sites_unless_the_organization_records_them(self):
+        self.counter.tick("docs.example.org", True)
+        self.advance(60)
+        self.counter.tick("docs.example.org", True)
+        self.counter.session_started()
+        day = self.days()["2026-10-20"]
+        self.assertEqual((day["sites"], day["sessions"], day["activeSeconds"]), ([], 1, 60), "time in use is counted all the same")
+        self.counter.set_record_sites(True)
+        self.counter.tick("docs.example.org", True)
+        self.counter.set_record_sites(False)
+        self.assertEqual(self.counter.take(), [], "turning it off drops what was counted")
+
+    def test_days_are_the_workstations_own_and_a_failed_report_is_kept(self):
+        self.day[0] = "2020-01-01"
+        self.counter.session_started()
+        self.day[0] = time.strftime("%Y-%m-%d")
+        self.counter.session_started()
+        report = self.counter.take()
+        self.assertEqual([d["day"] for d in report], [time.strftime("%Y-%m-%d")], "a day older than the control plane takes is dropped")
+        self.counter.put_back(report)
+        answers = [OSError("offline"), 503, 200]
+        sent = []
+
+        def post(path, payload):
+            sent.append(payload)
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        agent.post_device_json = post
+        for _ in range(4):
+            agent.report_usage(self.counter)
+        self.assertEqual(len(sent), 3, "nothing left to send after the 200")
+        self.assertEqual(sent[-1]["days"][0]["sessions"], 1)
+
+    def test_a_malformed_report_is_dropped_and_nothing_goes_before_enrolment(self):
+        self.day[0] = time.strftime("%Y-%m-%d")
+        self.counter.session_started()
+        agent.state["isConfigured"] = False
+        sent = []
+        agent.post_device_json = lambda path, payload: sent.append(payload) or 400
+        agent.report_usage(self.counter)
+        self.assertEqual(sent, [])
+        agent.state["isConfigured"] = True
+        agent.report_usage(self.counter)
+        agent.report_usage(self.counter)
+        self.assertEqual(len(sent), 1)
+
+    def test_a_control_plane_without_usage_reports_gets_each_report_once(self):
+        self.day[0] = time.strftime("%Y-%m-%d")
+        self.counter.session_started()
+        sent = []
+        agent.post_device_json = lambda path, payload: sent.append(payload) or 404
+        agent.report_usage(self.counter)
+        agent.report_usage(self.counter)
+        self.assertEqual(len(sent), 1, "a 404 is not sent again")
+
+    def test_the_extension_ticks_with_the_senders_address_and_the_idle_state(self):
+        background = read(CHROOT, "opt/labkiosk/extension/background.js")
+        self.assertIn("chrome.idle.queryState(USAGE_IDLE_SECONDS)", background)
+        self.assertIn("sender.frameId !== 0", background)
+        manifest = json.loads(read(CHROOT, "opt/labkiosk/extension/manifest.json"))
+        self.assertIn("idle", manifest["permissions"])
+        self.assertNotIn("tabs", manifest["permissions"])
 
 
 class Fonts(unittest.TestCase):

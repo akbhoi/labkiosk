@@ -28,12 +28,25 @@ What Lab Kiosk defends, how, and what it explicitly does not defend. A security 
 | Salt | 32 cryptographically random bytes per user |
 | Derived key | 256 bits, hex-encoded |
 | Session token | 32 random bytes, hex; **only its SHA-256 is stored** |
-| Cookie | `HttpOnly; Secure; SameSite=Lax`, scoped to the parent domain |
+| Cookie | `__Host-labkiosk_session`: `HttpOnly; Secure; SameSite=Lax; Path=/`, host-only, so no subdomain sees or can overwrite another host's session. Signing in on the apex for an organization's console hands the session over through a one-time, host-bound code (`/api/auth/handoff`). Super admin sessions last 12 hours, others 7 days |
 | Comparison | `timingSafeEqual()` |
 
 There are **zero runtime npm dependencies**. No auth framework, no routing library, no ORM. Every primitive is a Web API, which removes the supply-chain surface entirely and keeps cold start under 10 ms.
 
-**Two-step sign-in.** After the password, a super admin is always emailed a six-digit code (it works for that sign-in only, for ten minutes, five wrong tries). An organization account turns the same on under **Settings → Two-factor sign-in**; every account can add an authenticator app (TOTP) with ten recovery codes on top. A browser can be trusted for 30 days. Where email is not configured, an account with no app signs in with its password alone and the server logs why, rather than locking every account out. `SUPER_ADMIN_EMAIL` must therefore reach an inbox that can be read without signing in to the console.
+**Two-step sign-in.** After the password, every administrator (the super admin, an organization's owner and staff with the `org_admin` role) is always emailed a six-digit code (it works for that sign-in only, for ten minutes, five wrong tries). Other staff turn the same on under **Settings → Two-factor sign-in**. Every account can add passkeys and an authenticator app (TOTP, with ten recovery codes) on top; a passkey is offered first and cannot be phished, because the browser signs only for the site it was made on. Passkeys are verified in the Worker with `crypto.subtle` (ES256 or RS256; signature counter checked, attestation not required) and work on the platform domain and every organization subdomain; a custom domain is its own site. A browser can be trusted for 30 days. Where email is not configured, an account with no app and no passkey signs in with its password alone and the server logs why, rather than locking every account out. `SUPER_ADMIN_EMAIL` must therefore reach an inbox that can be read without signing in to the console.
+
+### Single sign-on
+
+Organization staff can sign in with **Google Workspace** or **Microsoft Entra ID** where their organization turned it on (Settings → Security; `src/sso.ts`). Never the super admin, never a workstation.
+
+- **Protocol.** OpenID Connect authorization code flow with PKCE (S256), a random `state` and `nonce` per sign-in, and the platform's client secret at the token endpoint. One redirect URI for every organization, on the platform host. Scopes `openid email profile`; no access or refresh token is kept.
+- **State.** Each sign-in is a row in `sso_states` (SHA-256 of the state, the PKCE verifier, the nonce, the organization, where the browser started). The callback spends it on first use, right or wrong; it expires after ten minutes and the hourly run purges it.
+- **ID token.** Verified in the Worker with `crypto.subtle`: RS256 only, against the provider's published keys (cached per isolate for an hour, read again for an unknown `kid` at most once a minute), then `iss`, `aud` (and `azp` with several audiences), `exp`/`iat`/`nbf` with two minutes of skew, and `nonce`. Google: `email_verified` must be true and `hd` one of the organization's Workspace domains (a personal Gmail account has none). Microsoft: `tid` must be one of the organization's Entra tenant IDs and `iss` must name that same tenant. Microsoft documents `email` as unverified across tenants, so it is trusted only together with that tenant check; `preferred_username` stands in only when no `email` is issued and it has the shape of an address.
+- **Who may configure it.** Reading needs `settings`; changing it needs an administrator (the owner or `org_admin` staff). Whoever administers a listed directory decides which email address its accounts carry, so listing a directory is trusting its administrators with every staff account of the organization. Every change is audited (`settings.sso`).
+- **Matching.** The verified email must belong to an existing account of that organization: its owner or a member of its staff. Nothing is created; removed staff, another organization's accounts, the super admin and inactive organizations are refused. A refused match counts as a failed sign-in for that address, and a locked address is refused, as with a password.
+- **The hand-off.** Sessions are host-only, so the callback (platform host) never sets one. It stores the matched account and the SHA-256 of a one-time code on the state row and sends the browser back to the sign-in page it started on. That page posts the code to `/api/auth/sso/redeem` on its own host; the code works once, for two minutes, only on that host and only in the browser that started (a `SameSite=Strict`, host-only cookie whose hash is on the row). Login CSRF — sending someone a link that signs them in as the attacker — fails on that cookie.
+- **Second factor.** The redeem continues exactly as a password does (`continueSignIn`): administrators always confirm with their second factor, other staff when they turned it on, a trusted browser skips it. Then the usual handoff to the console's host.
+- **Require single sign-on.** An organization can refuse password sign-in for its staff. The owner keeps the password, so the organization can always get back in to fix its directory or turn the requirement off; and while the platform offers none of the providers the organization turned on, passwords work again rather than locking everyone out. The refusal is said only after the password checked out.
 
 Password changes go through one path — `POST /api/auth/change-password` — which verifies the current password and **revokes the account's other sessions**, so a stolen cookie does not outlive a password change.
 
@@ -94,7 +107,7 @@ Cache-Control: no-store                 (API responses)
 
 ### Rate limiting
 
-- **Sign-in:** exponential back-off per identifier via `login_attempts`, answered `429`.
+- **Sign-in:** exponential back-off per identifier via `login_attempts`, answered `429`. Single sign-on counts against the same identifier (the verified email address) and is refused while it is locked; starting one is limited to 30 per source address per ten minutes.
 - **Registration and failed enrolment:** throttled per source address.
 - **Reserved slugs:** `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root` — neither registerable nor resolvable.
 
@@ -132,6 +145,7 @@ Off for every organization until one of its administrators accepts the Automatic
 | sysctl hardening, no core dumps | Kernel information disclosure |
 | Chromium deny-all `URLBlocklist` + allowlist | Unapproved browsing |
 | `AllowFileSelectionDialogs: false` | A file-picker used as a file manager |
+| Printing off by default: CUPS masked, `PrintingEnabled: false`; when an administrator turns it on, a local socket only and `PrinterTypeDenyList: ["pdf", "extension"]`, GTK's dialog limited to CUPS | A print service listening by default; "Save as PDF" or "Print to File" used to write files or open a file chooser |
 | Closed Shadow DOM + capture-phase event swallowing | A page tampering with the kiosk UI or evading the curtain |
 | GRUB `--unrestricted` + install-time password | Editing the kernel command line |
 | One-try boot of a new image, confirmed by `labkiosk-boot-slots` (root only, no sudo rule) | A bad system image stranding a workstation: it falls back to the old one |
@@ -144,6 +158,17 @@ The agent binds **only** to `127.0.0.1:8888` and every request must satisfy both
 The extension's service worker owns the `host_permissions` grant for that origin, so `content.js` never fetches the agent directly. This is why the agent can refuse cross-origin callers outright — it used to answer `Access-Control-Allow-Origin: *`, which meant **any site a user visited could talk to it**.
 
 Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate their inputs inside the agent *and* inside the installer, because the sudoers rule lets `kiosk` invoke the installer directly. The agent is not a trust boundary.
+
+### Power schedules and Wake-on-LAN
+
+- **`labkiosk-wake-alarm`** is the only root program a power schedule uses (`/etc/sudoers.d/52-labkiosk-wake-alarm`, no arguments in the rule). It takes `set <epoch>` or `clear` and nothing else: the epoch must match `[0-9]{9,11}\Z` and fall 60 s to 8 days and an hour from now, and it writes only `/sys/class/rtc/rtc0/wakealarm`, through `O_NOFOLLOW`. A compromised agent can at worst switch the machine on at some time in the next week.
+- **A `wake` command carries only MAC addresses the Worker read from that organization's own hardware reports** (`client_devices.hardware`, filtered by `tenant_id`), never addresses from the request, and goes only to a workstation of the same organization at the same LAN site. The agent re-validates each address (unicast, at most 64) before it broadcasts a magic packet, which can do nothing but switch a machine on.
+
+### Printing
+
+Off until an administrator holding `settings` turns it on (Settings → Printing). A printer address is checked three times, with the same rules: by the Worker on save, by the agent, and by the root helper `labkiosk-printing`, which `kiosk` may run through sudo and which therefore trusts nothing it is given. Only `ipp://` and `ipps://` to a host name or a private address with a plain path pass: never `file:`, `usb:` or `socket:`, never the workstation itself or a public address, never user info, a query, spaces or shell characters. Nothing reaches a shell; the queue name is `labkiosk-` and 16 hex digits.
+
+With printing on, CUPS listens on its Unix socket only. No TCP port matters here: the browser's allowlist lets a page reach `127.0.0.1` on any port, so a web interface on `:631` would be a page from which printers could be changed. `kiosk` is not in `lpadmin`, CUPS's administrators' group, so only root (the helper) adds or deletes queues. The print preview offers only those queues: "Save as PDF" and extension printers are denied by policy, and `/etc/xdg/gtk-3.0/settings.ini` (and `gtk-4.0`) loads GTK's CUPS print backend only, so "Print using system dialog" has no "Print to File" and no file chooser. The policy file that lets Chromium print is written by root into the policy directory the agent owns, without following links and through a name the directory's owner cannot predict.
 
 ---
 
@@ -172,6 +197,8 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 | AppArmor profiles in complain mode, none for Chromium | Enforcing before a release has shown no complaints risks blocking the agent; Chromium's own sandbox is its protection. |
 | No blanket `ExtensionInstallBlocklist` | It makes Chromium refuse `--load-extension` entirely, silently removing the kiosk's own nav bar and lock curtain. |
 | Camera and microphone are **not** blocked | Language labs and video pages need them. |
+| A page may call `window.print()` while printing is on | Printing on means printing from the organization's pages; the bar's button and Ctrl+P are the same call. While it is off, Chromium refuses it. |
+| CUPS runs unconfined when printing is on | Its AppArmor profile (`usr.sbin.cupsd`, from the package) is not among the two `labkiosk-apparmor.service` loads; the scheduler is reachable only on its local socket. |
 | `grub.pin` is empty in the repository | A committed hash is one password shared by every customer, unrotatable and permanent in git history. |
 | `--unrestricted` on every GRUB entry, unconditionally | Otherwise an installed disk gets `set superusers` with no unrestricted entry, and every workstation stops at a password prompt on every boot. |
 

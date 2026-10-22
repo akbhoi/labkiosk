@@ -4,6 +4,8 @@
 
 A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system designed for educational workstation fleets and thin-client workstations.
 
+> **Base OS support.** Debian 12 left regular security support on 12 July 2026 and is maintained by Debian LTS until 30 June 2028. A move to Debian 13 is planned as the next major release; see item 14 of [SECURITY.md](../SECURITY.md).
+
 ---
 
 ## 🌟 Architecture & Operating System Design
@@ -118,7 +120,7 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Image Store:** Copies the live medium's system image (squashfs, kernel, initrd) to `images/<version>/` (the version from `/usr/share/labkiosk/version`) instead of copying a root filesystem, installs the shared `usr/share/labkiosk/boot/grub.cfg` verbatim, and runs `grub-install` with `--boot-directory` on `ROOT`. Everything is located before `wipefs`, so a medium that cannot produce a bootable disk fails before the disk is erased.
 - **One-Try Boot & Rollback:** `boot/grub/grubenv` holds `current`, `previous`, `next` and `next_tries`. GRUB spends the try before booting `next`, and any failure falls back to `current`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every installed boot: it confirms a new image once the agent and browser have stayed up for a minute, and otherwise reboots into the old one. `labkiosk-boot-slots` (root only) also offers `status`, `try VERSION` and `init VERSION`. To test a slot on a kiosk with no shell, mount `LABKIOSK_ROOT` elsewhere and run `grub-editenv boot/grub/grubenv set next=VERSION next_tries=1`.
 - **Signed Downloads (run by hand):** `labkiosk-update download URL` fetches a signed release (see [Over-the-air releases](#-over-the-air-releases)), verifies its manifest with `gpgv` against the keys in `/usr/share/labkiosk/update-keys/`, refuses anything below `/usr/share/labkiosk/security-floor`, and resumes an interrupted download chunk by chunk. It downloads into `downloads/<version>/` and moves the folder into `images/` only once every file is verified; `labkiosk-update install VERSION` then gives it the one try. In normal use the console drives it (`labkiosk-update run` and `install-pending`, phase 3 of `docs/OTA_UPDATES.md`), and a security release for the line the workstation runs is given its one try at the next start without approval (phase 4). LAN sharing is phase 5.
-- **Boot Test in CI:** `.github/workflows/build-iso.yml` runs `tests/vm/boot-test.sh` (QEMU, OVMF, KVM) after every ISO build: install, promotion, a broken squashfs, recovery and an unhealthy image. It needs root and `/dev/kvm`, so it does not run on Windows; legacy BIOS boot is covered only by the GRUB menu tests.
+- **Boot Test in CI:** `.github/workflows/build-iso.yml` runs `tests/vm/boot-test.sh` (QEMU, OVMF, KVM) after every ISO build, as parallel jobs: install, promotion, a broken squashfs, recovery and an unhealthy image (whose copy of the health check alone has a 2-minute deadline), the signed download, the TPM, dual boot and network boot. It needs root and `/dev/kvm`, so it does not run on Windows; legacy BIOS boot is covered only by the GRUB menu tests.
 
 ---
 
@@ -310,6 +312,11 @@ docker run --privileged --rm -e LABKIOSK_GRUB_PBKDF2="grub.pbkdf2.sha512.200000.
 
 `LABKIOSK_GRUB_PBKDF2` takes precedence over `grub.pin`. The `grub.pin` file remains as a
 fallback for a single organisation building an image for its own lab.
+
+The release workflow (`build-iso.yml`) passes a repository secret named `LABKIOSK_GRUB_PBKDF2` to
+the build, so a tagged release can lock its live menu without the hash ever being committed. With
+no secret and no `grub.pin` it warns; set the repository variable `REQUIRE_LOCKED_LIVE_MENU` to
+`true` to make that a failure.
 
 #### Where each mechanism applies
 

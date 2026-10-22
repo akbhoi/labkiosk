@@ -129,8 +129,27 @@ npx wrangler secret put SUPER_ADMIN_EMAIL
 # Enter the platform administrator email (e.g., admin@yourdomain.com)
 
 npx wrangler secret put SUPER_ADMIN_PASSWORD
-# Enter a strong password (minimum 8 characters)
+# Enter a strong password (minimum 12 characters, letters and numbers)
+
+openssl rand -hex 32 | npx wrangler secret put PASSWORD_PEPPER
 ```
+
+`PASSWORD_PEPPER` is an HMAC key over every stored password hash, so a copy of the database alone
+cannot be cracked offline. Set it **before** deploying a worker that needs it: without it the worker
+refuses to serve. Keep a copy with your other secrets; losing or changing it makes every stored
+password stop working, and each user then needs a password reset. Hashes stored before the pepper
+are wrapped in it by the hourly cron, with no sign-in needed.
+
+Optionally set the variable `SUPER_ADMIN_HOST` to one name under the platform domain, such as
+`super.labkiosk.org`, to serve the Super Admin console only there: `/super` elsewhere redirects to
+it and `/api/super/*` elsewhere answers `404`, so the platform session never exists on the public
+apex or an organization's host. The wildcard route and certificate already cover that name. A
+super admin's session lasts 12 hours wherever it lives.
+
+New passwords (registration, staff accounts, password changes) are checked against Have I Been
+Pwned's breached-password list. Only the first five characters of the password's SHA-1 leave the
+worker. If the service cannot be reached the password is allowed; set the variable
+`BREACHED_PASSWORD_CHECK=off` to turn the check off.
 
 > [!NOTE]
 > Updating `SUPER_ADMIN_EMAIL` in the future will automatically migrate the super-admin account to the new email address. Once logged in to the `/super` console, passwords can also be rotated directly via the authenticated password-change interface.
@@ -171,6 +190,14 @@ Before the first approval, enable Cloudflare for SaaS on the zone, set a **fallb
 proxied DNS record on your zone), and make sure the worker serves custom hostnames — Cloudflare's
 guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
 points its domain at the fallback origin with a CNAME.
+
+**What custom domains cost.** Cloudflare for SaaS on the Free, Pro and Business plans includes 100
+custom hostnames, then charges $0.10 a month for each one, up to 50,000; beyond that needs
+Enterprise ([plans](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/)).
+1,000 organizations on their own domain cost about $90 a month. Wildcard custom hostnames
+(`*.their-domain`) need Enterprise, so an organization gets one hostname. Super Admin → Tasks →
+Custom domains shows how many are in use and the monthly cost, and the approval asks you to
+confirm when the next one adds to it. A custom domain under the platform domain is refused.
 
 **Local development** needs none of this: `pnpm dev` (`wrangler dev --local`) runs every binding
 locally except Workers AI, which it leaves out,
@@ -252,13 +279,14 @@ Fastmail show the logo with that alone. Gmail and Apple Mail show it only with a
 Mark Certificate (a paid certificate from DigiCert or Entrust; a VMC also needs a registered
 trademark), whose PEM URL then goes in the same record as `a=<url>`.
 
-**Sign-in security** needs no setup. After the password, a super admin is always emailed a
-six-digit code, so `SUPER_ADMIN_EMAIL` must reach an inbox that can be read without signing in to
-the console (not a mailbox that exists only in its **Mail** tab). An organization account turns the
-emailed code on under Settings → Two-factor sign-in; an authenticator app with ten recovery codes is
-optional on top for every account. A sign-in from a browser the account has not used before is
-emailed to the account. Where email is not configured, an account without an app signs in with its
-password alone and the server logs why.
+**Sign-in security** needs no setup. After the password, every administrator (the super admin, an
+organization's owner and staff with the `org_admin` role) is always emailed a six-digit code, so
+`SUPER_ADMIN_EMAIL` must reach an inbox that can be read without signing in to the console (not a
+mailbox that exists only in its **Mail** tab). Other staff turn the emailed code on under Settings →
+Two-factor sign-in. Passkeys and an authenticator app with ten recovery codes are optional on top for
+every account. A sign-in from a browser the account has not used before is emailed to the account.
+Where email is not configured, an account without an app or a passkey signs in with its password
+alone and the server logs why.
 
 Locally (`ALLOW_LOCAL_DB=1`) nothing is sent unless `MAIL_FROM` is set: messages go to an in-process
 outbox the tests read (`localOutbox()` in `src/mail.ts`) and each subject is logged, so under
@@ -310,6 +338,77 @@ unavailable to every organization until all three of these are set:
 
 Issues filed in a public repository are public. Each organization's administrator sees the
 repository name before turning the option on.
+
+### Staff sign-in with Google or Microsoft (optional)
+
+Organizations can let their staff sign in with Google Workspace or Microsoft Entra ID (OpenID
+Connect, authorization code flow with PKCE; `src/sso.ts`). The platform registers **one OAuth
+client per provider** for all organizations; nothing is registered per organization. Without the
+secrets below the buttons never appear and organizations cannot turn the option on.
+
+The callback for every organization is one address on the platform host:
+`https://<platform host>/api/auth/sso/callback`, where the platform host is `CANONICAL_HOST` when
+it is set (the zone redirects the apex there, e.g. `www.labkiosk.org`) and `DEFAULT_DOMAIN`
+otherwise. **Settings → Security → Single sign-on** in any organization console shows the exact
+value. Register it exactly, with `https://` and no trailing slash.
+
+**Google (Google Cloud console, the project that owns the platform's OAuth client):**
+
+1. **Google Auth Platform → Branding** (formerly *OAuth consent screen*): app name, user support
+   email, app logo optional, **Authorized domains**: your `DEFAULT_DOMAIN`; app home page
+   `https://<platform host>/`, privacy policy `https://<platform host>/privacy`, terms
+   `https://<platform host>/terms`; developer contact email.
+2. **Audience**: user type **External** (staff of many organizations' Workspaces sign in; *Internal*
+   would admit only your own Workspace), then **Publish app** so it is *In production*. While it is
+   *Testing*, only the test users listed there can sign in.
+3. **Data access**: the scopes `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile`
+   (`openid email profile`). They are non-sensitive: no Google verification review is needed
+   beyond the brand verification Google may ask for.
+4. **Clients → Create client**: application type **Web application**, a name, **Authorized
+   redirect URIs**: the callback above. No JavaScript origins. Copy the **Client ID** and **Client
+   secret**.
+5. An organization whose Workspace restricts third-party apps has its Workspace administrator allow
+   the app (Admin console → Security → API controls → App access control, by client ID).
+
+**Microsoft (Microsoft Entra admin center, in the directory that owns the platform's app):**
+
+1. **Identity → Applications → App registrations → New registration**: a name; **Supported account
+   types: Accounts in any organizational directory (Any Microsoft Entra ID tenant – Multitenant)**;
+   **Redirect URI: Web**, the callback above. Copy the **Application (client) ID**.
+2. **Certificates & secrets → Client secrets → New client secret**: copy its **Value** (not the
+   Secret ID) at once. It expires (24 months at most): put a renewal in the calendar, and set the
+   new value before the old one lapses or Microsoft sign-in stops.
+3. **API permissions**: Microsoft Graph, delegated `openid`, `email` and `profile` (keep
+   `User.Read` if it is there).
+4. **Token configuration → Add optional claim → ID → `email`** (accept turning on the Graph `email`
+   permission if asked). Without it, accounts are matched by their user principal name.
+5. Leave **Authentication → Implicit grant** off: the Worker uses the authorization code flow with
+   PKCE and a client secret.
+6. Recommended: **Branding & properties → Publisher verification** (a verified Microsoft partner
+   ID). Many directories block users from consenting to unverified multitenant apps; an
+   organization's Entra administrator can always consent for everyone with
+   `https://login.microsoftonline.com/<their tenant id>/adminconsent?client_id=<MICROSOFT_CLIENT_ID>`.
+
+**The Worker secrets** (a provider is offered only when both of its values are set; the Worker
+logs once which one is missing):
+
+```bash
+cd cloudflare-control
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put MICROSOFT_CLIENT_ID
+npx wrangler secret put MICROSOFT_CLIENT_SECRET
+npx wrangler d1 migrations apply labkiosk-db --remote   # 0046_single_sign_on.sql
+```
+
+For local development, register a separate test client with the redirect URI
+`http://localhost:<port>/api/auth/sso/callback` (on a development host the callback is the
+request's own origin) and put the four values in `.dev.vars`.
+
+Each organization then turns a provider on under **Settings → Security → Single sign-on** and lists
+its Google Workspace domains and/or Entra tenant IDs. Sign-in matches the verified email address to
+an existing staff account (or the owner) of that organization; nothing is created, and the
+organization's second-factor rule still applies afterwards.
 
 ### Over-the-air updates (optional)
 
@@ -436,6 +535,17 @@ In your Cloudflare Dashboard under your domain's **DNS Records**:
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
 3. **Custom Domain Support:** When organizations request custom domains (e.g. `kiosk.example.com`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
 
+**How many organizations this serves.** The two routes and the two DNS records serve every
+organization: a new one needs no DNS record, route or certificate of its own, so Cloudflare's
+per-zone DNS record quota (1,000 on Free zones created before September 2024, 200 after) never
+comes into it. Keep it that way. A test fails if `wrangler.jsonc` gains another route or the
+worker starts calling the DNS records or Workers routes API. Universal SSL covers a zone's apex
+and the first level below it only, so serve the platform from a zone apex, as `labkiosk.org` does:
+with `DEFAULT_DOMAIN` set to `labkiosk.yourdomain.com`, `<slug>.labkiosk.yourdomain.com` is a
+second level and needs an Advanced Certificate Manager certificate for `*.labkiosk.yourdomain.com`.
+For the same reason never add a level such as `<slug>.eu.labkiosk.org`; use a separate zone for a
+region. The one per-organization cost is a custom domain.
+
 ### 3. Search engines and website analytics
 
 Only the platform's public pages are meant for search results: `/`, `/privacy`, `/terms` and
@@ -498,6 +608,8 @@ Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of
 - Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket (one NDJSON
   file per run) and deletes them from D1.
 - Deletes workstation errors and warnings older than 90 days.
+- Deletes single sign-on attempts that expired (ten minutes to come back from the provider, two to
+  finish on the sign-in page).
 - Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub
   writes a run; a GitHub or model failure leaves the rest for the next run), and reads back the
   status of up to 10 filed issues.
@@ -508,7 +620,7 @@ Queued commands are no longer in D1: each organization's OrgHub expires its own.
 
 ## 7. Automated CI/CD with GitHub Actions
 
-The repository includes a production deployment workflow in `.github/workflows/deploy-cloudflare.yml`.
+The repository includes a production deployment workflow in `.github/workflows/deploy-cloudflare.yml`, which `.github/workflows/ci.yml` calls on `main` once its tests have passed.
 
 ### Required GitHub Repository Secrets
 
@@ -519,13 +631,12 @@ Under **Settings** → **Secrets and variables** → **Actions**, configure:
 
 ### Workflow Pipeline
 
-On every push to `main` modifying `cloudflare-control/**`:
+On every push to `main` modifying `cloudflare-control/**` or `cloudflare-email-routing/**` (or a manual run of `ci.yml` on `main`):
 
-1. Installs dependencies via `pnpm` with frozen lockfile.
-2. Executes strict TypeScript typechecks (`tsc --noEmit`).
-3. Executes automated multi-tenant and negative security test suite.
-4. Applies any pending remote D1 migrations (`wrangler d1 migrations apply labkiosk-db --remote`).
-5. Executes `wrangler deploy` to publish the updated worker across Cloudflare global edge data centers.
+1. `ci.yml` runs the strict TypeScript typechecks (`tsc --noEmit`) and the automated multi-tenant and negative security test suite; nothing is deployed unless they pass.
+2. Installs dependencies via `pnpm` with frozen lockfile.
+3. Applies any pending remote D1 migrations (`wrangler d1 migrations apply labkiosk-db --remote`).
+4. Executes `wrangler deploy` to publish the updated worker across Cloudflare global edge data centers, then deploys the email Worker.
 
 ---
 

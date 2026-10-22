@@ -154,10 +154,14 @@ chmod +x /usr/local/sbin/labkiosk-localization || true
 chmod +x /usr/local/sbin/labkiosk-boot-slots || true
 chmod +x /usr/local/sbin/labkiosk-update || true
 chmod +x /usr/local/sbin/labkiosk-share || true
+# Not "|| true": the agent turns printing on and off through it.
+chmod 0755 /usr/local/sbin/labkiosk-printing
 # Not "|| true": without them the journal never reaches the data partition and
 # the swap partition is never used.
 chmod 0755 /usr/local/sbin/labkiosk-logs /usr/local/sbin/labkiosk-swap /usr/local/sbin/labkiosk-hostname \
     /usr/local/sbin/labkiosk-data-unlock /usr/local/sbin/labkiosk-health
+# Not "|| true": without it a power schedule never switches a workstation on.
+chmod 0755 /usr/local/sbin/labkiosk-wake-alarm
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true
@@ -358,6 +362,22 @@ kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-localization
 EOF
 chmod 0440 /etc/sudoers.d/51-labkiosk-localization
 
+# A power schedule's switch-on: the RTC wake alarm is root's to write. One
+# named program, which takes a plain number of seconds within the next eight
+# days, or `clear`, and writes /sys/class/rtc/rtc0/wakealarm and nothing else.
+cat << 'EOF' > /etc/sudoers.d/52-labkiosk-wake-alarm
+kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-wake-alarm
+EOF
+chmod 0440 /etc/sudoers.d/52-labkiosk-wake-alarm
+
+# Printing (Settings -> Printing): starting CUPS, adding its queues and writing
+# the policy that lets Chromium print all need root. One named program, which
+# re-validates every printer address and name it is given.
+cat << 'EOF2' > /etc/sudoers.d/52-labkiosk-printing
+kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-printing
+EOF2
+chmod 0440 /etc/sudoers.d/52-labkiosk-printing
+
 # 7. Enable kiosk services.
 systemctl set-default graphical.target
 systemctl enable labkiosk-session.service
@@ -413,6 +433,18 @@ systemctl enable labkiosk-data-unlock.service
 systemctl enable labkiosk-health.timer
 systemctl disable smartmontools.service
 systemctl mask smartmontools.service
+
+# 7e2. Printing is off until an administrator turns it on: CUPS is masked, so
+# no scheduler runs and no socket listens, and labkiosk-printing unmasks it
+# only for an organization that prints. cups.path stays masked even then. The
+# kiosk user must not administer CUPS: lpadmin is CUPS's @SYSTEM group.
+for unit in cups.service cups.socket cups.path; do
+    systemctl disable "$unit"
+    systemctl mask "$unit"
+done
+if id -nG kiosk | tr ' ' '\n' | grep -qx lpadmin; then
+    gpasswd -d kiosk lpadmin
+fi
 
 # 7f. AppArmor profiles for the agent and x11vnc (/etc/apparmor.d/labkiosk-*),
 # in complain mode: they block nothing yet, and log whatever the two do beyond

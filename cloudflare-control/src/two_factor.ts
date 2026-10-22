@@ -3,17 +3,21 @@
  * and super admins).
  *
  * - The second factor is a six-digit code emailed to the account's address:
- *   nothing to set up. A super admin is always asked for it; an organization
- *   account turns it on under Settings (`users.two_factor_email`).
+ *   nothing to set up. Administrators are always asked for it (a super admin,
+ *   an organization's owner and every staff member with the `org_admin` role);
+ *   any other account turns it on under Settings (`users.two_factor_email`).
+ * - Passkeys (src/webauthn.ts) can be added on top, by any account, and are
+ *   offered first: they cannot be phished, since the browser signs only for
+ *   the site they were made on.
  * - An authenticator app (TOTP, RFC 6238: HMAC-SHA1, 30-second steps, six
  *   digits) can be added on top; turning it on hands out ten single-use
- *   recovery codes. With an app, sign-in asks for its code and an emailed one
- *   stays available.
+ *   recovery codes. With an app or a passkey, sign-in asks for that and an
+ *   emailed code stays available.
  * - After the password checks out, such an account gets a short-lived
- *   challenge instead of a session. The emailed code, the app's code or a
- *   recovery code completes it.
+ *   challenge instead of a session. A passkey, the emailed code, the app's
+ *   code or a recovery code completes it.
  * - Email that is not configured cannot carry a code: an account with no app
- *   then signs in with its password alone, and the server logs why.
+ *   and no passkey then signs in with its password alone, and the server logs why.
  * - A browser can be trusted for 30 days, so the code is not asked every time.
  * - A sign-in from a browser the account has not used before emails the
  *   account (the first browser an account ever uses sets the baseline silently).
@@ -24,11 +28,22 @@
 
 import { Env, Session, User, UserRole } from "./types";
 import { jsonError } from "./guard";
-import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword } from "./auth";
+import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword, passwordPepper } from "./auth";
+import { clearSessionCookies, sessionSecondsFor, signInDestination } from "./session_handoff";
 import { clearLoginFailures, createSession, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
 import { uniformBelow } from "./conversations";
 import { mailConfigProblem, sendMail } from "./mail";
 import { RouteContext } from "./signup";
+import {
+  PASSKEY_ALGORITHMS,
+  PasskeyError,
+  RelyingParty,
+  newPasskeyChallenge,
+  passkeyRelyingParty,
+  toBase64url,
+  verifyPasskeyAssertion,
+  verifyPasskeyRegistration
+} from "./webauthn";
 
 /** How long a password-checked sign-in waits for its second factor. */
 const CHALLENGE_SECONDS = 10 * 60;
@@ -39,11 +54,14 @@ const EMAIL_CODES_PER_CHALLENGE = 3;
 const EMAIL_CODE_GAP_SECONDS = 60;
 /** How long "Trust this browser" skips the second factor. */
 const TRUST_SECONDS = 30 * 24 * 3600;
-const SESSION_SECONDS = 7 * 24 * 3600;
 const TOTP_STEP_SECONDS = 30;
 const RECOVERY_CODE_COUNT = 10;
 const RECOVERY_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
 const DEVICE_COOKIE = "labkiosk_device";
+/** Passkeys one account may register, and how long a registration waits for the browser. */
+const MAX_PASSKEYS = 10;
+const PASSKEY_REGISTRATION_SECONDS = 5 * 60;
+const PASSKEY_TIMEOUT_MS = 2 * 60 * 1000;
 const ISSUER = "Lab Kiosk";
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -142,6 +160,19 @@ interface ChallengeRow {
   email_codes_sent: number;
   email_code_sent_at: number | null;
   expires_at: number;
+  passkey_challenge: string | null;
+}
+
+interface PasskeyRow {
+  id: string;
+  user_id: string;
+  rp_id: string;
+  public_key: string;
+  algorithm: number;
+  sign_count: number;
+  name: string;
+  created_at: number;
+  last_used_at: number | null;
 }
 
 async function findTwoFactor(db: D1Database, userId: string): Promise<TwoFactorRow | null> {
@@ -153,20 +184,57 @@ export async function hasTwoFactor(db: D1Database, userId: string): Promise<bool
   return Boolean((await findTwoFactor(db, userId))?.enabled_at);
 }
 
+async function passkeysFor(db: D1Database, userId: string, rpId: string): Promise<PasskeyRow[]> {
+  const rows = await db
+    .prepare("SELECT * FROM user_passkeys WHERE user_id = ? AND rp_id = ? ORDER BY created_at")
+    .bind(userId, rpId)
+    .all<PasskeyRow>();
+  return rows.results || [];
+}
+
+/**
+ * True for an account that administers: the platform's super admin, an organization's owner, or
+ * staff with the `org_admin` role. Each can act on a whole organization (or all of them), so a
+ * stolen password alone must not be enough.
+ */
+export async function isAdministratorAccount(db: D1Database, user: Pick<User, "id" | "role">): Promise<boolean> {
+  if (user.role === "super_admin") return true;
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM tenants WHERE user_id = ?
+       UNION ALL SELECT 1 FROM tenant_users WHERE user_id = ? AND role = 'org_admin'
+       LIMIT 1`
+    )
+    .bind(user.id, user.id)
+    .first();
+  return Boolean(row);
+}
+
 /** What sign-in asks an account for after its password. */
 interface FactorState {
   /** The authenticator app's row, when one is turned on. */
   app: TwoFactorRow | null;
-  /** An emailed code is asked for (or, with an app, offered). */
+  /** The account's passkeys for this site. */
+  passkeys: PasskeyRow[];
+  /** An emailed code is asked for (or, with an app or a passkey, offered). */
   email: boolean;
   /** The account cannot turn the emailed code off. */
   required: boolean;
 }
 
-async function factorState(db: D1Database, user: User): Promise<FactorState> {
+async function factorState(db: D1Database, user: User, rpId: string): Promise<FactorState> {
   const row = await findTwoFactor(db, user.id);
-  const required = user.role === "super_admin";
-  return { app: row?.enabled_at ? row : null, email: required || Boolean(user.two_factor_email), required };
+  const required = await isAdministratorAccount(db, user);
+  return {
+    app: row?.enabled_at ? row : null,
+    passkeys: await passkeysFor(db, user.id, rpId),
+    email: required || Boolean(user.two_factor_email),
+    required
+  };
+}
+
+function hasSecondFactor(state: FactorState): boolean {
+  return Boolean(state.app) || state.passkeys.length > 0 || state.email;
 }
 
 function recoveryHashes(row: TwoFactorRow): string[] {
@@ -220,7 +288,10 @@ async function checkAccountCode(db: D1Database, row: TwoFactorRow, input: string
 }
 
 export async function purgeExpiredLoginChallenges(db: D1Database): Promise<void> {
-  await db.prepare("DELETE FROM login_challenges WHERE expires_at < ?").bind(now()).run();
+  await db.batch([
+    db.prepare("DELETE FROM login_challenges WHERE expires_at < ?").bind(now()),
+    db.prepare("DELETE FROM passkey_registrations WHERE expires_at < ?").bind(now())
+  ]);
 }
 
 /** A password change ends every "trust this browser". */
@@ -231,16 +302,17 @@ export async function revokeTrustedBrowsers(db: D1Database, userId: string): Pro
 // ------------------------------------------------------------- cookies
 
 export interface CookieOptions {
-  domain?: string;
   secure: boolean;
-  /** Builds the session cookie exactly as the rest of the Worker does. */
-  sessionCookie: (token: string) => string;
+  /** The parent domain earlier releases scoped cookies to; a sign-in clears those. */
+  legacyDomain?: string;
+  /** Builds the host-only session cookie exactly as the rest of the Worker does. */
+  sessionCookie: (token: string, maxAgeSeconds: number) => string;
 }
 
 function deviceCookie(token: string, options: CookieOptions): string {
-  // Read only by the sign-in routes; a year is as long as browsers keep a cookie.
+  // Read only by the sign-in routes; a year is as long as browsers keep a cookie. Host-only,
+  // like the session: trusting a browser on one host says nothing about another.
   const parts = [`${DEVICE_COOKIE}=${token}`, "Path=/api/auth", `Max-Age=${400 * 24 * 3600}`, "HttpOnly", "SameSite=Strict"];
-  if (options.domain) parts.push(`Domain=.${options.domain.replace(/^\./, "")}`);
   if (options.secure) parts.push("Secure");
   return parts.join("; ");
 }
@@ -267,12 +339,12 @@ interface SignInTarget {
 export async function continueSignIn(ctx: RouteContext, cookies: CookieOptions, target: SignInTarget): Promise<Response> {
   const { db, env, request, jsonHeaders } = ctx;
   const user = await findUserById(db, target.userId);
-  const state = user ? await factorState(db, user) : null;
+  const state = user ? await factorState(db, user, passkeyRelyingParty(env, request).rpId) : null;
   const mailProblem = mailConfigProblem(env);
-  if (user && state && !state.app && state.email && mailProblem) {
+  if (user && state && !state.app && !state.passkeys.length && state.email && mailProblem) {
     // The only second factor this account has cannot be delivered.
     console.error(`[Auth] ${mailProblem} Signing in without an emailed code.`);
-  } else if (user && state && (state.app || state.email)) {
+  } else if (user && state && hasSecondFactor(state)) {
     const device = deviceTokenFrom(request);
     const trusted = device
       ? await db
@@ -291,7 +363,8 @@ export async function continueSignIn(ctx: RouteContext, cookies: CookieOptions, 
         )
         .bind(tokenHash, target.userId, target.tenantId, target.role, target.redirect, ts + CHALLENGE_SECONDS, ts)
         .run();
-      if (!state.app && !(await sendChallengeCode(env, db, tokenHash, user))) {
+      const byEmail = !state.app && !state.passkeys.length;
+      if (byEmail && !(await sendChallengeCode(env, db, tokenHash, user))) {
         await db.prepare("DELETE FROM login_challenges WHERE token_hash = ?").bind(tokenHash).run();
         return jsonError("The sign-in code could not be emailed. Try again in a moment.", 502, jsonHeaders);
       }
@@ -300,8 +373,11 @@ export async function continueSignIn(ctx: RouteContext, cookies: CookieOptions, 
           status: "two_factor",
           challenge: token,
           expiresIn: CHALLENGE_SECONDS,
-          method: state.app ? "app" : "email",
-          sentTo: state.app ? null : maskEmail(user.email)
+          // What the second step leads with; the others stay available.
+          method: state.passkeys.length ? "passkey" : state.app ? "app" : "email",
+          passkey: state.passkeys.length > 0,
+          app: Boolean(state.app),
+          sentTo: byEmail ? maskEmail(user.email) : null
         }),
         { headers: jsonHeaders }
       );
@@ -338,16 +414,17 @@ async function completeSignIn(
   ctx: RouteContext,
   cookies: CookieOptions,
   target: SignInTarget,
-  how: { method: "password" | "totp" | "email" | "recovery"; trustBrowser: boolean }
+  how: { method: "password" | "totp" | "email" | "recovery" | "passkey"; trustBrowser: boolean }
 ): Promise<Response> {
   const { db, env, request, jsonHeaders, clientIp } = ctx;
   const token = bufferToHex(crypto.getRandomValues(new Uint8Array(32)));
+  const sessionSeconds = sessionSecondsFor(target.role);
   await createSession(db, {
     token,
     user_id: target.userId,
     tenant_id: target.tenantId,
     role: target.role,
-    expires_at: now() + SESSION_SECONDS
+    expires_at: now() + sessionSeconds
   });
   await writeAuditLog(db, {
     tenantId: target.tenantId,
@@ -379,11 +456,16 @@ async function completeSignIn(
     .run();
   if (!known && anyKnown) await sendSignInAlert(env, db, target, { ip: clientIp, userAgent });
 
+  // A console on another host gets the session through a one-time handoff there, never here.
+  const destination = await signInDestination(env, request, token, target.redirect, passwordPepper(env));
   const headers = new Headers(jsonHeaders);
-  headers.append("Set-Cookie", cookies.sessionCookie(token));
+  if (destination.cookieHere) headers.append("Set-Cookie", cookies.sessionCookie(token, sessionSeconds));
+  for (const cleared of clearSessionCookies({ secure: cookies.secure, legacyDomain: cookies.legacyDomain }).slice(1)) {
+    headers.append("Set-Cookie", cleared);
+  }
   headers.append("Set-Cookie", deviceCookie(device, cookies));
   const tenant = target.tenantId ? await findTenantById(db, target.tenantId) : null;
-  return new Response(JSON.stringify({ status: "ok", role: target.role, subdomain: tenant?.subdomain || null, redirect: target.redirect }), {
+  return new Response(JSON.stringify({ status: "ok", role: target.role, subdomain: tenant?.subdomain || null, redirect: destination.redirect }), {
     headers
   });
 }
@@ -443,16 +525,87 @@ async function findChallenge(db: D1Database, token: unknown): Promise<ChallengeR
 
 const EXPIRED = "This sign-in has expired. Enter your password again.";
 
-/** POST /api/auth/login/verify { challenge, code, trustBrowser? }: the second step. */
-export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOptions): Promise<Response> {
-  const { db, request, jsonHeaders } = ctx;
-  const body = await readJson<{ challenge?: unknown; code?: unknown; trustBrowser?: unknown }>(request);
+function passkeyRequestOptions(rp: RelyingParty, challenge: string, passkeys: PasskeyRow[]) {
+  return {
+    challenge,
+    rpId: rp.rpId,
+    timeout: PASSKEY_TIMEOUT_MS,
+    userVerification: "preferred",
+    allowCredentials: passkeys.map((p) => ({ type: "public-key", id: p.id }))
+  };
+}
+
+/**
+ * POST /api/auth/login/passkey { challenge }: what navigator.credentials.get() needs for the
+ * second step. Each call replaces the challenge the passkey must sign, so an answer works once.
+ */
+export async function handleLoginPasskeyOptions(ctx: RouteContext): Promise<Response> {
+  const { db, env, request, jsonHeaders } = ctx;
+  const body = await readJson<{ challenge?: unknown }>(request);
   if (!body) return jsonError("The request body must be JSON", 400, jsonHeaders);
   const challenge = await findChallenge(db, body.challenge);
   if (!challenge) return jsonError(EXPIRED, 401, jsonHeaders);
+  const rp = passkeyRelyingParty(env, request);
+  const passkeys = await passkeysFor(db, challenge.user_id, rp.rpId);
+  if (!passkeys.length) return jsonError("This account has no passkey for this site. Use a code instead.", 409, jsonHeaders);
+  const passkeyChallenge = newPasskeyChallenge();
+  await db.prepare("UPDATE login_challenges SET passkey_challenge = ? WHERE token_hash = ?").bind(passkeyChallenge, challenge.token_hash).run();
+  return new Response(JSON.stringify(passkeyRequestOptions(rp, passkeyChallenge, passkeys)), { headers: jsonHeaders });
+}
+
+/**
+ * A passkey's answer to the challenge's current WebAuthn challenge. The challenge is spent
+ * whatever the outcome, and the counter moves only if no other request moved it first.
+ */
+async function checkPasskeyAnswer(
+  db: D1Database,
+  rp: RelyingParty,
+  challenge: ChallengeRow,
+  state: FactorState,
+  answer: Record<string, unknown>
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const expected = challenge.passkey_challenge;
+  if (!expected) return { ok: false, error: "Start the passkey sign-in again." };
+  const spent = await db
+    .prepare("UPDATE login_challenges SET passkey_challenge = NULL WHERE token_hash = ? AND passkey_challenge = ?")
+    .bind(challenge.token_hash, expected)
+    .run();
+  if ((spent.meta?.changes ?? 0) === 0) return { ok: false, error: "Start the passkey sign-in again." };
+  const stored = state.passkeys.find((p) => p.id === answer.id);
+  if (!stored) return { ok: false, error: "That passkey is not registered to this account for this site." };
+  try {
+    const { signCount } = await verifyPasskeyAssertion(
+      answer,
+      { ...rp, challenge: expected },
+      { alg: stored.algorithm, jwk: JSON.parse(stored.public_key) as JsonWebKey, signCount: stored.sign_count }
+    );
+    const moved = await db
+      .prepare("UPDATE user_passkeys SET sign_count = ?, last_used_at = ? WHERE id = ? AND user_id = ? AND sign_count = ?")
+      .bind(signCount, now(), stored.id, stored.user_id, stored.sign_count)
+      .run();
+    if ((moved.meta?.changes ?? 0) === 0) return { ok: false, error: "That passkey was just used. Try again." };
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof PasskeyError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
+/**
+ * POST /api/auth/login/verify { challenge, code | passkey, trustBrowser? }: the second step.
+ * `passkey` is navigator.credentials.get()'s answer, its buffers base64url:
+ * { id, clientDataJSON, authenticatorData, signature }.
+ */
+export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOptions): Promise<Response> {
+  const { db, env, request, jsonHeaders } = ctx;
+  const body = await readJson<{ challenge?: unknown; code?: unknown; passkey?: unknown; trustBrowser?: unknown }>(request);
+  if (!body) return jsonError("The request body must be JSON", 400, jsonHeaders);
+  const challenge = await findChallenge(db, body.challenge);
+  if (!challenge) return jsonError(EXPIRED, 401, jsonHeaders);
+  const rp = passkeyRelyingParty(env, request);
   const user = await findUserById(db, challenge.user_id);
-  const state = user ? await factorState(db, user) : null;
-  if (!user || !state || (!state.app && !state.email)) {
+  const state = user ? await factorState(db, user, rp.rpId) : null;
+  if (!user || !state || !hasSecondFactor(state)) {
     await db.prepare("DELETE FROM login_challenges WHERE token_hash = ?").bind(challenge.token_hash).run();
     return jsonError(EXPIRED, 401, jsonHeaders);
   }
@@ -461,13 +614,20 @@ export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOption
     return jsonError(`Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).`, 429, jsonHeaders);
   }
 
-  const code = String(body.code ?? "").trim().slice(0, 40);
-  let method: "totp" | "email" | "recovery" | null = null;
-  if (/^\d{6}$/.test(code) && challenge.email_code_hash) {
-    const hash = await sha256Hex(`${challenge.token_hash}:${code}`);
-    if (timingSafeEqual(hash, challenge.email_code_hash)) method = "email";
+  let method: "totp" | "email" | "recovery" | "passkey" | null = null;
+  let failure = "That code is not right. Check it and try again.";
+  if (body.passkey && typeof body.passkey === "object" && !Array.isArray(body.passkey)) {
+    const checked = await checkPasskeyAnswer(db, rp, challenge, state, body.passkey as Record<string, unknown>);
+    if (checked.ok) method = "passkey";
+    else failure = checked.error;
+  } else {
+    const code = String(body.code ?? "").trim().slice(0, 40);
+    if (/^\d{6}$/.test(code) && challenge.email_code_hash) {
+      const hash = await sha256Hex(`${challenge.token_hash}:${code}`);
+      if (timingSafeEqual(hash, challenge.email_code_hash)) method = "email";
+    }
+    if (!method && code && state.app) method = await checkAccountCode(db, state.app, code);
   }
-  if (!method && code && state.app) method = await checkAccountCode(db, state.app, code);
 
   if (!method) {
     await recordLoginFailure(db, user.email);
@@ -477,7 +637,7 @@ export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOption
       return jsonError("Too many wrong codes. Enter your password again.", 401, jsonHeaders);
     }
     await db.prepare("UPDATE login_challenges SET attempts = ? WHERE token_hash = ?").bind(attempts, challenge.token_hash).run();
-    return jsonError("That code is not right. Check it and try again.", 400, jsonHeaders);
+    return jsonError(failure, 400, jsonHeaders);
   }
 
   // One challenge, one session: the delete decides a race between two correct answers.
@@ -534,6 +694,10 @@ function maskEmail(email: string): string {
  * - POST /enable { code }: turn it on with the first code; returns the recovery codes once
  * - POST /recovery-codes { password, code }: replace the recovery codes
  * - POST /disable { password, code }: turn it off
+ * - POST /passkey-options { password }: what navigator.credentials.create() needs for a new passkey
+ * - POST /passkey-register { name, credential }: keep the new passkey (credential: { clientDataJSON,
+ *   attestationObject }, base64url)
+ * - POST /passkey-delete { password, id }: remove one
  */
 export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: string | null): Promise<Response> {
   const { db, env, request, jsonHeaders, url } = ctx;
@@ -543,7 +707,8 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
   if (!user) return jsonError("Authentication required", 401, jsonHeaders);
   const action = url.pathname.slice("/api/auth/two-factor".length).replace(/^\//, "");
   const row = await findTwoFactor(db, user.id);
-  const state = await factorState(db, user);
+  const rp = passkeyRelyingParty(env, request);
+  const state = await factorState(db, user, rp.rpId);
   const json = (data: unknown) => new Response(JSON.stringify(data), { headers: jsonHeaders });
 
   if (action === "") {
@@ -555,12 +720,18 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       email: user.email,
       emailCodes: state.email,
       required: state.required,
-      mailAvailable: !mailConfigProblem(env)
+      mailAvailable: !mailConfigProblem(env),
+      // Passkeys made on another site (a custom domain, or the platform domain) work only there.
+      passkeys: (
+        await db.prepare("SELECT id, rp_id, name, created_at, last_used_at FROM user_passkeys WHERE user_id = ? ORDER BY created_at").bind(user.id).all<PasskeyRow>()
+      ).results.map((p) => ({ id: p.id, name: p.name, site: p.rp_id, here: p.rp_id === rp.rpId, createdAt: p.created_at, lastUsedAt: p.last_used_at }))
     });
   }
-  if (!["email", "setup", "enable", "disable", "recovery-codes"].includes(action)) return jsonError("Not Found", 404, jsonHeaders);
+  if (!["email", "setup", "enable", "disable", "recovery-codes", "passkey-options", "passkey-register", "passkey-delete"].includes(action)) {
+    return jsonError("Not Found", 404, jsonHeaders);
+  }
   if (request.method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
-  const body = await readJson<{ password?: unknown; code?: unknown; enabled?: unknown }>(request);
+  const body = await readJson<{ password?: unknown; code?: unknown; enabled?: unknown; name?: unknown; id?: unknown; credential?: unknown }>(request);
   if (!body) return jsonError("The request body must be JSON", 400, jsonHeaders);
 
   const lockedFor = await getLockoutRemaining(db, user.email);
@@ -569,7 +740,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
   }
   /** Changes to the factor itself need the password again: a borrowed session is not enough. */
   const passwordOk = async () => {
-    const ok = await verifyPassword(String(body.password ?? ""), user.password_hash, user.salt);
+    const ok = await verifyPassword(String(body.password ?? ""), user.password_hash, user.salt, passwordPepper(env));
     if (!ok) await recordLoginFailure(db, user.email);
     return ok;
   };
@@ -578,7 +749,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
   if (action === "email") {
     if (typeof body.enabled !== "boolean") return jsonError("Say whether emailed codes are on or off", 400, jsonHeaders);
     const enable = body.enabled;
-    if (!enable && state.required) return jsonError("A platform administrator always signs in with a code", 409, jsonHeaders);
+    if (!enable && state.required) return jsonError("An administrator account always signs in with a second factor", 409, jsonHeaders);
     if (enable && mailConfigProblem(env)) return jsonError("Email is not set up on this server, so codes cannot be sent", 503, jsonHeaders);
     if (!(await passwordOk())) return jsonError("The password is not correct", 400, jsonHeaders);
     if (Boolean(user.two_factor_email) !== enable) {
@@ -586,7 +757,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       if (enable) {
         // Other browsers signed in with the password alone are signed out.
         await db.prepare("DELETE FROM sessions WHERE user_id = ? AND token <> ?").bind(user.id, sessionToken || "").run();
-      } else if (!state.app) {
+      } else if (!state.app && !state.passkeys.length) {
         // Nothing is asked after the password any more: trusted browsers mean nothing.
         await db.batch([
           db.prepare("DELETE FROM login_challenges WHERE user_id = ?").bind(user.id),
@@ -596,6 +767,78 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       await audit(enable ? "auth.two_factor_email_enable" : "auth.two_factor_email_disable");
     }
     return json({ status: "ok", emailCodes: enable || state.required });
+  }
+
+  if (action === "passkey-options") {
+    const count = await db.prepare("SELECT COUNT(*) AS n FROM user_passkeys WHERE user_id = ?").bind(user.id).first<{ n: number }>();
+    if ((count?.n ?? 0) >= MAX_PASSKEYS) return jsonError(`An account can have up to ${MAX_PASSKEYS} passkeys. Remove one first.`, 409, jsonHeaders);
+    if (!(await passwordOk())) return jsonError("The password is not correct", 400, jsonHeaders);
+    const challenge = newPasskeyChallenge();
+    await db
+      .prepare(
+        `INSERT INTO passkey_registrations (user_id, challenge, rp_id, expires_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET challenge = excluded.challenge, rp_id = excluded.rp_id, expires_at = excluded.expires_at`
+      )
+      .bind(user.id, challenge, rp.rpId, now() + PASSKEY_REGISTRATION_SECONDS)
+      .run();
+    return json({
+      challenge,
+      rp: { id: rp.rpId, name: ISSUER },
+      user: { id: toBase64url(new TextEncoder().encode(user.id)), name: user.email, displayName: user.name },
+      pubKeyCredParams: PASSKEY_ALGORITHMS.map((alg) => ({ type: "public-key", alg })),
+      timeout: PASSKEY_TIMEOUT_MS,
+      attestation: "none",
+      authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+      excludeCredentials: state.passkeys.map((p) => ({ type: "public-key", id: p.id }))
+    });
+  }
+
+  if (action === "passkey-register") {
+    // The password was checked when the challenge was handed out; the challenge is spent here.
+    const pending = await db
+      .prepare("DELETE FROM passkey_registrations WHERE user_id = ? AND expires_at >= ? RETURNING challenge, rp_id")
+      .bind(user.id, now())
+      .first<{ challenge: string; rp_id: string }>();
+    if (!pending || pending.rp_id !== rp.rpId) return jsonError("This passkey setup has expired. Start again.", 409, jsonHeaders);
+    const credential = body.credential && typeof body.credential === "object" ? (body.credential as Record<string, unknown>) : {};
+    let registered;
+    try {
+      registered = await verifyPasskeyRegistration(credential, { ...rp, challenge: pending.challenge });
+    } catch (err) {
+      if (err instanceof PasskeyError) return jsonError(err.message, 400, jsonHeaders);
+      throw err;
+    }
+    const name = String(body.name ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 60) || "Passkey";
+    const inserted = await db
+      .prepare(
+        `INSERT INTO user_passkeys (id, user_id, rp_id, public_key, algorithm, sign_count, name, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`
+      )
+      .bind(registered.credentialId, user.id, rp.rpId, JSON.stringify(registered.jwk), registered.alg, registered.signCount, name, now())
+      .run();
+    if ((inserted.meta?.changes ?? 0) === 0) return jsonError("This passkey is already registered.", 409, jsonHeaders);
+    // Other browsers signed in without it are signed out, as when an app is turned on.
+    await db.prepare("DELETE FROM sessions WHERE user_id = ? AND token <> ?").bind(user.id, sessionToken || "").run();
+    await audit("auth.passkey_add");
+    return json({ status: "ok", id: registered.credentialId, name });
+  }
+
+  if (action === "passkey-delete") {
+    const id = typeof body.id === "string" ? body.id : "";
+    const owned = id ? await db.prepare("SELECT 1 FROM user_passkeys WHERE id = ? AND user_id = ?").bind(id, user.id).first() : null;
+    if (!owned) return jsonError("That passkey is not registered to this account", 404, jsonHeaders);
+    if (!(await passwordOk())) return jsonError("The password is not correct", 400, jsonHeaders);
+    await db.prepare("DELETE FROM user_passkeys WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+    const another = await db.prepare("SELECT 1 FROM user_passkeys WHERE user_id = ? LIMIT 1").bind(user.id).first();
+    if (!another && !state.app && !state.email) {
+      // Nothing is asked after the password any more: trusted browsers mean nothing.
+      await db.batch([
+        db.prepare("DELETE FROM login_challenges WHERE user_id = ?").bind(user.id),
+        db.prepare("UPDATE user_devices SET trusted_until = NULL WHERE user_id = ?").bind(user.id)
+      ]);
+    }
+    await audit("auth.passkey_remove");
+    return json({ status: "ok" });
   }
 
   if (action === "setup") {

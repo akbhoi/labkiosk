@@ -64,6 +64,16 @@ import {
   sameLanReport,
   siteKey
 } from "./lan_sharing";
+import {
+  MAX_WAKE_MACS_PER_COMMAND,
+  PowerRule,
+  LAST_AGENT_WITHOUT_WAKE,
+  WorkstationPower,
+  effectivePower,
+  isWakeableMac,
+  loadPowerRules
+} from "./power";
+import { Printer, WorkstationPrinting, listPrinters, printingFor } from "./printing";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -71,8 +81,18 @@ export const HUB_PONG = '{"type":"pong"}';
 
 /** A WebSocket workstation with no ping or message for this long is offline. */
 const SOCKET_STALE_MS = 75_000;
-/** An HTTP-heartbeat workstation (older agents, every 3 s) is offline after this. */
-const HTTP_ONLINE_MS = 12_000;
+/**
+ * Seconds between HTTP heartbeats the hub asks for. Every heartbeat is a Worker
+ * request and wakes this object, so a fleet stuck on the fallback (a proxy that
+ * drops WebSocket upgrades) polls quickly only while someone is at a console.
+ * Agents older than the field keep their fixed 3 s.
+ */
+export const HTTP_HEARTBEAT_ATTENDED_SECONDS = 3;
+export const HTTP_HEARTBEAT_IDLE_SECONDS = 15;
+/** A console request, or a queued command, keeps the HTTP heartbeat fast this long. */
+const HTTP_ATTENTION_MS = 60_000;
+/** An HTTP-heartbeat workstation is offline once it misses two idle heartbeats. */
+const HTTP_ONLINE_MS = (2 * HTTP_HEARTBEAT_IDLE_SECONDS + 6) * 1000;
 /** Longest a cached copy of the organization's settings is trusted without a reload. */
 const CONFIG_TTL_MS = 5 * 60_000;
 /** How long an undelivered command waits for an offline workstation. */
@@ -118,7 +138,10 @@ type CommandAction =
   // Over-the-air updates (src/releases.ts). Never accepted by POST /api/command:
   // only the update routes, guarded by the `updates` permission, queue them.
   | "release-available"
-  | "install-update";
+  | "install-update"
+  // Wake-on-LAN (src/power.ts): sent only by /wake, to a workstation at the
+  // sleeping one's site, with the MAC addresses its own hardware report named.
+  | "wake";
 
 /** What a workstation reports about its system image and its update, besides the screen. */
 interface UpdateFields {
@@ -219,6 +242,11 @@ interface HubConfig {
   releases: ReleaseOffer[];
   /** The group of each workstation in a group a major is being tried on (ReleaseOffer.pilotGroup). */
   pilotGroups: Map<string, string>;
+  /** Power schedules, and the group of each grouped workstation when any schedule is for a group. */
+  power: { rules: PowerRule[]; groupOf: Map<string, string> };
+  /** The organization's printers, and the group of each workstation in a group one is limited to. */
+  printers: Printer[];
+  printerGroups: Map<string, string>;
   loadedAt: number;
 }
 
@@ -230,6 +258,14 @@ export interface WorkstationConfig {
   broadcastEpoch: number;
   /** Whether it may serve a release it holds to its site; when false it stops serving (phase 5). */
   lanSharing: boolean;
+  /** Whether its usage reports name the sites visited (src/usage.ts); false and it sends none. */
+  usageSites: boolean;
+  /** When it switches itself off and on, day by day (src/power.ts); null: never. */
+  power: WorkstationPower | null;
+  /** Whether it may print, and to which printers (src/printing.ts); off, it runs no print service. */
+  printing: WorkstationPrinting;
+  /** Whether Home in the kiosk bar offers to start a new session (sign everyone out). */
+  homeReset: boolean;
 }
 
 export interface QueuedCommand {
@@ -241,6 +277,8 @@ export interface QueuedCommand {
   epoch?: number;
   /** The release an update command is about. */
   version?: string;
+  /** The workstations a `wake` command sends a magic packet to. */
+  macs?: string[];
   timestamp: number;
 }
 
@@ -267,6 +305,7 @@ export interface EnqueueInput {
   message?: string;
   epoch?: number;
   version?: string;
+  macs?: string[];
   portal?: boolean;
   /** The organization's broadcast changed with this command; reload before delivering. */
   reloadConfig?: boolean;
@@ -300,9 +339,12 @@ export class OrgHub {
   private readonly frames = new Map<string, string>();
   private readonly lastMessage = new Map<string, number>();
   private readonly pollWatch = new Map<string, number>();
+  /** Until when HTTP workstations are asked to heartbeat at the attended rate (ms). */
+  private attendedUntil = 0;
   /** Sockets whose departure was already handled, so a late close event is not counted twice. */
   private readonly departed = new WeakSet<WebSocket>();
   private flushedOnline: number;
+  private flushedHttp: number;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -332,8 +374,17 @@ export class OrgHub {
       user_id TEXT NOT NULL,
       ends_at INTEGER NOT NULL
     )`);
+    // Where each workstation last was on its LAN (src/lan_sharing.ts's siteKey),
+    // kept after it goes offline: Wake-on-LAN looks for a workstation that is on
+    // at a sleeping one's site. Written when it changes, never per message.
+    sql.exec(`CREATE TABLE IF NOT EXISTS last_sites (
+      client_id TEXT PRIMARY KEY,
+      site TEXT NOT NULL,
+      seen_at INTEGER NOT NULL
+    )`);
     this.tenantId = this.readMeta("tenantId");
     this.flushedOnline = Number(this.readMeta("flushedOnline") ?? "-1");
+    this.flushedHttp = Number(this.readMeta("flushedHttp") ?? "-1");
     ctx.setWebSocketAutoResponse(autoResponsePair());
   }
 
@@ -354,8 +405,10 @@ export class OrgHub {
         case "/heartbeat":
           return await this.handleHeartbeat((await request.json()) as HeartbeatInput);
         case "/enqueue":
+          this.attendedUntil = Date.now() + HTTP_ATTENTION_MS;
           return json({ commandIds: await this.enqueue((await request.json()) as EnqueueInput) });
         case "/live": {
+          this.attendedUntil = Date.now() + HTTP_ATTENTION_MS;
           const body = request.method === "POST" ? ((await request.json()) as { watch?: unknown }) : {};
           await this.leasePollWatch(body.watch);
           return json({ clients: this.liveClients(true) });
@@ -397,6 +450,10 @@ export class OrgHub {
         case "/lan-peers": {
           const body = (await request.json()) as { clientId?: unknown; version?: unknown };
           return json({ peers: await this.lanPeersFor(String(body.clientId || ""), String(body.version || "")) });
+        }
+        case "/wake": {
+          const body = (await request.json()) as { targets?: unknown };
+          return json(await this.wake(body.targets));
         }
         case "/device-enrolled":
           this.deviceEnrolled(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
@@ -478,14 +535,20 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts, releases] = await Promise.all([
+    const [whitelist, broadcasts, releases, power, printers] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
-      offeredReleases(db, tenant.update_channel, tenant.id)
+      offeredReleases(db, tenant.update_channel, tenant.id),
+      loadPowerRules(db, tenant.id),
+      tenant.printing_enabled === 1 ? listPrinters(db, tenant.id) : Promise.resolve([])
     ]);
     const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
-    const pilotGroups = await workstationGroupsIn(db, tenant.id, pilots);
-    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, loadedAt: Date.now() };
+    const printerGroupNames = [...new Set(printers.flatMap((p) => (p.groupName ? [p.groupName] : [])))];
+    const [pilotGroups, printerGroups] = await Promise.all([
+      workstationGroupsIn(db, tenant.id, pilots),
+      workstationGroupsIn(db, tenant.id, printerGroupNames)
+    ]);
+    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, power, printers, printerGroups, loadedAt: Date.now() };
     return this.config;
   }
 
@@ -534,6 +597,10 @@ export class OrgHub {
       broadcastUrl: active?.url || "",
       broadcastEpoch: active?.epoch || 0,
       lanSharing: tenant.lan_sharing === 1,
+      usageSites: tenant.usage_sites !== 0,
+      power: effectivePower(config.power.rules, config.power.groupOf.get(clientId)),
+      printing: printingFor(tenant.printing_enabled === 1, config.printers, config.printerGroups.get(clientId)),
+      homeReset: tenant.home_reset !== 0,
       portalUrl
     };
   }
@@ -645,13 +712,28 @@ export class OrgHub {
       await this.writeRegistry([this.registryRow({ clientId, ...client }, now)]);
       this.recordEvent("connect", clientId);
     }
-    if (changed) this.notifyConsoles({ type: "status", client: this.httpStatus(clientId, client, now) });
+    if (changed) {
+      this.notifyConsoles({ type: "status", client: this.httpStatus(clientId, client, now) });
+      this.rememberSite(clientId, client.ip, client.lan);
+    }
     if (client.dirty) await this.ensureAlarm(FLUSH_DELAY_MS);
     await this.nudgeHttp(clientId, client);
 
     const config = (await this.loadConfig())!;
     const { portalUrl, ...update } = this.configFor(config, clientId, input.portal);
-    return json({ status: "ok", commands: this.pendingFor(clientId, portalUrl), ...update });
+    return json({
+      status: "ok",
+      commands: this.pendingFor(clientId, portalUrl),
+      ...update,
+      heartbeatSeconds: this.httpHeartbeatSeconds(now),
+      frames: this.watchedIds().has(clientId)
+    });
+  }
+
+  /** The HTTP heartbeat interval to ask for: fast while a console is open or was just used. */
+  private httpHeartbeatSeconds(now: number): number {
+    const attended = now < this.attendedUntil || this.ctx.getWebSockets("console").length > 0;
+    return attended ? HTTP_HEARTBEAT_ATTENDED_SECONDS : HTTP_HEARTBEAT_IDLE_SECONDS;
   }
 
   /** Workstation-reported state, validated; unset fields keep what was known. */
@@ -716,6 +798,7 @@ export class OrgHub {
         await this.nudgeSocket(ws, updated);
         // A seed finished, failed or moved: those waiting at its site may go now.
         await this.nudgeSite(siteKey(updated.ip, updated.lan), updated.clientId);
+        this.rememberSite(updated.clientId, updated.ip, updated.lan);
       }
     } else if (data.type === "frame") {
       const frame = acceptableFrame(data.thumbnail);
@@ -777,6 +860,7 @@ export class OrgHub {
     this.http.delete(clientId);
     this.frames.delete(clientId);
     this.lastMessage.delete(clientId);
+    this.ctx.storage.sql.exec("DELETE FROM last_sites WHERE client_id = ?", clientId);
     this.notifyConsoles({ type: "removed", clientId });
   }
 
@@ -807,6 +891,7 @@ export class OrgHub {
       message: input.message,
       epoch: input.epoch,
       ...(input.version ? { version: input.version } : {}),
+      ...(input.macs?.length ? { macs: input.macs } : {}),
       ...(input.portal ? { portal: true } : {})
     });
     const ids: string[] = [];
@@ -879,7 +964,7 @@ export class OrgHub {
 
     const commands: QueuedCommand[] = [];
     for (const row of rows) {
-      let payload: { url?: string; message?: string; epoch?: number; version?: string; portal?: boolean } = {};
+      let payload: { url?: string; message?: string; epoch?: number; version?: string; macs?: string[]; portal?: boolean } = {};
       try {
         payload = row.payload_json ? JSON.parse(row.payload_json) : {};
       } catch (err) {
@@ -894,6 +979,7 @@ export class OrgHub {
         message: payload.message,
         epoch: payload.epoch,
         ...(payload.version ? { version: payload.version } : {}),
+        ...(Array.isArray(payload.macs) ? { macs: payload.macs.filter(isWakeableMac) } : {}),
         timestamp: row.created_at
       });
       if (row.target === clientId) {
@@ -1165,11 +1251,15 @@ export class OrgHub {
     }
     await this.writeRegistry(rows);
 
-    const online = Object.values(this.liveClients(false)).filter((c) => c.online).length;
-    if (online !== this.flushedOnline) {
-      await setTenantOnlineCount(getDatabase(this.env), this.tenantId!, online);
+    const live = Object.values(this.liveClients(false)).filter((c) => c.online);
+    const online = live.length;
+    const http = live.filter((c) => c.transport === "http").length;
+    if (online !== this.flushedOnline || http !== this.flushedHttp) {
+      await setTenantOnlineCount(getDatabase(this.env), this.tenantId!, online, http);
       this.flushedOnline = online;
+      this.flushedHttp = http;
       this.writeMeta("flushedOnline", String(online));
+      this.writeMeta("flushedHttp", String(http));
     }
   }
 
@@ -1314,6 +1404,96 @@ export class OrgHub {
     const self = this.ctx.getWebSockets(`device:${clientId}`).map((ws) => this.deviceAttachment(ws)).find(Boolean);
     if (!self) return [];
     return lanPeers(self, version, this.siteMembers(), Date.now());
+  }
+
+  // ------------------------------------------------------------- Wake-on-LAN
+
+  /** Keep where a workstation is on its LAN, for waking it once it is off. */
+  private rememberSite(clientId: string, ip: string, lan: LanReport | undefined): void {
+    const site = siteKey(ip, lan);
+    if (!site) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO last_sites (client_id, site, seen_at) VALUES (?, ?, ?)
+       ON CONFLICT(client_id) DO UPDATE SET site = excluded.site, seen_at = excluded.seen_at`,
+      clientId,
+      site,
+      Math.floor(Date.now() / 1000)
+    );
+  }
+
+  /**
+   * Wake workstations that are off: for each, a workstation that is on at its
+   * last known site, running an agent that sends magic packets, is sent a
+   * `wake` command with the MAC addresses the Worker read from the sleeping
+   * one's own hardware report. The rest come back with the reason.
+   */
+  async wake(raw: unknown): Promise<{ sent: Array<{ clientId: string; via: string }>; skipped: Array<{ clientId: string; reason: string }> }> {
+    const targets = (Array.isArray(raw) ? raw : []).flatMap((t) => {
+      const entry = t && typeof t === "object" ? (t as { clientId?: unknown; macs?: unknown }) : {};
+      const clientId = String(entry.clientId || "");
+      if (!CLIENT_ID_PATTERN.test(clientId)) return [];
+      return [{ clientId, macs: (Array.isArray(entry.macs) ? entry.macs : []).filter(isWakeableMac) }];
+    });
+    const now = Date.now();
+    // Who is on now, and where.
+    const awake: Array<{ clientId: string; site: string | null; agentVersion?: string; socket: boolean }> = [];
+    for (const ws of this.ctx.getWebSockets("device")) {
+      const a = this.deviceAttachment(ws);
+      if (a && now - this.lastSeenOf(ws, a) < SOCKET_STALE_MS) {
+        awake.push({ clientId: a.clientId, site: siteKey(a.ip, a.lan), agentVersion: a.agentVersion, socket: true });
+      }
+    }
+    for (const [clientId, c] of this.http) {
+      if (now - c.lastSeen < HTTP_ONLINE_MS) awake.push({ clientId, site: siteKey(c.ip, c.lan), agentVersion: c.agentVersion, socket: false });
+    }
+    const canWake = (agentVersion: string | undefined) =>
+      Boolean(agentVersion && isReleaseVersion(agentVersion) && compareVersions(agentVersion, LAST_AGENT_WITHOUT_WAKE) > 0);
+
+    const sent: Array<{ clientId: string; via: string }> = [];
+    const skipped: Array<{ clientId: string; reason: string }> = [];
+    const byPeer = new Map<string, string[]>();
+    for (const target of targets) {
+      if (awake.some((w) => w.clientId === target.clientId)) {
+        skipped.push({ clientId: target.clientId, reason: "It is already on" });
+        continue;
+      }
+      if (!target.macs.length) {
+        skipped.push({ clientId: target.clientId, reason: "It has reported no wired network adapter, which Wake-on-LAN needs" });
+        continue;
+      }
+      const row = this.ctx.storage.sql
+        .exec("SELECT site FROM last_sites WHERE client_id = ?", target.clientId)
+        .toArray()[0] as { site?: string } | undefined;
+      if (!row?.site) {
+        skipped.push({
+          clientId: target.clientId,
+          reason: "Its local network is not known yet: it is learnt while the workstation is on, on an installed disk"
+        });
+        continue;
+      }
+      const there = awake.filter((w) => w.site === row.site);
+      const able = there.filter((w) => canWake(w.agentVersion));
+      if (!able.length) {
+        skipped.push({
+          clientId: target.clientId,
+          reason: there.length
+            ? "The workstations that are on at its site run an agent too old to send the wake signal; update them"
+            : "No workstation of this organization is on at its site to send the wake signal"
+        });
+        continue;
+      }
+      // A socket hears the command at once; an HTTP heartbeat within seconds.
+      const peer = able.find((w) => w.socket) ?? able[0];
+      byPeer.set(peer.clientId, [...(byPeer.get(peer.clientId) ?? []), ...target.macs]);
+      sent.push({ clientId: target.clientId, via: peer.clientId });
+    }
+    for (const [peer, macs] of byPeer) {
+      const unique = [...new Set(macs)];
+      for (let i = 0; i < unique.length; i += MAX_WAKE_MACS_PER_COMMAND) {
+        await this.enqueue({ targets: [peer], action: "wake", macs: unique.slice(i, i + MAX_WAKE_MACS_PER_COMMAND) });
+      }
+    }
+    return { sent, skipped };
   }
 
   /**
@@ -1508,7 +1688,7 @@ export function installRefusal(status: LiveStatus | undefined, version: string):
   if (!status || !status.online) return "Offline";
   const update = status.update;
   if (!update) return "Its software is too old to update over the air; reinstall it from a current ISO";
-  if (update.phase === "live") return "Live session; update it by re-flashing";
+  if (update.phase === "live") return "Live session (a USB stick or network boot); update it by re-flashing the stick or the boot server";
   if (update.phase === "installing") return "Already installing";
   if (status.imageVersion === version) return "Already up to date";
   if (update.phase === "staged" && update.version === version) {

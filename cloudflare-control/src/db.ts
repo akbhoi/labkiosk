@@ -22,6 +22,8 @@ import {
 import {
   hashPassword,
   verifyPassword,
+  pepperLegacyHash,
+  PEPPERED_HASH_PREFIX,
   sha256Hex,
   generateDeviceToken,
   generateEnrollmentKey,
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   homepage_intro TEXT,
   homepage_blocks TEXT,
   online_workstations INTEGER NOT NULL DEFAULT 0,
+  http_workstations INTEGER NOT NULL DEFAULT 0,
   custom_hostname_id TEXT,
   custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
@@ -92,7 +95,13 @@ CREATE TABLE IF NOT EXISTS tenants (
   homepage_takedown_reason TEXT,
   license_plan TEXT
   CHECK (license_plan IS NULL OR license_plan IN ('education', 'evaluation', 'subscriber', 'commercial')),
-  license_expires_at INTEGER
+  license_expires_at INTEGER,
+  usage_sites INTEGER NOT NULL DEFAULT 1
+  CHECK (usage_sites IN (0, 1)),
+  printing_enabled INTEGER NOT NULL DEFAULT 0
+  CHECK (printing_enabled IN (0, 1)),
+  home_reset INTEGER NOT NULL DEFAULT 1
+  CHECK (home_reset IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -144,7 +153,11 @@ CREATE TABLE IF NOT EXISTS client_devices (
   update_detail TEXT,
   agent_version TEXT,
   update_kind TEXT,
-  update_since INTEGER
+  update_since INTEGER,
+  video_decoding TEXT,
+  video_decoding_at INTEGER,
+  hardware TEXT,
+  hardware_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -416,7 +429,27 @@ CREATE TABLE IF NOT EXISTS login_challenges (
   email_codes_sent INTEGER NOT NULL DEFAULT 0,
   email_code_sent_at INTEGER,
   expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  passkey_challenge TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_passkeys (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rp_id TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  algorithm INTEGER NOT NULL CHECK (algorithm IN (-7, -257)),
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS passkey_registrations (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  challenge TEXT NOT NULL,
+  rp_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_devices (
@@ -465,6 +498,105 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS usage_daily (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  on_seconds INTEGER NOT NULL DEFAULT 0,
+  active_seconds INTEGER NOT NULL DEFAULT 0,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, client_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS usage_sites (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  active_seconds INTEGER NOT NULL DEFAULT 0,
+  visits INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, day, domain)
+);
+
+CREATE TABLE IF NOT EXISTS platform_usage_daily (
+  day TEXT PRIMARY KEY,
+  organizations INTEGER NOT NULL,
+  workstations INTEGER NOT NULL,
+  on_seconds INTEGER NOT NULL,
+  active_seconds INTEGER NOT NULL,
+  sessions INTEGER NOT NULL,
+  computed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_usage_sites (
+  day TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  organizations INTEGER NOT NULL,
+  active_seconds INTEGER NOT NULL,
+  visits INTEGER NOT NULL,
+  PRIMARY KEY (day, domain)
+);
+
+CREATE TABLE IF NOT EXISTS hardware_models (
+  vendor TEXT NOT NULL,
+  model TEXT NOT NULL,
+  organizations INTEGER NOT NULL,
+  workstations INTEGER NOT NULL,
+  uefi INTEGER NOT NULL,
+  touch INTEGER NOT NULL,
+  min_memory_mb INTEGER,
+  computed_at INTEGER NOT NULL,
+  PRIMARY KEY (vendor, model)
+);
+
+CREATE TABLE IF NOT EXISTS sso_settings (
+  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  google_enabled INTEGER NOT NULL DEFAULT 0 CHECK (google_enabled IN (0, 1)),
+  google_domains TEXT NOT NULL DEFAULT '[]',
+  microsoft_enabled INTEGER NOT NULL DEFAULT 0 CHECK (microsoft_enabled IN (0, 1)),
+  microsoft_tenants TEXT NOT NULL DEFAULT '[]',
+  require_sso INTEGER NOT NULL DEFAULT 0 CHECK (require_sso IN (0, 1)),
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS sso_states (
+  state_hash TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft')),
+  code_verifier TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  return_origin TEXT NOT NULL,
+  browser_hash TEXT NOT NULL,
+  used_at INTEGER,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  handoff_hash TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS power_schedules (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  group_id TEXT REFERENCES workstation_groups(id) ON DELETE CASCADE,
+  days INTEGER NOT NULL CHECK (days BETWEEN 1 AND 127),
+  off_minute INTEGER NOT NULL CHECK (off_minute BETWEEN 0 AND 1439),
+  on_minute INTEGER CHECK (on_minute IS NULL OR on_minute BETWEEN 0 AND 1439),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS printers (
+  id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  uri TEXT NOT NULL,
+  group_name TEXT,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -493,6 +625,14 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversatio
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_user ON login_challenges(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_passkeys_user ON user_passkeys(user_id, rp_id);
+CREATE INDEX IF NOT EXISTS idx_usage_daily_tenant_day ON usage_daily(tenant_id, day);
+CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON usage_daily(day);
+CREATE INDEX IF NOT EXISTS idx_usage_sites_day ON usage_sites(day);
+CREATE INDEX IF NOT EXISTS idx_sso_states_expires ON sso_states(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_states_handoff ON sso_states(handoff_hash);
+CREATE INDEX IF NOT EXISTS idx_power_schedules_tenant ON power_schedules(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_printers_tenant ON printers(tenant_id, position);
 `;
 
 /**
@@ -550,7 +690,8 @@ export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@labkiosk.org", password: "S
  */
 export async function ensureSuperAdmin(
   db: D1Database,
-  credentials: { email: string; password: string }
+  credentials: { email: string; password: string },
+  pepper: string
 ): Promise<User> {
   const email = credentials.email.toLowerCase().trim();
   const existing = await db
@@ -558,16 +699,12 @@ export async function ensureSuperAdmin(
     .first<User>();
 
   if (existing) {
-    const passwordMatches = await verifyPassword(
-      credentials.password,
-      existing.password_hash,
-      existing.salt
-    );
+    const passwordMatches = await verifyPassword(credentials.password, existing.password_hash, existing.salt, pepper);
     // The database was initialised with a legacy placeholder, the configured email
     // changed, or the configured password does not match the stored hash: move
     // the account to the configured credentials and clear any lockout.
     if (existing.email === "admin@labkiosk.io" || existing.email !== email || !passwordMatches) {
-      const { hashHex, saltHex } = await hashPassword(credentials.password);
+      const { hashHex, saltHex } = await hashPassword(credentials.password, pepper);
       await db
         .prepare("UPDATE users SET email = ?, password_hash = ?, salt = ? WHERE id = ?")
         .bind(email, hashHex, saltHex, existing.id)
@@ -581,7 +718,7 @@ export async function ensureSuperAdmin(
     return existing;
   }
 
-  const { hashHex, saltHex } = await hashPassword(credentials.password);
+  const { hashHex, saltHex } = await hashPassword(credentials.password, pepper);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
 
@@ -710,6 +847,31 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
     // 0040: support status and end of life per major release.
     await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
+    // 0041: online workstations on the HTTP heartbeat.
+    await db.prepare("SELECT http_workstations FROM tenants LIMIT 1").run();
+    // 0042: passkeys.
+    await db.prepare("SELECT id, rp_id, sign_count FROM user_passkeys LIMIT 1").run();
+    await db.prepare("SELECT passkey_challenge FROM login_challenges LIMIT 1").run();
+    // 0043: hardware video decoding per workstation.
+    await db.prepare("SELECT video_decoding, video_decoding_at FROM client_devices LIMIT 1").run();
+    // 0044: usage reports and each workstation's hardware.
+    await db.prepare("SELECT hardware, hardware_at FROM client_devices LIMIT 1").run();
+    await db.prepare("SELECT usage_sites FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT on_seconds FROM usage_daily LIMIT 1").run();
+    await db.prepare("SELECT active_seconds FROM usage_sites LIMIT 1").run();
+    await db.prepare("SELECT organizations FROM platform_usage_daily LIMIT 1").run();
+    await db.prepare("SELECT organizations FROM platform_usage_sites LIMIT 1").run();
+    await db.prepare("SELECT organizations FROM hardware_models LIMIT 1").run();
+    // 0046: single sign-on with Google Workspace or Microsoft Entra ID.
+    await db.prepare("SELECT google_domains, microsoft_tenants, require_sso FROM sso_settings LIMIT 1").run();
+    await db.prepare("SELECT state_hash, code_verifier, return_origin, handoff_hash FROM sso_states LIMIT 1").run();
+    // 0045: power schedules.
+    await db.prepare("SELECT group_id, days, off_minute, on_minute FROM power_schedules LIMIT 1").run();
+    // 0047: printing, off by default, and the organization's network printers.
+    await db.prepare("SELECT printing_enabled FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT id, name, uri, group_name, position FROM printers LIMIT 1").run();
+    // 0048: Home in the kiosk bar starts a new session.
+    await db.prepare("SELECT home_reset FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -789,9 +951,10 @@ export async function findUserById(db: D1Database, id: string): Promise<User | n
 
 export async function createUser(
   db: D1Database,
-  data: { email: string; password: string; name: string; role?: "super_admin" | "org_admin" }
+  data: { email: string; password: string; name: string; role?: "super_admin" | "org_admin" },
+  pepper: string
 ): Promise<User> {
-  const { hashHex, saltHex } = await hashPassword(data.password);
+  const { hashHex, saltHex } = await hashPassword(data.password, pepper);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
   const role = data.role || "org_admin";
@@ -1011,6 +1174,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "update_channel",
   "security_updates",
   "lan_sharing",
+  "usage_sites",
+  "home_reset",
   "subdomain",
   "requested_subdomain",
   "status",
@@ -1246,7 +1411,8 @@ export async function createTenantUser(
     password?: string;
     role?: TenantUserRole;
     permissions?: string[];
-  }
+  },
+  pepper: string
 ): Promise<TenantUser> {
   const email = data.email.toLowerCase().trim();
   let user = await findUserByEmail(db, email);
@@ -1256,7 +1422,7 @@ export async function createTenantUser(
       name: data.name.trim(),
       password: data.password || crypto.randomUUID().slice(0, 16) + "Aa1!",
       role: "org_admin"
-    });
+    }, pepper);
   }
 
   const id = crypto.randomUUID();
@@ -1390,18 +1556,19 @@ export async function getTenantUserPermissions(
 
 export async function listAllTenants(
   db: D1Database
-): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>> {
+): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; http_clients: number; total_clients: number; enrolled_clients: number }>> {
   const res = await db
     .prepare(
       `SELECT t.*, u.email as admin_email, u.name as admin_name,
               t.online_workstations as online_clients,
+              t.http_workstations as http_clients,
               (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients,
               (SELECT COUNT(DISTINCT dt.client_id) FROM device_tokens dt WHERE dt.tenant_id = t.id AND dt.revoked = 0) as enrolled_clients
        FROM tenants t
        JOIN users u ON t.user_id = u.id
        ORDER BY t.created_at DESC`
     )
-    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>();
+    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; http_clients: number; total_clients: number; enrolled_clients: number }>();
 
   return res.results || [];
 }
@@ -1416,12 +1583,38 @@ export async function createSession(db: D1Database, session: Session): Promise<v
 }
 
 /** Replace a user's password hash; every other session of that user should be dropped by the caller. */
-export async function updateUserPassword(db: D1Database, userId: string, password: string): Promise<void> {
-  const { hashHex, saltHex } = await hashPassword(password);
+export async function updateUserPassword(db: D1Database, userId: string, password: string, pepper: string): Promise<void> {
+  const { hashHex, saltHex } = await hashPassword(password, pepper);
   await db
     .prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?")
     .bind(hashHex, saltHex, userId)
     .run();
+}
+
+/** Rows wrapped per run by `pepperLegacyPasswordHashes()`; the hourly cron gets through the rest. */
+const PEPPER_BATCH = 200;
+
+/**
+ * Wrap bare PBKDF2 password hashes (from before PASSWORD_PEPPER) in the pepper, no password
+ * needed. Each update applies only if the row still holds the hash that was read, so a password
+ * changed meanwhile is left alone. Returns how many rows were wrapped.
+ */
+export async function pepperLegacyPasswordHashes(db: D1Database, pepper: string): Promise<number> {
+  const rows = await db
+    .prepare("SELECT id, password_hash FROM users WHERE length(password_hash) = 64 AND password_hash NOT LIKE ? LIMIT ?")
+    .bind(`${PEPPERED_HASH_PREFIX}%`, PEPPER_BATCH)
+    .all<{ id: string; password_hash: string }>();
+  let wrapped = 0;
+  for (const row of rows.results || []) {
+    const peppered = await pepperLegacyHash(row.password_hash, pepper);
+    if (!peppered) continue;
+    const res = await db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?")
+      .bind(peppered, row.id, row.password_hash)
+      .run();
+    wrapped += res.meta?.changes ?? 0;
+  }
+  return wrapped;
 }
 
 /** Delete every session a user holds except, optionally, the one they are using right now. */
@@ -1668,11 +1861,11 @@ export async function listDeviceBroadcasts(
   return map;
 }
 
-/** The number of workstations online, as the organization's OrgHub last counted it. */
-export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number): Promise<void> {
+/** The hub's online count, and how many of those are on the HTTP heartbeat rather than the WebSocket, as the organization's OrgHub last counted it. */
+export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number, http: number): Promise<void> {
   await db
-    .prepare("UPDATE tenants SET online_workstations = ? WHERE id = ?")
-    .bind(Math.max(0, Math.floor(online)), tenantId)
+    .prepare("UPDATE tenants SET online_workstations = ?, http_workstations = ? WHERE id = ?")
+    .bind(Math.max(0, Math.floor(online)), Math.max(0, Math.floor(http)), tenantId)
     .run();
 }
 

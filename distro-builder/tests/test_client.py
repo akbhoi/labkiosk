@@ -385,6 +385,7 @@ class InterfaceLanguageTags(unittest.TestCase):
             "usr/local/bin/labkiosk-install",
             "usr/local/sbin/labkiosk-localization",
             "usr/local/sbin/labkiosk-boot-slots",
+            "usr/local/sbin/labkiosk-printing",
         ]
         for rel in scripts:
             with self.subTest(script=rel):
@@ -567,6 +568,65 @@ class RemoteClearSessionCommand(unittest.TestCase):
                 self.assertRegex(script, r"rm -rf [^\n]*" + agent.BROWSER_PROFILE_DIR.replace("/", r"\/"))
 
 
+class HomeStartsANewSession(unittest.TestCase):
+    """Home in the kiosk bar, confirmed: /api/session/reset, while the organization allows it."""
+
+    def setUp(self):
+        self._run = agent.subprocess.run
+        self._home_reset = agent.state["homeReset"]
+        self.calls = []
+
+        def fake_run(argv, **kwargs):
+            self.calls.append(list(argv))
+            return agent.subprocess.CompletedProcess(argv, 0)
+
+        agent.subprocess.run = fake_run
+
+    def tearDown(self):
+        agent.subprocess.run = self._run
+        agent.state["homeReset"] = self._home_reset
+
+    def _post(self, origin=None):
+        headers = {"Host": "127.0.0.1:8888"}
+        if origin:
+            headers["Origin"] = origin
+        handler = handler_with(headers)
+        handler.path = "/api/session/reset"
+        handler.sent = None
+        handler._send = lambda status, payload, content_type="application/json": setattr(handler, "sent", (status, payload))
+        handler.do_POST()
+        return handler.sent
+
+    def test_off_until_the_organization_says_so(self):
+        agent.state["homeReset"] = False
+        status, payload = self._post(agent.KIOSK_EXTENSION_ORIGIN)
+        self.assertEqual(status, 409)
+        self.assertIn("does not let Home", payload["error"])
+        self.assertEqual(self.calls, [], "the browser is left running")
+
+    def test_allowed_it_ends_the_kiosk_browser_like_clear_session(self):
+        agent.state["homeReset"] = True
+        self.assertEqual(self._post(agent.KIOSK_EXTENSION_ORIGIN), (200, {"status": "ok"}))
+        self.assertEqual(self.calls, [["pkill", "-f", "--", f"--user-data-dir={agent.BROWSER_PROFILE_DIR}"]])
+
+    def test_a_page_the_user_visited_cannot_ask(self):
+        agent.state["homeReset"] = True
+        status, _ = self._post("https://evil.example")
+        self.assertEqual(status, 403)
+        self.assertEqual(self.calls, [])
+
+    def test_the_configuration_turns_it_on_and_off(self):
+        agent.state["homeReset"] = False
+        agent.apply_control_update({"homeReset": True, "commands": []})
+        self.assertIs(agent.state["homeReset"], True)
+        for unusable in ("false", 0, None):
+            with self.subTest(value=unusable):
+                agent.apply_control_update({"homeReset": unusable, "commands": []})
+                self.assertIs(agent.state["homeReset"], True, "anything but a boolean is ignored")
+        agent.apply_control_update({"homeReset": False, "commands": []})
+        self.assertIs(agent.state["homeReset"], False)
+
+
 class AdminAuthenticationAndSession(unittest.TestCase):
     def setUp(self):
         agent._admin_sessions.clear()
@@ -733,6 +793,77 @@ class RejectedEnrolment(unittest.TestCase):
         # An enrolment must not wait out a minute of back-off for its allowlist.
         self.assertIn("heartbeat_wakeup.wait(wait)", inspect.getsource(agent.telemetry_loop))
         self.assertIn("heartbeat_wakeup.set()", inspect.getsource(agent.enroll))
+
+
+class HttpHeartbeatPace(unittest.TestCase):
+    """The HTTP fallback polls as fast as the hub asks, and sends a screen only when watched.
+
+    A fleet behind a proxy that drops WebSocket upgrades used to post a heartbeat
+    and a screenshot every 3 seconds around the clock, each one a billed request.
+    """
+
+    def setUp(self):
+        self.saved = dict(agent.http_pace)
+        self.orig_post = agent.post_telemetry
+        self.orig_apply = agent.apply_control_update
+        agent.apply_control_update = lambda data: None
+
+    def tearDown(self):
+        agent.http_pace.update(self.saved)
+        agent.post_telemetry = self.orig_post
+        agent.apply_control_update = self.orig_apply
+
+    def test_an_older_control_plane_keeps_the_old_cadence(self):
+        self.assertEqual(agent.http_pace_from({"status": "ok"}), (agent.HEARTBEAT_SECONDS, True))
+
+    def test_the_interval_is_bounded(self):
+        self.assertEqual(agent.http_pace_from({"heartbeatSeconds": 15, "frames": False}), (15, False))
+        self.assertEqual(agent.http_pace_from({"heartbeatSeconds": 0})[0], agent.HEARTBEAT_SECONDS)
+        self.assertEqual(agent.http_pace_from({"heartbeatSeconds": 86400})[0], agent.MAX_BACKOFF_SECONDS)
+        self.assertEqual(agent.http_pace_from({"heartbeatSeconds": True})[0], agent.HEARTBEAT_SECONDS)
+        self.assertEqual(agent.http_pace_from({"heartbeatSeconds": "15"})[0], agent.HEARTBEAT_SECONDS)
+        self.assertTrue(agent.http_pace_from({"frames": "no"})[1], "only a boolean turns frames off")
+
+    def test_an_accepted_heartbeat_sets_the_pace(self):
+        agent.post_telemetry = lambda: {"status": "ok", "heartbeatSeconds": 15, "frames": False}
+        self.assertEqual(agent.http_heartbeat(), "ok")
+        self.assertEqual(agent.http_pace, {"seconds": 15, "frames": False})
+
+    def test_no_screen_is_captured_while_nobody_watches(self):
+        captured = []
+        sent = []
+
+        class Reply:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"status": "ok"}'
+
+        def fake_open(request, timeout):
+            sent.append(json.loads(request.data.decode("utf-8")))
+            return Reply()
+
+        orig_open, orig_capture, orig_status = agent.open_url, agent.capture_thumbnail_base64, agent.current_status
+        agent.open_url = fake_open
+        agent.capture_thumbnail_base64 = lambda: captured.append(1) or "data:image/jpeg;base64,AAAA"
+        agent.current_status = lambda: {"clientNum": 1}
+        saved_url = agent.state["workerUrl"]
+        agent.state["workerUrl"] = "https://demo.example.org"
+        try:
+            agent.http_pace["frames"] = False
+            self.orig_post()
+            agent.http_pace["frames"] = True
+            self.orig_post()
+        finally:
+            agent.open_url, agent.capture_thumbnail_base64, agent.current_status = orig_open, orig_capture, orig_status
+            agent.state["workerUrl"] = saved_url
+        self.assertEqual(len(captured), 1, "scrot runs only for the watched heartbeat")
+        self.assertNotIn("thumbnail", sent[0])
+        self.assertIn("thumbnail", sent[1])
 
 
 class FakeWebSocketModule:
@@ -1160,12 +1291,14 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
         agent.state["isConfigured"] = True
         self.run_main()
         self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server"),
-                                       ("thread", "boot_report_loop")])
+                                       ("thread", "boot_report_loop"), ("thread", "usage_loop"), ("thread", "power_loop"),
+                                       ("thread", "printing_loop")])
 
     def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
         agent.state["isConfigured"] = False
         self.run_main()
-        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop")])
+        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop"), ("thread", "usage_loop"),
+                                       ("thread", "power_loop"), ("thread", "printing_loop")])
 
 
 class ReenrolmentGating(unittest.TestCase):

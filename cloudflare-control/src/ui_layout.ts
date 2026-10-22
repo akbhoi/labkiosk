@@ -1383,6 +1383,27 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
     .stat-tile-hint { font-size: 0.75rem; color: var(--text-subtle); margin-top: 2px; }
 
+    /* Settings -> Usage: hours in use per day, one bar per day. */
+    .card-subtitle { font-size: 0.8125rem; font-weight: 600; margin-bottom: 8px; }
+    .usage-chart { width: 100%; min-width: 0; }
+    .usage-chart-svg { display: block; width: 100%; height: 160px; overflow: visible; }
+    .usage-chart-bar { fill: var(--accent); pointer-events: none; }
+    .usage-chart-hit { fill: transparent; }
+    .usage-chart-hit:hover { fill: var(--bg-subtle); }
+    .usage-chart-axis { stroke: var(--border-subtle); stroke-width: 1; }
+    .usage-chart-label { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+    /* Settings -> Power: the days of a schedule, Monday to Sunday, wrapping on a phone. */
+    .power-days { display: flex; flex-wrap: wrap; gap: 2px 18px; }
+    /* Settings -> Printing: one row of fields per printer, stacked on a narrow canvas. */
+    .printer-row { padding-top: 12px; margin-bottom: 12px; border-top: 1px solid var(--border-subtle); }
+    .printer-row > .form-group:nth-child(2) { flex: 2; }
+    .printer-row > .printer-row-actions { flex: 0 0 auto; }
+    @container canvas (max-width: 760px) {
+      .printer-row { flex-direction: column; align-items: stretch; }
+      .printer-row > .form-group { margin-bottom: 8px; }
+    }
+
     /* Key-value list (panel summaries, detail blocks). */
     .kv-list { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; font-size: 0.8125rem; }
     .kv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-muted); }
@@ -2364,6 +2385,16 @@ ${BUSY_CSS}    .btn.is-loading::before, .menu-item.is-loading::before, .profile-
       font-family: var(--font-mono);
       font-size: 0.875rem;
     }
+    .passkey-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .passkey-row strong { overflow-wrap: anywhere; }
     .modal-vnc {
       max-width: 1100px;
       width: 96%;
@@ -2769,6 +2800,7 @@ ${FONT_LINKS}
           <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
           <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>
+          <a href="/dpa" target="_blank" rel="noopener noreferrer">Data Processing Agreement</a>
         </div>
       </footer>
     </div>

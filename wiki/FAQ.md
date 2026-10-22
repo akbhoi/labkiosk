@@ -30,20 +30,32 @@ No. A workstation with no uplink keeps showing whatever it last loaded and backs
 No — that is the point. `overlayroot="tmpfs"` mounts the root filesystem read-only and diverts every write to RAM, on live media and installed disks alike. The only exceptions are the 512 MiB `LABKIOSK_DATA` partition, written at enrolment, when settings change and by the system journal (kept seven days so a crash can be explained), the 1 KiB GRUB environment block that records which system image to boot, and the 1 GiB swap partition, which is written only once compressed RAM is full.
 
 **BIOS or UEFI?**
-Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer writes a hybrid GPT layout with three GRUB variants so the installed drive boots regardless of firmware mode.
+Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer writes a hybrid GPT layout with three GRUB variants so the installed drive boots regardless of firmware mode. Installing beside another system needs UEFI.
+
+**Can it share a computer with Windows or another Linux?**
+Yes, on UEFI machines with a GPT disk: the installer can put it in the disk's free space or in place of one partition, and leave everything else as it is. Lab Kiosk starts by default; the other system is chosen from the firmware's boot menu. It is less safe than a disk of its own, because the other system's administrators can change Lab Kiosk, and the wizard makes you accept that. → [Disk Installer](Disk-Installer#beside-another-system-dual-boot)
+
+**Can workstations start over the network, with no disk?**
+Yes. A boot server prepared with `distro-builder/tools/labkiosk-netboot.py` serves the release to UEFI machines (PXE, Secure Boot on) and legacy BIOS machines (iPXE). Every workstation runs the same release from RAM and enrols by itself at every start. It needs at least 4 GB of RAM and trusts the boot network. → [Network Boot](Network-Boot)
+
+**Is there a package for Ubuntu, Debian or another distribution?**
+No, and there will not be a distribution package. Lab Kiosk's guarantees come from owning the whole system: a read-only root, every write in RAM, and only the data partition kept. Installed as a package on someone else's read-write system, with their kernel, packages and administrators, none of that holds. To keep another system on the same computer, install beside it; to avoid disks entirely, use network boot.
 
 **Can I run it from USB permanently?**
 You can, but on live media the enrolment token lives in the RAM overlay and is lost at power-off, so you would re-enrol every boot. The system is designed to be installed.
 
 **Does it need a GPU?**
-No. `HardwareAccelerationModeEnabled` is on so Chromium uses whatever is available, and the package list includes `fbdev` and `vesa` drivers for machines with nothing better.
+No. `HardwareAccelerationModeEnabled` is on so Chromium uses whatever is available, and the package list includes `fbdev` and `vesa` drivers for machines with nothing better. Without a GPU that decodes video, though, every video plays on the CPU, which a thin client struggles with above 720p.
+
+**Which graphics should we buy for video?**
+Intel or AMD. Their VA-API drivers are in the image (Intel's iHD and i965, Mesa's for AMD Radeon), so Chromium decodes H.264, HEVC and VP9, and AV1 on recent chips, in hardware. **NVIDIA graphics decode video on the CPU**: NVIDIA's own driver is an out-of-tree kernel module, which would need a key enrolled by hand on every machine to keep Secure Boot and unattended boot, so the image does not carry it, and the open `nouveau` driver gives no usable hardware decoding. NVIDIA machines work; video simply costs CPU. Each workstation's card in the admin console says which it is (`Video: GPU · H.264, HEVC, VP9, AV1` or `Video: CPU · NVIDIA graphics`).
 
 ---
 
 ## Deployment
 
 **How many workstations can one organization have?**
-There is no hard limit. Each workstation is one row in `client_devices` and one heartbeat every three seconds. Storage is dominated by thumbnails — budget roughly 256 KB per workstation for the latest frame.
+There is no hard limit. Each workstation is one row in `client_devices` and one WebSocket to its organization's hub, which costs almost nothing while idle. Screen frames are relayed to a console only while it is showing that screen and are never stored.
 
 **Can an organization use its own domain?**
 Yes. Request it in Settings, create a `CNAME` to the platform apex, and a super admin approves it. → [Super Admin Guide](Super-Admin-Guide#custom-domains)

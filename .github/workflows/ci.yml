@@ -5,18 +5,71 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # Daily, so both images are rebuilt and scanned for fixed criticals even when
+  # nothing that goes into them changed (APT_REFRESH refreshes their packages).
+  schedule:
+    - cron: "15 1 * * *"
+  # On main, also a manual deploy of the control plane, after the same tests.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Pull requests: a new push cancels the run it supersedes. main: every push
+# gets its own run, so a later push never cancels a deploy halfway through its
+# migrations, nor skips one by replacing it while it waits.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
+  # What the push or pull request touched, so the jobs that cannot be affected
+  # are skipped. Plain git: no third-party action for a diff. Anything that is
+  # not a push or a pull request, or a range git cannot read (a new branch, a
+  # force-push), counts as touching everything.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.diff.outputs.images }}
+      cloudflare: ${{ steps.diff.outputs.cloudflare }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the base
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            push) base="$PUSH_BEFORE" ;;
+            *) base="" ;;
+          esac
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git diff --name-only "$base...HEAD" > "$RUNNER_TEMP/changed.txt"
+            echo "Changed since ${base:0:12}:"; cat "$RUNNER_TEMP/changed.txt"
+          else
+            echo "No base to compare with ($EVENT): every job runs."
+            printf '%s\n' Dockerfile cloudflare-control/ > "$RUNNER_TEMP/changed.txt"
+          fi
+          matches() { grep -qE "$1" "$RUNNER_TEMP/changed.txt" && echo true || echo false; }
+          {
+            echo "images=$(matches '^(Dockerfile|docker-compose\.yml|\.dockerignore|distro-builder/|docker-test/|\.github/workflows/ci\.yml)')"
+            echo "cloudflare=$(matches '^(cloudflare-control/|cloudflare-email-routing/|\.github/workflows/(ci|deploy-cloudflare)\.yml)')"
+          } | tee -a "$GITHUB_OUTPUT"
+
   images:
     name: Container Images Build
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -37,7 +90,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Today's date, so the package layer is rebuilt once a day (APT_REFRESH).
       - name: Date the package layer
@@ -45,10 +98,10 @@ jobs:
         run: echo "refresh=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build ${{ matrix.name }} (no push)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
@@ -63,7 +116,7 @@ jobs:
       # fixed critical in the base image fails the pull request instead of the
       # release tag.
       - name: Scan ${{ matrix.name }}
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ci/${{ matrix.name }}:pr
           format: table
@@ -77,17 +130,17 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10
 
-      - name: Setup Node.js v22
-        uses: actions/setup-node@v7
+      - name: Setup Node.js v24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           cache-dependency-path: |
             cloudflare-control/pnpm-lock.yaml
@@ -117,12 +170,12 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js v22
-        uses: actions/setup-node@v7
+      - name: Setup Node.js v24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -142,7 +195,8 @@ jobs:
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock \
-            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health \
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-printing
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1
@@ -310,3 +364,18 @@ jobs:
             distro-builder/config/includes.chroot/etc/NetworkManager/dispatcher.d/50-labkiosk-ntp \
             distro-builder/tests/vm/boot-test.sh \
             docker-test/entrypoint.sh
+
+  # The control plane is deployed from main by deploy-cloudflare.yml, called
+  # here so it runs only after the typecheck and tests above passed on this
+  # very commit, instead of running them a second time.
+  deploy:
+    name: Deploy the control plane
+    needs: [changes, worker]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && needs.changes.outputs.cloudflare == 'true'))
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy-cloudflare.yml
+    secrets: inherit

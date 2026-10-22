@@ -20,6 +20,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
+| See anonymous platform usage and the hardware workstations run on (**System → Usage**, **System → Hardware**) | High-level auditing without opening any organization |
 
 A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority — but `requireTenantAdmin()` then lets it into an organization's console or API **only** for one of the three demos it owns (`isDemoTenant()` in `src/demo.ts`: a demo slug *and* owned by the super admin). Any other organization answers `403` ("Platform administrators cannot access individual organization consoles"), and its `/admin` page explains the privacy isolation and points to `/super`. Opening `/admin/*` with no organization named lands in `local-demo` on a development host and `web-demo` otherwise. The demo slugs, and the retired `demo`, cannot be registered by an organization. → [Architecture Overview](Architecture-Overview#tenant-resolution)
 
@@ -89,7 +90,7 @@ Under **Releases**, below the release lists:
 
 ### Legal terms
 
-The documents in force are the Terms of Service (`/terms`, which include the Subscriber License the software license refers to), the Content Policy (`/content-policy`, part of the Terms; both are accepted) and the Privacy Policy (`/privacy`, acknowledged at registration). Their texts were drafted for review by a lawyer. Registration records the version of every legal document in force (`src/legal.ts`). When a document's text changes, its version changes; the first time the platform serves it, every organization that has not accepted it sees a notice in its console, and 30 days later its console asks before anything else until the owner or an `org_admin` accepts. Workstations, homepages and User Portals keep working throughout. **System → Legal** shows each document's version and how many active organizations accepted it, emails the owners of those that have not (**Email organizations**), and downloads every acceptance as CSV; **Organizations → ⋯ → Legal Record (CSV)** downloads one organization's.
+The documents in force are the Terms of Service (`/terms`, which include the Subscriber License the software license refers to), the Content Policy (`/content-policy`, part of the Terms; both are accepted), the Data Processing Agreement (`/dpa`, the platform's terms as processor under the GDPR, the UK GDPR and India's DPDP Act, with the subprocessor list; part of the Terms and accepted with them, so a change to it is a new Terms version) and the Privacy Policy (`/privacy`, acknowledged at registration). The DPA promises organizations at least 30 days' notice in their console and by email before a new subprocessor processes their data: adding an outside service that handles organization data means updating its subprocessor list, and the Privacy Policy, first. Their texts were drafted for review by a lawyer. Registration records the version of every legal document in force (`src/legal.ts`). When a document's text changes, its version changes; the first time the platform serves it, every organization that has not accepted it sees a notice in its console, and 30 days later its console asks before anything else until the owner or an `org_admin` accepts. Workstations, homepages and User Portals keep working throughout. **System → Legal** shows each document's version and how many active organizations accepted it, emails the owners of those that have not (**Email organizations**), and downloads every acceptance as CSV; **Organizations → ⋯ → Legal Record (CSV)** downloads one organization's.
 
 ### License plan and end date
 
@@ -154,6 +155,8 @@ Organizations with their own domain can serve Lab Kiosk from `kiosk.acme.edu` ra
 
 5. **Cloudflare** must route that hostname to the worker. With a proxied `CNAME` into your zone this is automatic; a domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
 
+   Custom hostnames beyond the first 100 cost $0.10 a month each. The Custom domains view shows how many are in use and what they cost, and the approval says when the next one adds to the bill. A domain under the platform domain is refused: organization subdomains are already served by the wildcard.
+
 `custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN.
 
 ### Rejecting or removing
@@ -179,6 +182,8 @@ An organization can request a different subdomain (`POST /api/settings/subdomain
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL` | `wrangler secret put` | Changing it **migrates** the super-admin account to the new address |
 | `SUPER_ADMIN_PASSWORD` | `wrangler secret put` | Bootstrap credential; rotate it from inside `/super` afterwards |
+| `PASSWORD_PEPPER` | `wrangler secret put` | Required. HMAC key over stored password hashes; never change or lose it |
+| `SUPER_ADMIN_HOST` | Cloudflare dashboard variable | Optional. Serves this console only on that host, e.g. `super.labkiosk.org`; the wildcard route and certificate already cover it |
 | `GITHUB_ISSUES_TOKEN` | `wrangler secret put` | Optional. Fine-grained GitHub token for automatic bug reports (below) |
 
 Once signed in, use the authenticated password-change form rather than the secret — it verifies the current password and revokes the account's other sessions.
@@ -209,7 +214,7 @@ These can be neither registered nor resolved as an organization. Add one to `RES
 
 ## The console
 
-The rail has five tabs: **Organizations** (the directory, filtered by status), **Tasks**, **Mail**, **Catalogs** and **System**. Each tab's views appear both as tabs above the content and under *Views* in the side panel. Signing in always asks for a six-digit code emailed to the super admin address; an authenticator app can be added under **System → Two-factor sign-in**.
+The rail has five tabs: **Organizations** (the directory, filtered by status), **Tasks**, **Mail**, **Catalogs** and **System**. Each tab's views appear both as tabs above the content and under *Views* in the side panel. Signing in always asks for a six-digit code emailed to the super admin address; passkeys and an authenticator app can be added under **System → Two-factor sign-in**, and a passkey is then offered first.
 
 **Tasks** holds what needs a decision: *Requests* (registrations and Remote Control requests), *Subdomain changes* and *Custom domains*.
 
@@ -220,6 +225,10 @@ The rail has five tabs: **Organizations** (the directory, filtered by status), *
 - **New message** writes as any address on the domain, as an ordinary message or a **formal letter** (dated, addressed, signed with your name and title).
 - A new email from a person is answered automatically with a receipt carrying its tracking ID: once a day per sender, never to automatic mail, bounces or no-reply addresses.
 - Everything sent uses one layout and a template for its purpose (`cloudflare-email-routing/src/templates/`).
+
+**System → Usage** shows the platform's anonymous daily totals for the last 7 days to 12 months: how many organizations and workstations reported (the busiest day), hours switched on and in use, and sessions, with a table per day. Nothing names an organization. *Sites many organizations use* lists a hostname only once at least 3 organizations that record sites visited it on the same day. The platform's demos are left out, and the totals stay after an organization is deleted.
+
+**System → Hardware** lists every maker and model workstations reported at their latest start, with how many organizations and workstations run it, the share starting in UEFI mode and with a touchscreen, and the least memory any of them has. *Public* says whether the model is on the public [`/hardware`](https://labkiosk.org/hardware) page, which shows models at least 3 organizations run. Machines whose firmware names no model ("To be filled by O.E.M.") are left out.
 
 ---
 
@@ -235,6 +244,7 @@ A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled
 - Replaces enrollment keys issued before keys carried a check character.
 - Reads the newest releases from GitHub for `/download` and writes a customer-facing summary of each with Workers AI (when the `AI` binding is set; the release's own change list is shown otherwise).
 - Sends the end-of-life reminders now due (60, 30 and 7 days before a major's date, and once it has passed) to every organization's console and owner.
+- Deletes usage reports older than 400 days, rebuilds the anonymous platform usage totals for the last 8 days, and rebuilds the hardware list from every workstation's latest report.
 - Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub writes a run), and reads back the status of up to 10 filed issues.
 
 Commands are not in D1: each organization's OrgHub expires its own after 60 seconds.

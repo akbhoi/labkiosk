@@ -24,6 +24,7 @@ export const INDEXABLE_PATHS: readonly string[] = [
   "/",
   "/features",
   "/specs",
+  "/hardware",
   "/pricing",
   "/download",
   "/docs",
@@ -33,6 +34,7 @@ export const INDEXABLE_PATHS: readonly string[] = [
   "/privacy",
   "/terms",
   "/content-policy",
+  "/dpa",
   "/terms/bug-reports"
 ];
 
