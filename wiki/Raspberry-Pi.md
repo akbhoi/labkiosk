@@ -30,13 +30,13 @@ You need a microSD card of 2 GB or more, the Pi's official USB-C power supply (5
 
 1. **Download** `labkiosk-debian13-raspi-arm64.img.xz` and its `.sha256` from the [latest release](https://github.com/akbhoi/labkiosk/releases/latest), and check it: `sha256sum -c labkiosk-debian13-raspi-arm64.img.xz.sha256`.
 2. **Write it to the card** with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (**Choose OS → Use custom**, then the `.img.xz`) or [balenaEtcher](https://etcher.balena.io/). Both read the compressed file. In Raspberry Pi Imager, skip the "OS customisation" settings: they are for Raspberry Pi OS and do nothing here.
-3. **Set the organization.** Take the card out and put it back in. A drive named `LABKIOSK` appears. Open `cmdline.txt` on it in a plain text editor (Notepad, TextEdit in plain-text mode, nano) and add to its **single line**, separated by spaces:
+3. **Set the organization.** Take the card out and put it back in. A drive named `LABKIOSK` appears. Open `cmdline.txt.example` on it in a plain text editor (Notepad, TextEdit in plain-text mode, nano). It is the card's command line with two placeholders at the end:
 
    ```text
-   labkiosk.org=oakridge labkiosk.key=XXXXX-XXXXX-XXXXX-XXXXX
+   ... labkiosk.netboot=1 console=tty1 labkiosk.org=your-subdomain labkiosk.key=XXXXX-XXXXX-XXXXX-XXXXX
    ```
 
-   `labkiosk.org` is your organization's subdomain (or use `labkiosk.domain=` for its approved custom domain); the key is in the console under **Settings → Workstation Enrollment Key**. Keep it all on one line: the firmware reads only the first.
+   Replace `your-subdomain` with your organization's subdomain (or the whole `labkiosk.org=...` with `labkiosk.domain=` and its approved custom domain), and the `X`s with the key from the console's **Settings → Workstation Enrollment Key**. Keep it all on one line: the firmware reads only the first. Then **save it as `cmdline.txt`**, replacing the one on the card; the Pi reads only that name. Keep `cmdline.txt.example` to start again from.
 4. **Start the Pi** with the card in. It shows **NETWORK BOOT** in the setup wizard and appears in the console once it reaches the control plane.
 
 One card can be copied to every Pi in a room: each enrols under its own name.
@@ -67,7 +67,7 @@ It needs `xorriso`, `squashfs-tools`, `dpkg-deb`, `dosfstools` and `mtools`, run
 
 ## Update
 
-Write the card with the newer release's image, and add the same `cmdline.txt` settings again (or build it with `labkiosk-raspi.py` and the same options). The card holds nothing else worth keeping.
+Write the card with the newer release's image, and fill in its `cmdline.txt.example` again (or build it with `labkiosk-raspi.py` and the same options). The card holds nothing else worth keeping.
 
 ---
 
@@ -81,6 +81,7 @@ One FAT32 partition, readable from any computer:
 | `bcm2711-rpi-*.dtb` | The Pi 4 family's device trees, from the release's own kernel |
 | `config.txt` | Tells the firmware to start the 64-bit kernel `vmlinux` with `initrd.img` (`upstream_kernel=1`, since these are Debian's, not Raspberry Pi OS's) |
 | `cmdline.txt` | The kernel command line: live boot from RAM, self-enrolment, your settings |
+| `cmdline.txt.example` | The same line with placeholders for the organization and key, to fill in and save as `cmdline.txt` |
 | `vmlinux`, `initrd.img` | The release's `arm64` kernel (unpacked, as the firmware needs it) and initramfs |
 | `live/filesystem.squashfs` | The release's `arm64` system image |
 | `README.txt` | These steps, short |

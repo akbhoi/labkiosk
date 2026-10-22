@@ -38,7 +38,7 @@ Full steps: [Installation Guide](https://github.com/akbhoi/labkiosk/wiki/Install
 **On a Raspberry Pi**
 
 1. Write the `.img.xz` to a microSD card with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (**Choose OS → Use custom**) or balenaEtcher. Both read the compressed file directly.
-2. Put the card back in your computer, open `cmdline.txt` on it with a plain text editor and add, on its single line, `labkiosk.org=<your subdomain> labkiosk.key=<your enrollment key>`.
+2. Put the card back in your computer and open `cmdline.txt.example` on it with a plain text editor. Replace `your-subdomain` and `XXXXX-XXXXX-XXXXX-XXXXX` with your organization's subdomain and enrollment key, keeping everything on one line, and save it as `cmdline.txt`, replacing the one there.
 3. Put the card in the Pi and power it on. It enrols itself at every start and runs from memory.
 
 Full steps: [Raspberry Pi](https://github.com/akbhoi/labkiosk/wiki/Raspberry-Pi).

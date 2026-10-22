@@ -18,9 +18,10 @@ Debian's own kernel. The Pi 5 needs a newer kernel than Debian 13's.
 The workstation runs as a network-booted one does (labkiosk.netboot=1): from
 RAM, keeping nothing, with no disk installer, enrolling itself at every start
 with the organization and enrollment key on its command line, under the
-hostname its network card gives it. Those can be written here, or later into
-cmdline.txt on the card, from any computer. It updates by flashing the card
-with a newer release.
+hostname its network card gives it. Those can be written here, or later on
+the card from any computer: cmdline.txt.example holds the same line with
+placeholders for them, to edit and save as cmdline.txt. It updates by
+flashing the card with a newer release.
 
 Needs xorriso, unsquashfs (squashfs-tools), dpkg-deb, mkfs.vfat (dosfstools)
 and mcopy (mtools). Nothing is mounted: it runs without root.
@@ -72,6 +73,11 @@ initramfs initrd.img followkernel
 disable_overscan=1
 enable_uart=1
 """
+# What cmdline.txt.example names in place of the organization and key, for
+# whoever prepares the card to replace.
+ORG_PLACEHOLDER = "your-subdomain"
+KEY_PLACEHOLDER = "XXXXX-XXXXX-XXXXX-XXXXX"
+
 README_TXT = """\
 Lab Kiosk OS {version} for Raspberry Pi
 =======================================
@@ -85,17 +91,26 @@ it enrols itself with the organization and enrollment key in cmdline.txt, under
 a name taken from its network card, so the console shows it in the same place
 each time.
 
-Before the first start, open cmdline.txt on this card with a plain text editor
-and add, on the same single line, separated by spaces:
+Before the first start, open cmdline.txt.example on this card with a plain
+text editor (Notepad, TextEdit in plain-text mode, nano) and replace, keeping
+everything on its single line:
 
-    labkiosk.org=<your organization's subdomain>
-    labkiosk.key=<your enrollment key, from Settings > Workstation Enrollment Key>
+    {org_placeholder}
+        with your organization's subdomain
+    {key_placeholder}
+        with your enrollment key, from the console's
+        Settings > Workstation Enrollment Key
 
-Optionally:
+Save it as cmdline.txt, replacing the one on the card: the Pi reads only
+cmdline.txt. Keep cmdline.txt.example to start again from.
 
-    labkiosk.admin=<grub-mkpasswd-pbkdf2 digest>   locks the network and
-                                                     registration settings
-    timezone=<Region/City>                           instead of Asia/Kolkata
+Optionally, on the same line:
+
+    timezone={timezone}
+        change to your Region/City
+    labkiosk.admin=<grub-mkpasswd-pbkdf2 digest>
+        add, separated by a space, to lock the network and registration
+        settings behind a password
 
 To update, flash the card with a newer release.
 """
@@ -125,6 +140,13 @@ def kernel_arguments(args):
         if value:
             words.append(f"{name}={value}")
     return " ".join(words) + "\n"
+
+
+def example_arguments(args):
+    """cmdline.txt.example: the card's command line with placeholders for the organization and key."""
+    example = argparse.Namespace(**vars(args))
+    example.org, example.domain, example.key = ORG_PLACEHOLDER, None, KEY_PLACEHOLDER
+    return kernel_arguments(example)
 
 
 def raw_kernel(data):
@@ -222,7 +244,9 @@ def build(args):
             kernel = raw_kernel(handle.read())
         files = {"vmlinux": kernel, "config.txt": CONFIG_TXT.encode(),
                  "cmdline.txt": kernel_arguments(args).encode(),
-                 "README.txt": README_TXT.format(version=version).encode()}
+                 "cmdline.txt.example": example_arguments(args).encode(),
+                 "README.txt": README_TXT.format(version=version, timezone=args.timezone, org_placeholder=f"labkiosk.org={ORG_PLACEHOLDER}",
+                                                 key_placeholder=f"labkiosk.key={KEY_PLACEHOLDER}").encode()}
         for name, data in files.items():
             with open(os.path.join(card, name), "wb") as handle:
                 handle.write(data)

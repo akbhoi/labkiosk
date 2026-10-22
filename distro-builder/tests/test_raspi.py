@@ -148,7 +148,7 @@ class Card(unittest.TestCase):
         names = subprocess.run(["mdir", "-b", "-i", f"{image}@@{raspi.PARTITION_START}", "::/"],
                                check=True, capture_output=True, text=True).stdout.split()
         names = {name.rstrip("/").rsplit("/", 1)[-1] for name in names}
-        for name in ("vmlinux", "initrd.img", "config.txt", "cmdline.txt", "README.txt", "start4.elf", "fixup4.dat",
+        for name in ("vmlinux", "initrd.img", "config.txt", "cmdline.txt", "cmdline.txt.example", "README.txt", "start4.elf", "fixup4.dat",
                      "start4x.elf", "bcm2711-rpi-4-b.dtb", "bcm2711-rpi-400.dtb", "live"):
             self.assertIn(name, names)
         for name in ("start.elf", "bootcode.bin", "bcm2837-rpi-3-b.dtb"):
@@ -160,6 +160,15 @@ class Card(unittest.TestCase):
         for word in ("boot=live", "labkiosk.netboot=1", "labkiosk.org=oakridge", f"labkiosk.key={valid_key()}",
                      "overlayroot=tmpfs:recurse=0", "timezone=Asia/Kolkata"):
             self.assertIn(word, cmdline.split())
+        example = self.read(image, "cmdline.txt.example").decode()
+        self.assertEqual(example.count("\n"), 1)
+        self.assertEqual(example.split(),
+                         [word for word in cmdline.split() if not word.startswith(("labkiosk.org=", "labkiosk.key="))]
+                         + ["labkiosk.org=your-subdomain", "labkiosk.key=XXXXX-XXXXX-XXXXX-XXXXX"],
+                         "the same line, with placeholders for the organization and key")
+        readme = self.read(image, "README.txt").decode()
+        for line in ("labkiosk.org=your-subdomain", "labkiosk.key=XXXXX-XXXXX-XXXXX-XXXXX", "timezone=Asia/Kolkata"):
+            self.assertIn(line, readme)
         config = self.read(image, "config.txt").decode()
         for line in ("arm_64bit=1", "upstream_kernel=1", "kernel=vmlinux", "initramfs initrd.img followkernel"):
             self.assertIn(line, config.splitlines())
