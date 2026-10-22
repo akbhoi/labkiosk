@@ -72,7 +72,13 @@ fi
 # boots by default.
 read -r -a ENTRY < <(sed -n 's/^[[:space:]]*linux[[:space:]]\+//p' "$WORK/grub.cfg" | head -n 1)
 [ "${#ENTRY[@]}" -gt 1 ] || die "the ISO's boot menu has no linux line"
-CMDLINE="${ENTRY[*]:1}"
+# findiso=${iso_path} is for GRUB to fill in when it loops an ISO file; QEMU
+# would pass it on literally and live-boot would look for that file.
+words=()
+for word in "${ENTRY[@]:1}"; do
+    case "$word" in findiso=*) ;; *) words+=("$word") ;; esac
+done
+CMDLINE="${words[*]}"
 case "$CMDLINE" in *boot=live*) ;; *) die "the first boot entry is not the live system: $CMDLINE" ;; esac
 
 # Up when the agent answers and a Chromium process exists. No '$' or '%'
@@ -92,7 +98,7 @@ timeout "$((SMOKE_TIMEOUT + 120))" "$QEMU" \
     -kernel "$WORK/vmlinuz" -initrd "$WORK/initrd.img" -append "$CMDLINE" \
     -device virtio-scsi-pci,id=scsi -drive file="$ISO",if=none,id=cd,media=cdrom,readonly=on,format=raw \
     -device scsi-cd,drive=cd,bus=scsi.0 \
-    -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0 -device virtio-net-pci,netdev=net0,romfile= \
     -device virtio-gpu-pci -device qemu-xhci -device usb-kbd -device usb-tablet \
     -display none -monitor none -serial "file:$SERIAL" -no-reboot || status=$?
 
