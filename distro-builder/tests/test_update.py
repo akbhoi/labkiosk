@@ -973,8 +973,10 @@ class Image(unittest.TestCase):
     def test_the_image_carries_firmware_for_common_client_hardware(self):
         # auto/config turns live-build's firmware defaults off, so a device's
         # firmware is in the image only if the package list names it.
-        with open(os.path.join(ROOT, "config/package-lists/kiosk.list.chroot"), encoding="utf-8") as handle:
-            packages = [line.strip() for line in handle if line.strip() and not line.strip().startswith("#")]
+        packages = []
+        for path in ("config/package-lists/kiosk.list.chroot", "config/arch/amd64/packages.list.chroot"):
+            with open(os.path.join(ROOT, path), encoding="utf-8") as handle:
+                packages += [line.strip() for line in handle if line.strip() and not line.strip().startswith("#")]
         for firmware in ("firmware-misc-nonfree", "firmware-realtek", "firmware-iwlwifi",
                          "firmware-amd-graphics", "firmware-sof-signed", "firmware-intel-sound",
                          "firmware-atheros", "firmware-ath9k-htc", "firmware-brcm80211",
@@ -982,7 +984,7 @@ class Image(unittest.TestCase):
                          "firmware-bnx2", "firmware-bnx2x"):
             self.assertIn(firmware, packages)
         duplicates = sorted(name for name in set(packages) if packages.count(name) > 1)
-        self.assertEqual(duplicates, [], "listed more than once in kiosk.list.chroot")
+        self.assertEqual(duplicates, [], "listed more than once in kiosk.list.chroot and the amd64 list")
 
     def test_the_system_image_is_zstd_compressed(self):
         # Faster to build and to read at every boot than live-build's default xz.

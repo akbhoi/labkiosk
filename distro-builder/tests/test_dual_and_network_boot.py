@@ -322,7 +322,7 @@ class InstallerBesideAnotherSystem(unittest.TestCase):
         removable = install.index('"--removable"')
         self.assertLess(install.rindex("if not beside:", 0, removable), removable)
         bios = install.index('"--target=i386-pc"')
-        self.assertIn("if not beside and not", install[install.rindex("if ", 0, bios):bios])
+        self.assertIn("and not beside and not", install[install.rindex("if ", 0, bios):bios])
         # Beside another system the ESP formatted and booted from is Lab Kiosk's own.
         self.assertIn('run_cmd(["mkfs.vfat", "-F", "32", "-n", BESIDE_ESP_LABEL if beside else "ESP", part_esp])',
                       install)

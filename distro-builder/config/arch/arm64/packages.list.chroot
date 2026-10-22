@@ -1,0 +1,16 @@
+# 64-bit ARM (AArch64) machines that boot through UEFI: ARM servers and
+# workstations, ARM laptops and thin clients with UEFI firmware, and virtual
+# machines (QEMU/KVM, UTM, Parallels, cloud). Boards that start from their own
+# firmware instead of UEFI, the Raspberry Pi among them, cannot boot this ISO.
+# auto/config copies this file to config/package-lists/arch.list.chroot for an
+# arm64 build; the packages every architecture shares are in
+# config/package-lists/kiosk.list.chroot.
+
+linux-image-arm64
+
+# Boot loader: UEFI only (there is no legacy BIOS on ARM).
+grub-efi-arm64-bin
+# Microsoft-signed shim and Debian-signed GRUB, as on amd64, so a machine
+# with Secure Boot on starts the image and its installed disk.
+shim-signed
+grub-efi-arm64-signed

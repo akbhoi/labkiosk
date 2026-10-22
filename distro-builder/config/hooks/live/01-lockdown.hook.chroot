@@ -133,7 +133,7 @@ session  required   pam_systemd.so class=user type=x11
 EOF
 rm -f /etc/X11/default-display-manager /etc/pam.d/nodm /etc/default/nodm
 # Not "|| true": a kiosk that boots to a text console is no kiosk.
-if [ ! -x /usr/bin/xinit ] || [ ! -f /lib/x86_64-linux-gnu/security/pam_systemd.so ]; then
+if [ ! -x /usr/bin/xinit ] || ! ls /usr/lib/*-linux-gnu/security/pam_systemd.so >/dev/null 2>&1; then
     echo "[Hook] ERROR: xinit or pam_systemd is missing; the kiosk session cannot start." >&2
     exit 1
 fi

@@ -65,6 +65,32 @@ password_pbkdf2 labkiosk $GRUB_PASSWORD_HASH
 EOF
 fi
 
+# ARCHITECTURE
+# ------------
+# The image is built for the architecture of the machine (or container) that
+# builds it, natively: debootstrap and every chroot hook run that
+# architecture's binaries. LABKIOSK_ARCH names it explicitly, and must then
+# match, unless the host runs the other architecture's binaries through
+# qemu-user (binfmt_misc), which works but takes several times longer.
+#
+# What differs per architecture is in config/arch/<arch>/: the packages
+# (kernel flavour, GRUB, CPU microcode, GPU and VA-API drivers) and the boot
+# loaders live-build puts on the ISO. auto/config copies the package list
+# into config/package-lists/ for this build only; a file there for another
+# architecture would make live-build install packages that do not exist.
+LABKIOSK_ARCH="${LABKIOSK_ARCH:-$(dpkg --print-architecture)}"
+ARCH_DIR="config/arch/$LABKIOSK_ARCH"
+ARCH_PACKAGES="config/package-lists/arch.list.chroot"
+if [ ! -f "$ARCH_DIR/packages.list.chroot" ] || [ ! -f "$ARCH_DIR/bootloaders" ]; then
+    echo "[config] ERROR: no build definition for architecture '$LABKIOSK_ARCH'." >&2
+    echo "[config] Supported: $(ls config/arch | tr '\n' ' ')" >&2
+    echo "[config] See wiki/Building-for-Your-Platform.md to add one." >&2
+    exit 1
+fi
+BOOTLOADERS="$(tr -d '[:space:]' < "$ARCH_DIR/bootloaders")"
+cp "$ARCH_DIR/packages.list.chroot" "$ARCH_PACKAGES"
+echo "[config] Building for $LABKIOSK_ARCH (boot loaders: $BOOTLOADERS)."
+
 # IMAGE SIZE
 # ----------
 # --apt-recommends false: Recommends added printer tools, Samba, Avahi,
@@ -82,7 +108,7 @@ fi
 # --chroot-squashfs-compression-type zstd: the system image is compressed with
 #   zstd instead of live-build's default xz. mksquashfs compresses several times
 #   faster, and every boot and every page the RAM overlay reads from the image
-#   decompresses faster, for a somewhat larger image. Debian 12's kernel reads
+#   decompresses faster, for a somewhat larger image. Debian's kernel reads
 #   zstd squashfs (CONFIG_SQUASHFS_ZSTD); the initrd stays xz (above).
 lb config noauto \
     --apt-recommends false \
@@ -90,13 +116,13 @@ lb config noauto \
     --firmware-binary false \
     --mode debian \
     --system live \
-    --distribution bookworm \
-    --parent-distribution bookworm \
-    --parent-debian-installer-distribution bookworm \
+    --distribution trixie \
+    --parent-distribution trixie \
+    --parent-debian-installer-distribution trixie \
     --archive-areas "main contrib non-free non-free-firmware" \
-    --architectures amd64 \
+    --architectures "$LABKIOSK_ARCH" \
     --binary-images iso-hybrid \
-    --bootloaders "grub-efi,syslinux" \
+    --bootloaders "$BOOTLOADERS" \
     --bootappend-live "boot=live components consoleblank=0 overlayroot=tmpfs:recurse=0 timezone=Asia/Kolkata username=kiosk" \
     --bootappend-live-failsafe "boot=live components nomodeset xforcevesa vga=791 overlayroot=tmpfs:recurse=0 timezone=Asia/Kolkata username=kiosk" \
     --compression gzip \

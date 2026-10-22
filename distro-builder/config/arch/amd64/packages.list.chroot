@@ -1,0 +1,31 @@
+# 64-bit PC: Intel and AMD, one image. auto/config copies this file to
+# config/package-lists/arch.list.chroot for an amd64 build; the packages every
+# architecture shares are in config/package-lists/kiosk.list.chroot.
+
+linux-image-amd64
+
+# Boot loaders: UEFI and legacy BIOS. The live session installs both onto a
+# disk (labkiosk-install), so their modules must be in the image.
+grub-efi-amd64-bin
+grub-pc-bin
+# Recommends-only, and live media must still boot with Secure Boot enabled.
+shim-signed
+grub-efi-amd64-signed
+
+# Hyper-V & Virtualization Integration
+hyperv-daemons
+
+# CPU microcode carries security fixes.
+intel-microcode
+amd64-microcode
+# Audio DSPs: SOF on most Intel laptops and mini-PCs from 2019 on, SST before that.
+firmware-sof-signed
+firmware-intel-sound
+
+# Recommends of xserver-xorg-video-all: Intel iGPUs and QEMU/Proxmox guests.
+xserver-xorg-video-intel
+xserver-xorg-video-qxl
+# Hardware video decoding (VA-API) on Intel: iHD for Broadwell and newer, Arc
+# included; i965 for older Intel. AMD and nouveau use mesa-va-drivers.
+intel-media-va-driver-non-free
+i965-va-driver

@@ -48,9 +48,15 @@ def read(*parts):
         return handle.read()
 
 
-def package_list():
-    return {line.split("#")[0].strip() for line in
-            read(ROOT, "config/package-lists/kiosk.list.chroot").splitlines()} - {""}
+ARCHITECTURES = ("amd64", "arm64")
+
+
+def package_list(arch="amd64"):
+    """The packages an image of `arch` installs: the shared list and its own."""
+    names = set()
+    for path in ("config/package-lists/kiosk.list.chroot", f"config/arch/{arch}/packages.list.chroot"):
+        names |= {line.split("#")[0].strip() for line in read(ROOT, path).splitlines()}
+    return names - {""}
 
 
 def kernel_lines():
@@ -202,6 +208,48 @@ class Hostname(unittest.TestCase):
                       read(ROOT, "config/hooks/live/01-lockdown.hook.chroot"))
 
 
+class Architectures(unittest.TestCase):
+    """One source, an image per architecture: amd64 (Intel and AMD) and arm64."""
+
+    def test_each_architecture_names_its_packages_and_boot_loaders(self):
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "config", "arch"))), sorted(ARCHITECTURES))
+        loaders = {arch: read(ROOT, f"config/arch/{arch}/bootloaders").strip() for arch in ARCHITECTURES}
+        self.assertEqual(loaders, {"amd64": "grub-efi,syslinux", "arm64": "grub-efi"})
+
+    def test_the_shared_list_holds_nothing_of_one_architecture(self):
+        shared = {line.split("#")[0].strip() for line in read(ROOT, "config/package-lists/kiosk.list.chroot").splitlines()} - {""}
+        for arch in ARCHITECTURES:
+            own = package_list(arch) - shared
+            self.assertEqual(shared & {line.split("#")[0].strip() for line in
+                                       read(ROOT, f"config/arch/{arch}/packages.list.chroot").splitlines()}, set(), arch)
+            self.assertTrue(own, arch)
+        for name in shared:
+            self.assertFalse(re.search(r"amd64|arm64|intel|i965|grub-pc|shim|microcode", name), name)
+
+    def test_auto_config_builds_debian_13_for_the_chosen_architecture(self):
+        config = read(ROOT, "auto/config")
+        for option in ("--distribution trixie", "--parent-distribution trixie",
+                       '--architectures "$LABKIOSK_ARCH"', '--bootloaders "$BOOTLOADERS"'):
+            self.assertIn(option, config)
+        self.assertIn('LABKIOSK_ARCH="${LABKIOSK_ARCH:-$(dpkg --print-architecture)}"', config)
+        self.assertIn('cp "$ARCH_DIR/packages.list.chroot" "$ARCH_PACKAGES"', config)
+        self.assertNotIn("bookworm", config)
+
+    def test_the_builder_is_debian_13_and_names_the_iso_by_architecture(self):
+        self.assertIn("FROM debian:trixie-slim", read(ROOT, "Dockerfile"))
+        build = read(ROOT, "docker-build.sh")
+        self.assertIn('ISO_NAME="${ISO_NAME:-labkiosk-debian13-$LABKIOSK_ARCH.iso}"', build)
+        self.assertIn('LB_OUTPUT="live-image-$LABKIOSK_ARCH.hybrid.iso"', build)
+
+    def test_the_installer_boots_each_architecture_through_its_own_shim(self):
+        source = read(CHROOT, "usr/local/bin/labkiosk-install")
+        self.assertIn('EFI_PLATFORMS = {"x86_64": ("x86_64-efi", "shimx64.efi"), "aarch64": ("arm64-efi", "shimaa64.efi")}', source)
+        self.assertIn('HAS_BIOS_BOOT = MACHINE == "x86_64"', source)
+        bios = source.index('"--target=i386-pc"')
+        self.assertIn("if HAS_BIOS_BOOT and not beside", source[source.rindex("\n        if ", 0, bios):bios])
+        self.assertLess(source.index("if EFI_TARGET is None:"), source.index('run_cmd(["wipefs", "-a", "-f", target_disk]'))
+
+
 class SecureBootState(unittest.TestCase):
     """What the wizard's diagnostics say about Secure Boot."""
 
@@ -227,22 +275,24 @@ class SecureBootState(unittest.TestCase):
 
     def test_the_installed_disk_boots_through_the_signed_loaders(self):
         source = read(CHROOT, "usr/local/bin/labkiosk-install")
-        uefi = [block for block in source.split("run_cmd([")[1:] if '"--target=x86_64-efi"' in block]
+        uefi = [block for block in source.split("run_cmd([")[1:] if 'f"--target={EFI_TARGET}"' in block]
         self.assertEqual(len(uefi), 2)
         for block in uefi:
             self.assertIn('"--uefi-secure-boot"', block.split("]")[0])
-        packages = package_list()
-        for package in ("shim-signed", "grub-efi-amd64-signed"):
-            self.assertIn(package, packages)
+        for arch in ARCHITECTURES:
+            packages = package_list(arch)
+            for package in ("shim-signed", f"grub-efi-{arch}-signed", f"grub-efi-{arch}-bin", f"linux-image-{arch}"):
+                self.assertIn(package, packages, arch)
 
 
 class GraphicsAcceleration(unittest.TestCase):
     """Video decoded on the GPU, Intel (Arc included), AMD and Radeon."""
 
     def test_the_va_api_drivers_are_listed(self):
-        packages = package_list()
+        packages = package_list("amd64")
         for package in ("intel-media-va-driver-non-free", "i965-va-driver", "mesa-va-drivers"):
             self.assertIn(package, packages)
+        self.assertIn("mesa-va-drivers", package_list("arm64"))
 
     def test_chromium_uses_them(self):
         autostart = read(CHROOT, "etc/openbox/autostart")
@@ -586,8 +636,9 @@ class EncryptedDataInstall(unittest.TestCase):
 
     def test_systemd_can_reach_the_tpm(self):
         packages = package_list()
-        for package in ("cryptsetup-bin", "libtss2-esys-3.0.2-0", "libtss2-mu0", "libtss2-rc0",
-                        "libtss2-tcti-device0"):
+        # Debian 13's names, after the 64-bit time_t transition.
+        for package in ("cryptsetup-bin", "libtss2-esys-3.0.2-0t64", "libtss2-mu-4.0.1-0t64", "libtss2-rc0t64",
+                        "libtss2-tcti-device0t64"):
             self.assertIn(package, packages)
 
     def test_swap_checks_the_disk_through_the_container(self):
