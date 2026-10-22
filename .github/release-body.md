@@ -33,6 +33,8 @@ A Raspberry Pi also needs its official 5 V / 3 A USB-C power supply (the Pi 400'
 3. The setup wizard connects to your network and registers the workstation with your organization's enrollment key (console: **Settings → Workstation Enrollment Key**).
 4. To keep it, choose **Install to Hard Disk** in the wizard (7 GiB or more). Without that it runs from the stick and keeps nothing at shutdown.
 
+Setting up a whole room? Make a pre-configured stick with your organization, Wi-Fi and language in it, and each machine is one press of **Install**: [Set up many machines from one stick](https://github.com/akbhoi/labkiosk/wiki/Installation-Guide#set-up-many-machines-from-one-stick).
+
 Full steps: [Installation Guide](https://github.com/akbhoi/labkiosk/wiki/Installation-Guide).
 
 **On a Raspberry Pi**

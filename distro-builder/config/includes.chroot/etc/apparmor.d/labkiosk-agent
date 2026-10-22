@@ -52,6 +52,8 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /run/labkiosk-health/disks.json r,
   /run/systemd/timesync/synchronized r,
   /run/live/medium/boot/grub/** r,
+  # A pre-configured install stick's settings (labkiosk-iso.py customize).
+  /run/live/medium/labkiosk/preset.json r,
   @{PROC}/cmdline r,
   # Is a keyboard or a touchscreen attached? (the on-screen keyboard)
   @{PROC}/bus/input/devices r,

@@ -212,7 +212,9 @@ jobs:
   # an ISO that cannot roll back is never published. It also installs with an
   # encrypted data partition sealed to a TPM, beside another system (dual
   # boot), and boots over the network: UEFI PXE with Secure Boot on, and BIOS
-  # iPXE. The groups (tests/vm/boot-test.sh) run side by side, so the wall time
+  # iPXE; and a pre-configured install stick (tools/labkiosk-iso.py) starts
+  # under Secure Boot, installs and registers itself. The groups
+  # (tests/vm/boot-test.sh) run side by side, so the wall time
   # is the slowest group rather than the sum.
   boot-test:
     name: Boot test (${{ matrix.name }})
@@ -230,6 +232,8 @@ jobs:
             groups: slots
           - name: tpm and beside
             groups: tpm,beside
+          - name: preset stick
+            groups: preset
 
     steps:
       - name: Checkout Code
@@ -263,6 +267,7 @@ jobs:
           path: |
             ${{ runner.temp }}/boot-test/*.ppm
             ${{ runner.temp }}/boot-test/*.log
+            ${{ runner.temp }}/boot-test/preset-live/serial.log
           if-no-files-found: ignore
           retention-days: 7
 

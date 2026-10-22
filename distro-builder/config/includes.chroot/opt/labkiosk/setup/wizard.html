@@ -528,6 +528,13 @@
         </div>
       </div>
 
+      <!-- Started from a pre-configured stick (labkiosk-iso.py customize):
+           what it set up, filled in by renderPreset(). -->
+      <div class="status-box status-info" id="preset-notice" role="status" aria-live="polite">
+        <strong id="preset-title"></strong>
+        <ul id="preset-lines" style="margin: 6px 0 0 18px; padding: 0;"></ul>
+      </div>
+
       <!-- Tab switcher for Step 2 -->
       <div class="tabs-nav" id="tabs-nav">
         <button type="button" class="tab-btn active" id="tab-btn-install">
@@ -589,7 +596,10 @@
           </div>
         </div>
 
-        <div class="form-group">
+        <div class="hint-text" id="grub-password-preset" style="display: none; margin-bottom: 18px;" data-i18n="preset.boot-password">
+          The administrator and boot-menu password from this stick is set on the installed workstation.
+        </div>
+        <div class="form-group" id="grub-password-group">
           <label class="form-label">Boot Menu & Admin Password <span style="color: var(--muted); font-weight: 500;" data-i18n="ui.strongly-recommended">(Strongly recommended)</span></label>
           <div style="display: flex; gap: 8px;">
             <input type="password" id="grub-password" class="input-field" autocomplete="new-password"
@@ -669,7 +679,7 @@
             <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.example.com or http://host.docker.internal:8787" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-kiosk-institution-edu">
           </div>
 
-          <div class="form-group" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 18px;">
+          <div class="form-group" id="custom-domain-toggle-group" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 18px;">
             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd;">
               <input type="checkbox" id="toggle-custom-domain" style="width: 16px; height: 16px; accent-color: var(--accent);">
               <span data-i18n="ui.use-custom-domain-hostname">Use custom domain / hostname</span>
@@ -681,7 +691,7 @@
             <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-pc-01">
           </div>
 
-          <div class="form-group">
+          <div class="form-group" id="enrollment-key-group">
             <label class="form-label" data-i18n="ui.workstation-enrollment-key">Workstation Enrollment Key</label>
             <input type="text" id="enrollment-key" class="input-field" required
                    placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false"
@@ -898,6 +908,13 @@
     const btnAdminUnlock = document.getElementById('btn-admin-unlock');
     const btnAdminCancel = document.getElementById('btn-admin-cancel');
     const enrollDesc = document.getElementById('enroll-desc');
+    const presetNotice = document.getElementById('preset-notice');
+    // Set from /api/status when this live session started from a
+    // pre-configured stick: the wizard then opens on Install.
+    let presetActive = false;
+    let presetApplying = false;
+    let presetBootPassword = false;
+    let presetOrganization = '';
     const networkSummary = document.getElementById('network-status-summary');
 
     function showStatus(msg, type = 'info') {
@@ -1414,6 +1431,105 @@
       step1.style.display = 'none';
     }
 
+    // ---- Pre-configured stick --------------------------------------------
+    //
+    // labkiosk-iso.py customize put the organization, Wi-Fi and language on
+    // the stick; the agent applies the Wi-Fi and language and keeps the
+    // registration for the installed system. What is left here is choosing
+    // the drive and pressing Install, which is still what erases it.
+    function renderPreset(preset) {
+      const title = document.getElementById('preset-title');
+      const lines = document.getElementById('preset-lines');
+      const item = (text) => {
+        const li = document.createElement('li');
+        li.textContent = text;
+        lines.appendChild(li);
+      };
+      lines.replaceChildren();
+      if (preset.error) {
+        presetNotice.className = 'status-box status-warn';
+        title.textContent = t('preset.unusable', "This stick's settings could not be used:") + ' ' + preset.error;
+        item(t('preset.by-hand', 'Set this workstation up with the steps below.'));
+        presetNotice.style.display = 'block';
+        return;
+      }
+      const problems = preset.problems || [];
+      presetNotice.className = 'status-box ' + (problems.length ? 'status-warn' : 'status-info');
+      title.textContent = preset.applying
+        ? t('preset.applying', 'This stick is pre-configured. Applying its settings…')
+        : t('preset.ready', 'This stick is pre-configured. Check the drive below and press Install.');
+      if (preset.organization) {
+        item(t('preset.organization', 'Organization:') + ' ' + preset.organization + ' — ' +
+          t('preset.registers-itself', 'the workstation registers itself when it first starts from the drive.'));
+      }
+      if (preset.wifiSsid) item(t('preset.wifi', 'Wi-Fi:') + ' ' + preset.wifiSsid);
+      if (preset.timezone) item(t('preset.timezone', 'Time zone:') + ' ' + preset.timezone);
+      if (preset.locale) item(t('preset.locale', 'Locale:') + ' ' + preset.locale);
+      if (preset.keymap) item(t('preset.keymap', 'Keyboard:') + ' ' + preset.keymap);
+      problems.forEach(problem => item('⚠️ ' + problem));
+      presetNotice.style.display = 'block';
+    }
+
+    function applyPresetState(preset) {
+      presetApplying = !!preset.applying;
+      renderPreset(preset);
+      if (!presetApplying && availableDisks.length && !targetDiskSelect.disabled) {
+        startInstallBtn.disabled = false;
+      }
+    }
+
+    function enterPresetMode(preset) {
+      presetActive = true;
+      presetBootPassword = !!preset.bootPassword;
+      presetOrganization = preset.organization || '';
+      applyPresetState(preset);
+
+      stepLocale.style.display = 'none';
+      step1.style.display = 'none';
+      step2.style.display = 'block';
+      if (stepNavLocale) {
+        stepNavLocale.classList.remove('active');
+        stepNavLocale.classList.add('completed');
+      }
+      stepNav1.classList.remove('active');
+      stepNav1.classList.add('completed');
+      stepNav2.classList.add('active');
+      tabBtnInstall.click();
+
+      if (presetBootPassword) {
+        document.getElementById('grub-password-group').style.display = 'none';
+        document.getElementById('grub-password-preset').style.display = 'block';
+      }
+      if (presetOrganization) {
+        // The key stays with the agent; the form only names the workstation.
+        ['subdomain-group', 'custom-domain-group', 'custom-domain-toggle-group', 'enrollment-key-group']
+          .forEach(id => { document.getElementById(id).style.display = 'none'; });
+        organizationSubdomainInput.required = false;
+        customDomainInput.required = false;
+        enrollmentKeyInput.required = false;
+        enrollDesc.textContent = t('preset.enroll-desc', 'Register this live session with the organization on this stick:') +
+          ' ' + presetOrganization + '.';
+      }
+
+      if (presetApplying) {
+        const poll = setInterval(async () => {
+          try {
+            const res = await fetch('http://127.0.0.1:8888/api/status');
+            if (!res.ok) return;
+            const latest = (await res.json()).preset;
+            if (!latest || latest.error) return;
+            applyPresetState(latest);
+            if (!latest.applying) {
+              clearInterval(poll);
+              loadNetworkStatus();
+            }
+          } catch {
+            // The agent is restarting; the next poll asks again.
+          }
+        }, 2000);
+      }
+    }
+
     async function loadInitialState() {
       try {
         const res = await fetch('http://127.0.0.1:8888/api/status');
@@ -1446,9 +1562,12 @@
           const badge = document.getElementById('wizard-badge');
           if (isLive) {
             if (badge) badge.textContent = t('ui.js.live-installer-setup', 'LIVE INSTALLER & SETUP');
-            if (data.installRequested) {
+            if (data.preset && !data.preset.error && !isStandaloneNetwork && !isStandaloneLocale) {
+              enterPresetMode(data.preset);
+            } else if (data.installRequested) {
               tabBtnInstall.click();
             }
+            if (data.preset && data.preset.error) renderPreset(data.preset);
           } else {
             if (data.isNetworkBoot) {
               if (badge) badge.textContent = t('ui.js.network-boot', 'NETWORK BOOT');
@@ -1513,7 +1632,7 @@
       } catch (err) {
         // The rest of the wizard still works; only this step cannot be offered.
         stepLocale.style.display = 'none';
-        if (!isStandaloneNetwork && !isStandaloneLocale) step1.style.display = 'block';
+        if (!isStandaloneNetwork && !isStandaloneLocale && !presetActive) step1.style.display = 'block';
         if (stepNavLocale) stepNavLocale.style.display = 'none';
       }
 
@@ -1987,7 +2106,9 @@
             opt.textContent = `${d.path} — ${d.size} (${d.model})${suffix}`;
             targetDiskSelect.appendChild(opt);
           });
-          startInstallBtn.disabled = false;
+          // Not before the stick's Wi-Fi and language are in place: the
+          // installer copies them onto the drive.
+          startInstallBtn.disabled = presetApplying;
           updateInstallMode();
         }
       } catch {
@@ -2088,7 +2209,7 @@
       }
 
       const grubPassword = grubPasswordInput.value;
-      if (!grubPassword) {
+      if (!grubPassword && !presetBootPassword) {
         if (!confirm('No administrator/boot menu password was set.\n\nWithout one, physical and network settings access will remain unlocked.\n\nInstall anyway?')) {
           return;
         }
@@ -2327,10 +2448,12 @@
       // Normalised again rather than trusted: the field may have been filled by
       // something that never raised an input event.
       const enrollmentKey = normaliseEnrollmentKey(enrollmentKeyInput.value);
+      // The stick's organization and key, which the agent fills in.
+      const usePreset = presetActive && !!presetOrganization;
 
       // A key that cannot be one is refused here, at once: nothing is sent, so
       // it costs no failed attempt against the organization's enrolment limit.
-      const keyProblem = enrollmentKeyProblem(enrollmentKey);
+      const keyProblem = usePreset ? null : enrollmentKeyProblem(enrollmentKey);
       if (keyProblem) {
         formatEnrollmentKeyField();
         showStatus(
@@ -2355,9 +2478,14 @@
       };
 
       try {
-        const payload = { clientId, enrollmentKey };
-        if (isCustom) payload.customDomain = customDomain;
-        else payload.subdomain = subdomain;
+        const payload = { clientId };
+        if (usePreset) {
+          payload.usePreset = true;
+        } else {
+          payload.enrollmentKey = enrollmentKey;
+          if (isCustom) payload.customDomain = customDomain;
+          else payload.subdomain = subdomain;
+        }
 
         const headers = { 'Content-Type': 'application/json' };
         if (adminToken) headers['X-LabKiosk-Admin'] = adminToken;
@@ -2381,9 +2509,9 @@
           const lasting = data.persistent !== false;
           showStatus(
             lasting
-              ? 'Successfully connected to ' + (data.organizationName || subdomain || customDomain) +
+              ? 'Successfully connected to ' + (data.organizationName || subdomain || customDomain || presetOrganization) +
                 ' as ' + (data.clientId || clientId) + '. Entering locked user kiosk mode...'
-              : 'Connected to ' + (data.organizationName || subdomain || customDomain) + ' as ' +
+              : 'Connected to ' + (data.organizationName || subdomain || customDomain || presetOrganization) + ' as ' +
                 (data.clientId || clientId) + ', but it was not saved. ' + (data.warning || ''),
             lasting ? 'success' : 'warn'
           );

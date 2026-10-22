@@ -83,14 +83,17 @@
 # image, its boot menu and its kernel command line have no way to shorten the
 # deadline, so nothing in the field can use one to skip the health check.
 #
-# The scenarios come in three groups, which CI runs as parallel jobs, each on
+# The scenarios come in four groups, which CI runs as parallel jobs, each on
 # its own runner from the same ISO; BOOT_TEST_GROUPS (comma-separated) picks
-# them, all three by default:
+# them, all four by default:
 #   slots   the image's phase 3 wiring, the install and scenarios 1 to 9
 #   tpm     scenario 10
 #   beside  scenarios 11 to 13
+#   preset  scenario 14: a pre-configured install stick (tools/labkiosk-iso.py)
+#           started under Secure Boot from USB, its live session installing,
+#           and the installed workstation registering itself
 #
-# Usage: sudo [BOOT_TEST_GROUPS=slots,tpm,beside] distro-builder/tests/vm/boot-test.sh \
+# Usage: sudo [BOOT_TEST_GROUPS=slots,tpm,beside,preset] distro-builder/tests/vm/boot-test.sh \
 #            path/to/labkiosk-debian13-amd64.iso [workdir]
 set -euo pipefail
 
@@ -113,7 +116,7 @@ RECOVER_SECONDS=240
 TEST_HEALTH_DEADLINE=120
 UNHEALTHY_MIN=$TEST_HEALTH_DEADLINE
 UNHEALTHY_TIMEOUT=$((TEST_HEALTH_DEADLINE + 600))
-ALL_GROUPS="slots tpm beside"
+ALL_GROUPS="slots tpm beside preset"
 BOOT_TEST_GROUPS="${BOOT_TEST_GROUPS:-${ALL_GROUPS// /,}}"
 
 DISK="$WORK/disk.img"
@@ -1080,6 +1083,166 @@ wait "$NETBOOT_PID" 2>/dev/null || true
 NETBOOT_PID=""
 
 fi # end of group beside
+
+# ==========================================================================
+# Group preset: a pre-configured install stick (scenario 14). Not indented;
+# it ends at the matching "end of group preset".
+# ==========================================================================
+if in_group preset; then
+
+# The organization and time zone are also tests/vm/preset_check.sh's.
+PRESET_ORG="preset-test"
+PRESET_KEY="AAAAA-AAAAA-AAAAA-AAAAA"
+PRESET_TIMEZONE="Europe/Berlin"
+PRESET_HASH="grub.pbkdf2.sha512.10000.$(printf 'AB%.0s' {1..32}).$(printf 'CD%.0s' {1..64})"
+PRESET_ISO="$WORK/preset.iso"
+# live-smoke-test.sh tells the architecture from the name.
+PRESET_CHECK_ISO="$WORK/preset-check-amd64.iso"
+PRESET_DISK="$WORK/disk-preset.img"
+PRESET_EVENTS="$WORK/preset-events.jsonl"
+PRESET_TIMEOUT=900
+
+log "14. preset: the release ISO customized with tools/labkiosk-iso.py"
+if python3 "$HERE/../../tools/labkiosk-iso.py" customize --iso "$ISO" --out "$PRESET_ISO" \
+        --org "$PRESET_ORG" --key "$PRESET_KEY" --control-plane http://10.0.2.2 \
+        --timezone "$PRESET_TIMEZONE" --keymap de --admin-hash "$PRESET_HASH"; then
+    pass "preset: customized; its boot records are the release's (the tool compares them)"
+else
+    die "preset: labkiosk-iso.py customize failed"
+fi
+
+# 14b. Written to a USB stick and started by the firmware, Secure Boot on: the
+# shim, GRUB and kernel the release signed, from the copy. The guest's DHCP
+# request, captured on its network card, carries the hostname labkiosk-hostname
+# gives it, which only a booted Lab Kiosk userspace sends.
+log "14b. preset: the customized ISO starts from a USB stick with Secure Boot on"
+start_vm none \
+    -drive "if=none,id=stick,format=raw,readonly=on,file=$PRESET_ISO" \
+    -device qemu-xhci -device usb-storage,drive=stick,removable=on \
+    -netdev user,id=sticknet -device virtio-net-pci,netdev=sticknet \
+    -object filter-dump,id=stickdump,netdev=sticknet,file="$WORK/stick.pcap"
+dhcp_hostname() {
+    python3 - "$WORK/stick.pcap" <<'PY'
+import struct, sys
+try:
+    data = open(sys.argv[1], "rb").read()
+except OSError:
+    sys.exit(1)
+offset = 24  # pcap global header
+while offset + 16 <= len(data):
+    incl = struct.unpack_from("<I", data, offset + 8)[0]
+    frame = data[offset + 16 : offset + 16 + incl]
+    offset += 16 + incl
+    if len(frame) < 42 or frame[12:14] != b"\x08\x00" or frame[23] != 17:
+        continue
+    ip_len = (frame[14] & 0x0F) * 4
+    udp = frame[14 + ip_len :]
+    if len(udp) < 8 or struct.unpack_from(">HH", udp, 0) != (68, 67):
+        continue
+    options = udp[8 + 240 :]
+    i = 0
+    while i + 1 < len(options) and options[i] != 255:
+        code, size = options[i], options[i + 1]
+        if code == 12:
+            print(options[i + 2 : i + 2 + size].decode("ascii", "replace"))
+            sys.exit(0)
+        i += 2 + size if code else 1
+sys.exit(1)
+PY
+}
+stick_host=""
+deadline=$((SECONDS + PRESET_TIMEOUT))
+while [ "$SECONDS" -lt "$deadline" ] && vm_running; do
+    if stick_host="$(dhcp_hostname)" && [[ "$stick_host" == labkiosk-* ]]; then
+        break
+    fi
+    stick_host=""
+    sleep 10
+done
+if [ -n "$stick_host" ]; then
+    pass "preset: started from the stick under Secure Boot and asked for an address as $stick_host"
+else
+    screenshot preset-stick
+    fail "preset: no DHCP request from a booted Lab Kiosk within $PRESET_TIMEOUT s of starting from the stick"
+fi
+stop_vm
+
+# 14c. The live session from the stick, with an empty drive: the agent must
+# have applied the settings by itself; then Install is pressed, as the
+# wizard's button does, with no password (the stick's is used).
+log "14c. preset: the live session applies the settings and installs"
+xorriso -indev "$PRESET_ISO" -outdev "$PRESET_CHECK_ISO" -boot_image any replay \
+    -map "$HERE/preset_check.sh" /labkiosk-test/check.sh >/dev/null 2>&1 \
+    || die "could not add the check script to a copy of the customized ISO"
+truncate -s "$DISK_SIZE" "$PRESET_DISK"
+if SMOKE_TIMEOUT=2400 SMOKE_CHECK=/labkiosk-test/check.sh SMOKE_DISK="$PRESET_DISK" \
+        "$HERE/live-smoke-test.sh" "$PRESET_CHECK_ISO" "$WORK/preset-live"; then
+    pass "preset: the live session applied the time zone, kept the enrolment and installed on one request"
+else
+    fail "preset: the live session from the stick did not apply its settings or install (preset-live/serial.log)"
+fi
+
+# 14d. The installed drive registers itself at its first start, under its own
+# hostname, with the stand-in control plane, and forgets the key.
+if [ "$FAILED" -eq 0 ]; then
+    log "14d. preset: the installed workstation registers itself"
+    mkdir -p "$WORK/preset-www"
+    : > "$PRESET_EVENTS"
+    python3 "$HERE/netboot_server.py" "$WORK/preset-www" "$PRESET_EVENTS" "$PRESET_ORG" "$PRESET_KEY" \
+        2> "$WORK/preset-server.log" &
+    NETBOOT_PID=$!
+    sleep 1
+    kill -0 "$NETBOOT_PID" 2>/dev/null || die "the control plane stand-in did not start: $(cat "$WORK/preset-server.log")"
+    VM_SERIAL="file:$WORK/preset-disk-serial.log" start_vm "$PRESET_DISK"
+    client=""
+    deadline=$((SECONDS + PRESET_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ] && vm_running; do
+        if client="$(python3 "$HERE/check_netboot_events.py" < "$PRESET_EVENTS")"; then
+            break
+        fi
+        client=""
+        sleep 5
+    done
+    if [[ "$client" =~ ^LABKIOSK-[0-9A-F]{6}$ ]]; then
+        pass "preset: the installed workstation enrolled by itself as $client and sent heartbeats"
+    else
+        screenshot preset-disk
+        fail "preset: the installed workstation did not register (client '$client')"
+        tail -n 40 "$WORK/preset-server.log" | cut -c1-200
+        serial_tail "$WORK/preset-disk-serial.log"
+    fi
+    # Its heartbeats are in; give it a moment to delete the key, then look.
+    sleep 15
+    stop_vm
+    kill "$NETBOOT_PID"
+    wait "$NETBOOT_PID" 2>/dev/null || true
+    NETBOOT_PID=""
+
+    preset_root="$(partition_offset "$PRESET_DISK" ROOT)"
+    preset_data="$(partition_offset "$PRESET_DISK" DATA)"
+    if debugfs -R "cat /boot/grub/labkiosk-password.cfg" "$PRESET_DISK?offset=$preset_root" 2>/dev/null \
+            | grep -qF "$PRESET_HASH"; then
+        pass "preset: the stick's administrator password is the installed boot menu's"
+    else
+        fail "preset: the installed boot menu does not have the stick's password"
+    fi
+    data_files="$(debugfs -R "ls -p /" "$PRESET_DISK?offset=$preset_data" 2>/dev/null)"
+    if grep -q "/preset-enrolment.json/" <<< "$data_files"; then
+        fail "preset: the enrollment key is still on the data partition after enrolling"
+    elif ! grep -q "/config.json/" <<< "$data_files"; then
+        fail "preset: no enrolment on the data partition"
+    else
+        pass "preset: the enrolment is on the data partition and the key is gone"
+    fi
+    if debugfs -R "cat /localization.json" "$PRESET_DISK?offset=$preset_data" 2>/dev/null \
+            | grep -q "\"timezone\": \"$PRESET_TIMEZONE\""; then
+        pass "preset: the installed workstation keeps the stick's time zone"
+    else
+        fail "preset: the stick's time zone did not reach the installed workstation"
+    fi
+fi
+
+fi # end of group preset
 
 if [ "$FAILED" -ne 0 ]; then
     log "Some scenarios failed; screenshots (if any) are in $WORK"

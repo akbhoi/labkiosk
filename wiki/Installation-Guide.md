@@ -174,7 +174,34 @@ Software cannot defend against someone who simply boots something else.
 
 ## Step 6 — Repeat, and verify the lab
 
-For each remaining machine: boot the USB, install, reboot, enrol with the next identifier.
+For each remaining machine: boot the USB, install, reboot, enrol with the next identifier. For more than a few, make a pre-configured stick first (next section): each machine is then one press of **Install**.
+
+### Set up many machines from one stick
+
+`distro-builder/tools/labkiosk-iso.py` writes your organization, enrollment key, Wi-Fi and language into a copy of the release ISO. A machine started from that stick:
+
+- applies the Wi-Fi, time zone, locale and keyboard by itself;
+- opens the wizard on **Install to Hard Disk**, with the drive listed and a box saying what the stick set up;
+- installs when you press **Install** and confirm (nothing is erased without that);
+- registers itself with your organization at its first start from the drive, under its own name (`LABKIOSK-3FA92C`), and then deletes the key from the drive.
+
+```bash
+LABKIOSK_WIFI_PASSWORD='the Wi-Fi passphrase' \
+python3 distro-builder/tools/labkiosk-iso.py customize \
+  --iso labkiosk-debian13-amd64.iso --out labkiosk-oakridge.iso \
+  --org oakridge --key XXXXX-XXXXX-XXXXX-XXXXX \
+  --wifi-ssid "Oakridge Staff" \
+  --timezone Asia/Kolkata --locale en_IN.UTF-8 --keymap us \
+  --admin-hash grub.pbkdf2.sha512.10000.<salt>.<hash>
+```
+
+Every setting is optional; give only what you want filled in. Without `LABKIOSK_WIFI_PASSWORD` the tool asks for the passphrase, so it stays out of your shell history. `--admin-hash` (from `grub-mkpasswd-pbkdf2`) sets the administrator and boot-menu password on every machine; leave it out to type one per machine. `--domain` replaces `--org` for a custom domain, `--control-plane` names a control plane other than the platform's, and `--wifi-hidden` / `--wifi-security wpa3|open` describe the network. The interface language is not on the stick: its translations come from your organization's server once a workstation is registered. Run `--help` for the full list, and `labkiosk-iso.py show --iso labkiosk-oakridge.iso` to see what a stick holds (key and passphrase masked).
+
+The tool checks every value the way the workstation will, refuses to overwrite a file, changes nothing else in the ISO, and checks that the copy boots exactly like the release (BIOS, UEFI and Secure Boot) before keeping it. Write the result to USB sticks as you would the release. It needs Python 3 and `xorriso`: on Linux `sudo apt install xorriso`, on macOS `brew install xorriso`, on Windows inside WSL.
+
+**The stick holds the enrollment key and the Wi-Fi passphrase in plain text.** Keep it like a key to the building, and if one goes missing, generate a new enrollment key in the console (**Settings → Workstation Enrollment Key**); machines already registered are not affected.
+
+If a setting cannot be applied (the Wi-Fi is out of range, say), the box in the wizard says so and the rest still applies; set that part by hand with **← Reconfigure Network**. **Live Preview & Enroll** also uses the stick's organization, so a machine you only want to try out registers with one click too.
 
 Then, from the admin console:
 

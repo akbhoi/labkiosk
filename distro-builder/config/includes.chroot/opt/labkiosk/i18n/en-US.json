@@ -261,5 +261,17 @@
   "keyboard.space": "Space",
   "keyboard.symbols": "?123",
   "keyboard.tab": "Tab",
-  "keyboard.title": "On-screen keyboard"
+  "keyboard.title": "On-screen keyboard",
+  "preset.applying": "This stick is pre-configured. Applying its settings…",
+  "preset.boot-password": "The administrator and boot-menu password from this stick is set on the installed workstation.",
+  "preset.by-hand": "Set this workstation up with the steps below.",
+  "preset.enroll-desc": "Register this live session with the organization on this stick:",
+  "preset.keymap": "Keyboard:",
+  "preset.locale": "Locale:",
+  "preset.organization": "Organization:",
+  "preset.ready": "This stick is pre-configured. Check the drive below and press Install.",
+  "preset.registers-itself": "the workstation registers itself when it first starts from the drive.",
+  "preset.timezone": "Time zone:",
+  "preset.unusable": "This stick's settings could not be used:",
+  "preset.wifi": "Wi-Fi:"
 }

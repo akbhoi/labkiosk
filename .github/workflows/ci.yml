@@ -366,6 +366,7 @@ jobs:
             distro-builder/config/includes.chroot/etc/NetworkManager/dispatcher.d/50-labkiosk-ntp \
             distro-builder/tests/vm/boot-test.sh \
             distro-builder/tests/vm/live-smoke-test.sh \
+            distro-builder/tests/vm/preset_check.sh \
             docker-test/entrypoint.sh
 
   # The control plane is deployed from main by deploy-cloudflare.yml, called
