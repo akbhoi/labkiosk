@@ -2,7 +2,7 @@
 
 The client OS is produced by Debian `live-build`, driven either from a container (any host) or natively on a Debian/Ubuntu machine.
 
-**Output:** `distro-builder/out/labkiosk-debian12-amd64.iso` and its `.sha256`.
+**Output:** `distro-builder/out/labkiosk-debian13-<arch>.iso` and its `.sha256`, for the architecture of the machine that builds it: `amd64` (Intel and AMD) or `arm64`. Building for another architecture, or adding one: [Building for Your Platform](Building-for-Your-Platform).
 
 ---
 
@@ -33,7 +33,7 @@ podman machine stop && podman machine set --rootful && podman machine start
 Verify before starting a long build:
 
 ```bash
-docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'
+docker run --rm --privileged debian:trixie-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'
 ```
 
 > Rootful and rootless keep **separate image stores**, so images pulled before the switch will not be listed afterwards. Reverse with `podman machine set --rootful=false`.
@@ -57,14 +57,14 @@ Without it the build context carries `chroot/`, `cache/`, and every previously b
 
 ## Method 2 — Native Debian / Ubuntu / WSL2
 
-On Debian 12 (Bookworm) or Ubuntu 22.04+:
+On Debian 13 (Trixie), amd64 or arm64. The live-build of older releases, and of Ubuntu, may not know trixie: use the container there.
 
 ```bash
-sudo apt-get update && sudo apt-get install -y live-build debootstrap
-
 cd distro-builder
 sudo bash build-iso.sh
 ```
+
+`build-iso.sh` installs live-build and this architecture's boot loader tools itself.
 
 ---
 
@@ -72,18 +72,18 @@ sudo bash build-iso.sh
 
 ### Package manifest
 
-`config/package-lists/kiosk.list.chroot` is deliberately minimal:
+`config/package-lists/kiosk.list.chroot` holds what every architecture installs, and `config/arch/<arch>/packages.list.chroot` what only one does (its kernel, boot loaders, microcode, and on amd64 the Intel audio and video drivers and Hyper-V daemons); `auto/config` adds the second to the first. Both are deliberately minimal:
 
 | Group | Packages |
 | :--- | :--- |
-| Kernel & live boot | `linux-image-amd64`, `live-boot`, `live-config`, `live-config-systemd`, `live-tools`, `eject`, `overlayroot`, `systemd-sysv` |
-| Boot & partitioning | `grub-efi-amd64-bin`, `grub-pc-bin`, `grub-common`, `grub2-common`, `shim-signed`, `grub-efi-amd64-signed`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo`, `xz-utils` |
-| Virtualisation | `hyperv-daemons` |
-| Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree` (includes Intel Arc and NVIDIA nouveau), `firmware-realtek`, `firmware-iwlwifi`, `firmware-amd-graphics`, `firmware-sof-signed`, `firmware-intel-sound`, `firmware-atheros`, `firmware-ath9k-htc`, `firmware-brcm80211`, `firmware-libertas`, `firmware-ti-connectivity`, `firmware-zd1211`, `firmware-bnx2`, `firmware-bnx2x` |
-| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `intel-media-va-driver-non-free`, `i965-va-driver`, `mesa-va-drivers` (hardware video decoding: Intel, Arc included, AMD/Radeon and nouveau), `xinit`, `libpam-systemd` (the kiosk session's logind registration, which lets X run without root), `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
+| Kernel & live boot | `linux-image-amd64` or `linux-image-arm64` (per architecture), `live-boot`, `live-config`, `live-config-systemd`, `live-tools`, `eject`, `overlayroot`, `systemd-sysv` |
+| Boot & partitioning | amd64: `grub-efi-amd64-bin`, `grub-pc-bin`, `shim-signed`, `grub-efi-amd64-signed`; arm64: `grub-efi-arm64-bin`, `shim-signed`, `grub-efi-arm64-signed`; both: `grub-common`, `grub2-common`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo`, `xz-utils` |
+| Virtualisation | `hyperv-daemons` (amd64) |
+| Firmware | amd64: `intel-microcode`, `amd64-microcode`, `firmware-sof-signed`, `firmware-intel-sound`; both: `firmware-linux-free`, `firmware-misc-nonfree` (includes Intel Arc and NVIDIA nouveau), `firmware-realtek`, `firmware-iwlwifi`, `firmware-amd-graphics`, `firmware-atheros`, `firmware-ath9k-htc`, `firmware-brcm80211`, `firmware-libertas`, `firmware-ti-connectivity`, `firmware-zd1211`, `firmware-bnx2`, `firmware-bnx2x` |
+| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa}`, `xserver-xorg-input-all`, `mesa-va-drivers`; amd64 also `xserver-xorg-video-{intel,qxl}`, `intel-media-va-driver-non-free`, `i965-va-driver` (hardware video decoding: Intel, Arc included, AMD/Radeon and nouveau), `xinit`, `libpam-systemd` (the kiosk session's logind registration, which lets X run without root), `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji`, `fonts-noto-cjk` (Chinese, Japanese and Korean) |
 | Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
-| Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot, and the data partition, encrypted with the TPM), `libtss2-esys-3.0.2-0`, `libtss2-mu0`, `libtss2-rc0`, `libtss2-tcti-device0` (what systemd needs to reach the TPM) |
+| Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot, and the data partition, encrypted with the TPM), `libtss2-esys-3.0.2-0t64`, `libtss2-mu-4.0.1-0t64`, `libtss2-rc0t64`, `libtss2-tcti-device0t64` (what systemd needs to reach the TPM; trixie's names after the 64-bit `time_t` transition) |
 | Security & health | `nftables` (the firewall, and the LAN update sharing rule), `apparmor` (profiles for the agent and x11vnc), `smartmontools` (`labkiosk-health`'s disk checks; its own daemon is masked), `gpgv` (verifies downloaded system images) |
 | Printing | `cups-daemon`, `cups-client`, `cups-filters-core-drivers`: driverless IPP Everywhere printing to the organization's network printers, masked until an administrator turns printing on (see below) |
 
@@ -130,7 +130,9 @@ Size: Debian's archive could not be reached when this was added, so these figure
 | Firmware | Config | Notes |
 | :--- | :--- | :--- |
 | Legacy BIOS | `config/bootloaders/isolinux/`, `syslinux/` | `ALLOWOPTIONS 0` + `NOESCAPE 1` in `stdmenu.cfg` means syslinux discards any kernel argument typed at the prompt — no password needed |
-| UEFI | `config/bootloaders/grub-pc/` | Password applied from `LABKIOSK_GRUB_PBKDF2` or `grub.pin` when present |
+| UEFI | `config/bootloaders/grub-pc/` | Password applied from `LABKIOSK_GRUB_PBKDF2` or `grub.pin` when present. The only firmware on arm64 |
+
+Which of them an image carries is `config/arch/<arch>/bootloaders`: `grub-efi,syslinux` on amd64, `grub-efi` on arm64.
 
 The menu offers a default entry, a **Load into RAM (toram)** entry, an **Install to Hard Disk** entry, and a failsafe entry.
 
@@ -184,7 +186,7 @@ shellcheck -S warning \
 
 ## CI
 
-`.github/workflows/build-iso.yml` builds the ISO on version tags (`v*`) and on manual dispatch, frees disk space on the runner only when it is short, warns when a release build has no GRUB password pinned, verifies the checksum, and uploads the artifact. It then boot-tests the ISO before any release: `distro-builder/tests/vm/boot-test.sh` installs it onto a virtual disk with the real installer and boots that disk in QEMU (UEFI, KVM) to prove the one-try boot, the promotion of a new image and both kinds of rollback. It then downloads a release signed with a throwaway key onto that disk with the image's own `labkiosk-update`: a download killed halfway is never booted and resumes, a tampered manifest and a signed downgrade are refused, and the finished download installs and is promoted. The boot test runs as parallel jobs, each on its own runner from the same ISO artifact. A failing scenario uploads VM screenshots, and no GitHub Release is created. On a tag, the release is then signed and uploaded to R2 as an over-the-air update ([distro-builder README](https://github.com/akbhoi/labkiosk/blob/main/distro-builder/README.md#-over-the-air-releases)). → [Testing Guide](Testing-Guide#boot-test-of-the-installed-disk)
+`.github/workflows/build-iso.yml` builds one ISO per architecture, each on a runner of its own (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64), on version tags (`v*`) and on manual dispatch. The arm64 ISO gets `distro-builder/tests/vm/live-smoke-test.sh`, which boots its kernel in QEMU and waits for the agent and Chromium; the amd64 ISO gets the full boot test below. For each, it frees disk space on the runner only when it is short, warns when a release build has no GRUB password pinned, verifies the checksum, and uploads the artifact. It then boot-tests the ISO before any release: `distro-builder/tests/vm/boot-test.sh` installs it onto a virtual disk with the real installer and boots that disk in QEMU (UEFI, KVM) to prove the one-try boot, the promotion of a new image and both kinds of rollback. It then downloads a release signed with a throwaway key onto that disk with the image's own `labkiosk-update`: a download killed halfway is never booted and resumes, a tampered manifest and a signed downgrade are refused, and the finished download installs and is promoted. The boot test runs as parallel jobs, each on its own runner from the same ISO artifact. A failing scenario uploads VM screenshots, and no GitHub Release is created. On a tag, the release is then signed and uploaded to R2 as an over-the-air update ([distro-builder README](https://github.com/akbhoi/labkiosk/blob/main/distro-builder/README.md#-over-the-air-releases)). → [Testing Guide](Testing-Guide#boot-test-of-the-installed-disk)
 
 `.github/workflows/ci.yml` runs on every push: both Docker images build (no push), the worker is typechecked and tested, and the client checks above all run.
 
@@ -198,7 +200,7 @@ Minimum 2 GB.
 - **macOS / Linux:** balenaEtcher, or:
 
 ```bash
-sudo dd if=distro-builder/out/labkiosk-debian12-amd64.iso of=/dev/sdX \
+sudo dd if=distro-builder/out/labkiosk-debian13-amd64.iso of=/dev/sdX \
   bs=4M status=progress conv=fsync
 ```
 

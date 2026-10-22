@@ -26,7 +26,7 @@ export const RELEASES_URL = `https://github.com/${RELEASES_REPO}/releases`;
 /**
  * The files every release carries (the "Create GitHub Release" step of
  * build-iso.yml): an ISO per architecture, labkiosk-debian<N>-<arch>.iso for
- * the Debian release N it is built on, each beside its .sha256. Up to 4.0
+ * the Debian release N it is built on, each beside its .sha256. Up to 4.x
  * that is labkiosk-debian12-amd64.iso alone.
  */
 export const RELEASE_ISO_NAME = "labkiosk-debian13-amd64.iso";

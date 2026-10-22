@@ -319,13 +319,13 @@ class Notes(unittest.TestCase):
     def test_a_change_on_every_architecture_is_listed_once(self):
         arm64 = STATUS.replace("Architecture: amd64", "Architecture: arm64")
         fixed = "154.0.8037.121-1~deb12u1"
-        text = rebuild.notes("v4.1.0", "4.1.1", [STATUS, arm64],
+        text = rebuild.notes("v5.0.0", "5.0.1", [STATUS, arm64],
                              [STATUS.replace("154.0.8037.92-1~deb12u1", fixed),
                               arm64.replace("154.0.8037.92-1~deb12u1", fixed).replace("3.0.17-1~deb12u2", "3.0.18-1")])
         self.assertEqual(text.count("| `chromium` |"), 1)
         self.assertIn("| `libssl3` | `3.0.17-1~deb12u2` | `3.0.18-1` |", text, "a change on one architecture is listed")
         with self.assertRaises(ValueError):
-            rebuild.notes("v4.1.0", "4.1.1", [STATUS, arm64], [STATUS])
+            rebuild.notes("v5.0.0", "5.0.1", [STATUS, arm64], [STATUS])
 
 
 AUTO_CONFIG_TRIXIE = """\
@@ -335,7 +335,7 @@ lb config noauto \\
     "${@}"
 """
 AUTO_CONFIG_BOOKWORM = AUTO_CONFIG_TRIXIE.replace("trixie", "bookworm")
-LINE = {"line": "4.1", "tag": "v4.1.0", "base": "4.1.0", "version": "4.1.1", "newest": True}
+LINE = {"line": "5.0", "tag": "v5.0.0", "base": "5.0.0", "version": "5.0.1", "newest": True}
 
 
 class Platforms(unittest.TestCase):
@@ -373,13 +373,13 @@ class Platforms(unittest.TestCase):
         self.assertEqual([target["arch"] for target in found["architectures"]], ["amd64", "arm64"])
 
     def test_every_build_of_a_line_shares_its_version_and_time(self):
-        platforms = {"v4.1.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
+        platforms = {"v5.0.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
             "amd64/bootloaders", "amd64/packages.list.chroot", "arm64/bootloaders", "arm64/packages.list.chroot"]),
             "v4.0.3": rebuild.source_platforms(AUTO_CONFIG_BOOKWORM, [])}
         old = {"line": "4.0", "tag": "v4.0.3", "base": "4.0.3", "version": "4.0.4", "newest": False}
         builds = rebuild.plan_builds([LINE, old], platforms, 1790000000)
         self.assertEqual([(b["version"], b["arch"], b["suite"]) for b in builds], [
-            ("4.1.1", "amd64", "trixie-security"), ("4.1.1", "arm64", "trixie-security"),
+            ("5.0.1", "amd64", "trixie-security"), ("5.0.1", "arm64", "trixie-security"),
             ("4.0.4", "amd64", "bookworm-security")])
         self.assertEqual({b["epoch"] for b in builds}, {1790000000})
         self.assertEqual(builds[1]["runner"], "ubuntu-24.04-arm")
@@ -389,29 +389,29 @@ class Platforms(unittest.TestCase):
 
 class Decide(unittest.TestCase):
     def setUp(self):
-        platforms = {"v4.1.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
+        platforms = {"v5.0.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
             "amd64/bootloaders", "amd64/packages.list.chroot", "arm64/bootloaders", "arm64/packages.list.chroot"])}
         self.builds = rebuild.plan_builds([LINE], platforms, 1790000000)
 
     def test_a_fix_on_one_architecture_rebuilds_the_line_on_every_one(self):
-        decided = rebuild.decide(self.builds, [{"version": "4.1.1", "arch": "amd64", "outdated": 0},
-                                               {"version": "4.1.1", "arch": "arm64", "outdated": 2}])
+        decided = rebuild.decide(self.builds, [{"version": "5.0.1", "arch": "amd64", "outdated": 0},
+                                               {"version": "5.0.1", "arch": "arm64", "outdated": 2}])
         self.assertEqual([b["arch"] for b in decided["builds"]], ["amd64", "arm64"])
-        self.assertEqual(decided["lines"], [{"line": "4.1", "tag": "v4.1.0", "base": "4.1.0", "version": "4.1.1",
+        self.assertEqual(decided["lines"], [{"line": "5.0", "tag": "v5.0.0", "base": "5.0.0", "version": "5.0.1",
                                              "newest": True, "epoch": 1790000000, "suite": "trixie-security",
                                              "architectures": ["amd64", "arm64"]}])
 
     def test_a_current_line_is_rebuilt_only_by_hand(self):
-        current = [{"version": "4.1.1", "arch": arch, "outdated": 0} for arch in ("amd64", "arm64")]
+        current = [{"version": "5.0.1", "arch": arch, "outdated": 0} for arch in ("amd64", "arm64")]
         self.assertEqual(rebuild.decide(self.builds, current), {"builds": [], "lines": []})
         self.assertEqual(len(rebuild.decide(self.builds, current, force=True)["builds"]), 2)
 
     def test_a_line_missing_a_check_is_not_rebuilt(self):
-        self.assertEqual(rebuild.decide(self.builds, [{"version": "4.1.1", "arch": "amd64", "outdated": 5}],
+        self.assertEqual(rebuild.decide(self.builds, [{"version": "5.0.1", "arch": "amd64", "outdated": 5}],
                                         force=True), {"builds": [], "lines": []})
 
     def test_an_answer_that_is_not_a_count_is_an_error(self):
-        for bad in ({"version": "4.1.1", "arch": "amd64", "outdated": "1"}, {"version": "4.1.1", "arch": "amd64",
+        for bad in ({"version": "5.0.1", "arch": "amd64", "outdated": "1"}, {"version": "5.0.1", "arch": "amd64",
                                                                               "outdated": True}, []):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 rebuild.decide(self.builds, [bad])
@@ -424,8 +424,8 @@ class Decide(unittest.TestCase):
             with open(builds, "w", encoding="utf-8") as handle:
                 json.dump(self.builds, handle)
             for arch, count in (("amd64", 1), ("arm64", 0)):
-                with open(os.path.join(answers, f"4.1.1-{arch}.json"), "w", encoding="utf-8") as handle:
-                    json.dump({"version": "4.1.1", "arch": arch, "outdated": count}, handle)
+                with open(os.path.join(answers, f"5.0.1-{arch}.json"), "w", encoding="utf-8") as handle:
+                    json.dump({"version": "5.0.1", "arch": arch, "outdated": count}, handle)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 self.assertEqual(rebuild.main(["decide", "--builds", builds, "--decisions", answers]), 0)

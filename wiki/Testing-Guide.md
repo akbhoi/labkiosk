@@ -173,12 +173,20 @@ The unit tests (`distro-builder/tests/test_client.py`) cover the agent's loopbac
 The last five run the ISO's own `labkiosk-update` from the host against the mounted disk (the kiosk has no shell), with a release signed by a throwaway key; `cut` kills that process rather than the VM's power.
 
 ```bash
-sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso [workdir]
+sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian13-amd64.iso [workdir]
 # One or more groups only: slots (install, scenarios 1-9), tpm (10), beside (11-13)
-sudo BOOT_TEST_GROUPS=tpm,beside distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
+sudo BOOT_TEST_GROUPS=tpm,beside distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian13-amd64.iso
 ```
 
 It needs root, `/dev/kvm`, `qemu-system-x86`, `ovmf`, `xorriso`, `squashfs-tools`, `e2fsprogs`, `fdisk`, `python3`, `gpg` and `gpgv`, so it does not run on Windows. A screenshot of the VM is saved for every scenario that fails. Legacy BIOS boot of the installed disk is covered only by the GRUB menu unit tests.
+
+The boot test is amd64's. An arm64 ISO gets the live smoke test, which boots the ISO's own kernel and initrd in QEMU with a serial console and passes once the agent answers and Chromium runs inside the guest (KVM on an ARM host, emulation elsewhere):
+
+```bash
+sudo distro-builder/tests/vm/live-smoke-test.sh distro-builder/out/labkiosk-debian13-arm64.iso [workdir]
+```
+
+It needs `qemu-system-arm` (or `qemu-system-x86` for an amd64 ISO) and `xorriso`. It does not test the boot loader or the installed disk.
 
 An installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<version> next_tries=1`.
 

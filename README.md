@@ -5,7 +5,7 @@
 [![License: Source-Available](https://img.shields.io/badge/License-Source--Available%20(Free%20for%20Education)-blue.svg)](LICENSE)
 [![Co-Developed with AI](https://img.shields.io/badge/Co--Developed%20with-AI%20(Google%20DeepMind%20Antigravity)-7952b3.svg)](#ai-co-development-statement)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers%20%2B%20D1%20SQL-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
-[![Debian 12](https://img.shields.io/badge/OS-Debian%2012%20(Bookworm)-A81D33?logo=debian&logoColor=white)](https://www.debian.org/)
+[![Debian 13](https://img.shields.io/badge/OS-Debian%2013%20(Trixie)-A81D33?logo=debian&logoColor=white)](https://www.debian.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/Tests-CI-success)](#automated-testing)
 
@@ -37,7 +37,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | Guide | Description | Path |
 | :--- | :--- | :--- |
 | **Cloudflare Control Plane** | Edge SaaS worker architecture, native Web Crypto PBKDF2 authentication, D1 schema migrations, and local dev server. | [`cloudflare-control/README.md`](cloudflare-control/README.md) |
-| **Kiosk Distro Builder** | Debian 12 live-build image, image-store disk installer with one-try boot and automatic rollback, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
+| **Kiosk Distro Builder** | Debian 13 live-build image for amd64 and arm64, image-store disk installer with one-try boot and automatic rollback, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
 | **Local Workstation Simulator** | Docker-based workstation simulator with embedded HTML5 noVNC display for rapid testing without physical thin clients. | [`docker-test/README.md`](docker-test/README.md) |
 | **Production Deployment** | Step-by-step production manual: Cloudflare D1 provisioning, remote migrations, secrets, wildcard DNS, and automated CI/CD. | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | **Remote Control** | Zero-exposure remote desktop architecture via loopback `x11vnc`, per-boot ephemeral passwords, and a relay on the console's own address. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
@@ -80,7 +80,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 |                      CLIENT WORKSTATION LAYER (Intel Thin Clients)                    |
 |                                                                                       |
 |   Hardware: Intel x86_64 CPU, 4 GB RAM, 12 GB SATA SSD                                |
-|   Kernel: Linux 6.1 (Debian 12 Minimal) with overlayroot="tmpfs" (100% RAM Overlay)   |
+|   Kernel: Linux 6.12 (Debian 13 Minimal) with overlayroot="tmpfs" (100% RAM Overlay)  |
 |   Display: Xorg Framebuffer + Openbox (Stripped Keybindings & Masked Virtual TTYs)    |
 |                                                                                       |
 |   [ Chromium Kiosk ] ◀─────── MV3 Extension (--load-extension, unpacked)              |

@@ -31,7 +31,7 @@ Each skill is a short procedure; the codices stay authoritative. They live in `.
 The repository is partitioned into two independent subsystems plus a workstation simulator:
 
 1. **Client Operating System & Distro Builder (`distro-builder/`)**:
-   - Debian 12 (Bookworm) Live-Build pipeline; only packages named in `kiosk.list.chroot` ship (no recommends).
+   - Debian 13 (Trixie) Live-Build pipeline, amd64 and arm64 (`config/arch/<arch>/`); only packages named in `kiosk.list.chroot` ship (no recommends).
    - Hybrid UEFI (GRUB EFI) + BIOS (ISOLINUX) boot menus; installed disks get both bootloaders.
    - 100% RAM overlay protection (`overlayroot="tmpfs:recurse=0"`); only the `LABKIOSK_DATA` partition at `/etc/labkiosk` persists.
    - Automated disk installer (`/usr/local/bin/labkiosk-install`): JSON on stdout, logs on stderr. It copies the live medium's image into an image store (`images/<version>/` on `LABKIOSK_ROOT`, at least 7 GiB) that boots through live-boot; `labkiosk-boot-slots` (root only) gives a new image one try and rolls back to the old one if it does not come up.

@@ -44,7 +44,7 @@ How it's built underneath:
 
 A correction to the premise: **feature releases are the lesser reason to build this.** Today an
 installed workstation runs the Chromium, kernel and libraries it was installed with, forever.
-Debian 12 left regular security support in July 2026 and is now on LTS (§7). Plan this as a
+Debian 12 left regular security support in July 2026 and is now on LTS; from 5.0 the image is Debian 13 (§7). Plan this as a
 security update channel that also carries features.
 
 ---
@@ -545,7 +545,8 @@ and by hand (one line, `force`, `dry_run`):
 2. The installed packages of that tag's image (`var/lib/dpkg/status`): the `dpkg-status` its GitHub
    release carries when it is a security release, otherwise read from the squashfs of its ISO
    (checked against its `.sha256`); cached by tag.
-3. Compared with Debian's `bookworm-security` `Packages` indices (`check`; Debian version order as
+3. Compared with the `Packages` indices of that source's Debian security suite, for each
+   architecture it builds: `bookworm-security` up to 4.x, `trixie-security` from 5.0 (`check`; Debian version order as
    `dpkg --compare-versions`, tested against dpkg itself). Nothing newer, nothing built.
 4. Otherwise the tag's own source, with its version raised to the next patch that no tag and no
    `releases/<version>/` folder in R2 has (`lines --published`: a run that uploaded its release
@@ -748,8 +749,9 @@ of whatever it is offered, as before.
 *Built in phase 4; §5.11 has the details.*
 
 1. **Watch.** A daily CI job compares the image's installed packages (its dpkg status, read from
-   the release's ISO, or the `dpkg-status` a security release publishes) against Debian's `bookworm-security` archive. Debian LTS publishes to the
-   same suite, so this covers LTS while the base is Debian 12.
+   the release's ISO, or the `dpkg-status` a release publishes) against its own Debian release's
+   security archive: `bookworm-security` (where Debian LTS publishes) up to 4.x, `trixie-security`
+   from 5.0. Each architecture is checked; a fix on any of them rebuilds the line on all.
 2. **Rebuild** with a patch version (`2.9.0` → `2.9.1`), marked `security`. No source change is
    needed beyond the version, because live-build fetches current packages on every build.
    *Checked:* the v2.9.0 image's `/etc/apt/sources.list` lists `bookworm-security`, which
@@ -770,6 +772,20 @@ of whatever it is offered, as before.
   confirm the scope.*
 - **Move the base to Debian 13 (trixie).** With this update channel, that's one more image
   with a larger test pass, not a re-flash.
+
+### Debian 13 from 5.0
+
+- 5.0 is built on Debian 13, in regular security support until 9 August 2028 and in LTS until
+  30 June 2030. It goes to installed 4.x workstations over the air like any feature release:
+  same updater, same image store, same signed manifest. *Not tested yet:* a 4.x disk (Debian 12's
+  shim and GRUB, a TPM key sealed by systemd 252) booting the Debian 13 image, and its rollback.
+  Run that by hand in a VM before 5.0 is classified stable. 4.x stays on Debian 12 and keeps its
+  security rebuilds from `bookworm-security` until its major is put at end of life.
+- 5.0 is also the first release with an arm64 build. Its manifest names `architecture: arm64`
+  and sits in `releases/<version>/arm64/`; amd64's stays where it was and names none, so 4.x's
+  updater, which accepts exactly the keys it knows, still takes it. A workstation sends its
+  architecture with `GET /api/devices/update` and refuses a manifest of another one, from the
+  cloud or a LAN peer.
 
 ---
 

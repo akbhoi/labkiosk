@@ -11,7 +11,8 @@ Only the latest release and the current `main` branch receive security updates:
 | Component | Supported Version | Status |
 | :--- | :--- | :--- |
 | Cloudflare Control Plane | `v2.x` / `main` | :white_check_mark: Actively Supported |
-| Debian 12 Kiosk Distro | `v2.x` / `main` | :white_check_mark: Actively Supported |
+| Debian 13 Kiosk Distro (amd64, arm64) | `v5.0+` / `main` | :white_check_mark: Actively Supported |
+| Debian 12 Kiosk Distro (amd64) | `v2.9` to `v4.x` | :white_check_mark: Security rebuilds while its major is supported |
 | Legacy Single-Organization Controller | `v1.x` | :x: End-of-Life (Upgrade Recommended) |
 
 ---
@@ -104,12 +105,13 @@ Instead, please submit your findings privately via GitHub Security Advisories:
     Cloudflare token, the R2 keys and the update signing key, so every `uses:` line names a full commit
     SHA followed by its version (`@3d3c42e… # v7.0.1`), never a tag that can be moved. Dependabot
     proposes new pins weekly, and `distro-builder/tests/test_workflows.py` fails on an unpinned action.
-14. **Know the Base OS's Support Status:** the workstation image is built on Debian 12 (Bookworm).
-    Debian's regular security support for it ended on 12 July 2026; it is now maintained by Debian
-    LTS until 30 June 2028, which covers most but not every package
-    (<https://www.debian.org/News/2026/20260712.en.html>). The daily security rebuild keeps taking
-    fixes from `bookworm-security`, which LTS publishes to. Moving the image to Debian 13 (Trixie) is
-    planned as a new major release. Only then does the data partition's TPM key bind to more than
-    PCR 7, through systemd's `pcrlock` policies, which keep Debian's signed shim, GRUB and kernel
-    and so keep Secure Boot and unattended boot working. A self-signed unified kernel image would
-    need a key enrolled at every workstation.
+14. **Know the Base OS's Support Status:** from 5.0 the workstation image is built on Debian 13
+    (Trixie), in regular security support until 9 August 2028 and in Debian LTS until 30 June 2030.
+    Releases up to 4.x are built on Debian 12 (Bookworm), whose regular security support ended on
+    12 July 2026; Debian LTS maintains it until 30 June 2028, covering most but not every package
+    (<https://www.debian.org/News/2026/20260712.en.html>). The daily security rebuild checks each
+    line against its own base's archive: `bookworm-security` (which LTS publishes to) up to 4.x,
+    `trixie-security` from 5.0. Binding the data partition's TPM key to more than PCR 7, through
+    systemd's `pcrlock` policies (which keep Debian's signed shim, GRUB and kernel, and so Secure
+    Boot and unattended boot), needs Debian 13's systemd and is the next step, not done yet. A
+    self-signed unified kernel image would need a key enrolled at every workstation.

@@ -350,7 +350,7 @@ jobs:
       # not match them can never publish a release no workstation would take.
       # Each architecture gets a manifest of its own; amd64's leaves the
       # architecture out, as every manifest before arm64 did, so workstations
-      # still on 4.0 take it.
+      # still on 4.x take it.
       - name: Sign the over-the-air release
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
@@ -395,7 +395,7 @@ jobs:
       # Each release is a folder of its own, written once: a manifest that
       # changed under a workstation halfway through its download would make it
       # start again. The manifest goes last, so a release is never visible
-      # before its files are. amd64 sits at the folder's root, where 4.0 looks,
+      # before its files are. amd64 sits at the folder's root, where 4.x looks,
       # and every other architecture in a subfolder of its name; the subfolders
       # go first, because the controller records a release's architectures
       # when it first sees the root manifest.

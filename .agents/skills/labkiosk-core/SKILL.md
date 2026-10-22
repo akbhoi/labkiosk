@@ -8,7 +8,7 @@ description: Cross-cutting Lab Kiosk contracts between the workstation agent and
 Lab Kiosk turns any computer into a locked-down browser workstation for an **organization**
 (company, public body, library or school). Two subsystems talk over authenticated HTTPS:
 
-- **Client OS** (`distro-builder/`): Debian 12 live/installed image, Python agent `agent.py` on
+- **Client OS** (`distro-builder/`): Debian 13 live/installed image (amd64, arm64), Python agent `agent.py` on
   `127.0.0.1:8888`, MV3 extension, setup wizard, disk installer. Codex: `distro-builder/AGENTS.md`.
 - **Control plane** (`cloudflare-control/`): Cloudflare Worker + D1. Codex: `cloudflare-control/AGENTS.md`.
 
