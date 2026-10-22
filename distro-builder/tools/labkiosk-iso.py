@@ -201,8 +201,13 @@ def customize(args, wifi_password):
         try:
             # -boot_image any replay: the release's El Torito images, MBR, GPT
             # and appended partitions, exactly as they were.
+            # The kiosk user reads it, so the folder (which -map would create
+            # with the private scratch folder's mode) and the file are opened
+            # to everyone: the stick is read-only and readable anyway.
             run(["xorriso", "-indev", src, "-outdev", partial, "-boot_image", "any", "replay",
-                 "-map", preset_file, PRESET_PATH, "-chmod", "0444", PRESET_PATH, "--"])
+                 "-map", preset_file, PRESET_PATH,
+                 "-chmod", "0555", os.path.dirname(PRESET_PATH), "--",
+                 "-chmod", "0444", PRESET_PATH, "--"])
             after = boot_report(partial)
             if after != before:
                 changed = sorted(set(before) ^ set(after))

@@ -368,6 +368,11 @@ class CustomizeTool(unittest.TestCase):
         self.assertEqual(got["bootPasswordHash"], DIGEST)
         self.assertEqual(tool.boot_report(self.out), tool.boot_report(self.iso))
         self.assertTrue(any("UEFI" in line for line in tool.boot_report(self.out)))
+        # The agent runs as the kiosk user: the folder and the file are open to it.
+        listing = subprocess.run(["xorriso", "-indev", self.out, "-lsdl", "/labkiosk", "/labkiosk/preset.json"],
+                                 capture_output=True, text=True, check=True).stdout
+        self.assertRegex(listing, r"(?m)^dr-xr-xr-x .*'/labkiosk'$")
+        self.assertRegex(listing, r"(?m)^-r--r--r-- .*'/labkiosk/preset.json'$")
         # Neither secret is printed.
         self.assertNotIn(KEY, out)
         self.assertNotIn("a passphrase", out)
