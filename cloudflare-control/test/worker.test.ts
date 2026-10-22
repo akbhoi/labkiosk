@@ -556,7 +556,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(download, /Download/);
     assert.match(download, /SHA256 Checksum/);
     // The page points at what is published; it never states a version or a checksum of its own.
-    assert.ok(download.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso.sha256"'));
+    assert.ok(download.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian13-amd64.iso.sha256"'));
     assert.ok(!/\bv\d+\.\d+\.\d+\b/.test(download), "no version number is written into the page");
     assert.ok(!/\b[0-9a-f]{64}\b/.test(download), "no checksum is written into the page");
     // The footer is on every page: its section links go to the home page, where the sections are.
@@ -1987,6 +1987,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.match(page, /End of life:<\/strong> Lab Kiosk 2\.x \(since 31 March 2027\)\. It receives no further updates/);
       assert.ok(page.includes("Latest Release v3.0.0"));
       await db.prepare("DELETE FROM release_support WHERE major = 2").run();
+      // A release built for both architectures, on Debian 13: each ISO is stored and offered, under its own name.
+      const download = (tag: string, name: string) => `https://github.com/akbhoi/labkiosk/releases/download/${tag}/${name}`;
+      const both = release("v3.1.0", "2026-10-14T06:00:00Z", {
+        assets: (["amd64", "arm64"] as const).flatMap((arch) => [
+          { name: `labkiosk-debian13-${arch}.iso`, size: arch === "amd64" ? 801112064 : 790626304, digest: `sha256:${(arch === "amd64" ? "34" : "12").repeat(32)}`, browser_download_url: download("v3.1.0", `labkiosk-debian13-${arch}.iso`) },
+          { name: `labkiosk-debian13-${arch}.iso.sha256`, size: 94, browser_download_url: download("v3.1.0", `labkiosk-debian13-${arch}.iso.sha256`) }
+        ])
+      });
+      githubAnswer = new Response(JSON.stringify([both, release("v3.0.0", "2026-10-13T06:00:00Z"), security, release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
+      assert.deepEqual(await (await syncCall(configured, `Bearer ${token}`)).json(), { stored: 8, latest: "v3.1.0" });
+      const newest = (await listReleaseNotes(db))[0];
+      assert.equal(newest.iso_url, download("v3.1.0", "labkiosk-debian13-amd64.iso"));
+      assert.equal(newest.iso_sha256, "34".repeat(32));
+      assert.equal(newest.arm64_iso_url, download("v3.1.0", "labkiosk-debian13-arm64.iso"));
+      assert.equal(newest.arm64_checksum_url, download("v3.1.0", "labkiosk-debian13-arm64.iso.sha256"));
+      assert.equal(newest.arm64_iso_sha256, "12".repeat(32));
+      assert.equal((await listReleaseNotes(db)).find((r) => r.tag === "v3.0.0")?.arm64_iso_url, null, "a release before arm64 has none");
+      page = await (await call("/download")).text();
+      assert.ok(page.includes("Lab Kiosk OS v3.1.0 for Intel and AMD (x86-64)") && page.includes("Lab Kiosk OS v3.1.0 for ARM64"));
+      assert.ok(page.includes(`href="${download("v3.1.0", "labkiosk-debian13-arm64.iso")}"`));
+      assert.ok(page.includes(`<code class="checksum-value">${"12".repeat(32)}</code>`));
+      assert.ok(page.includes("sha256sum labkiosk-debian13-amd64.iso") && page.includes("sha256sum labkiosk-debian13-arm64.iso"));
+      assert.ok(page.includes('<span class="download-meta-val">Debian 13</span>'), "the base is the release's own");
+      assert.ok(page.includes("Download v3.1.0 ISO for x86-64") && page.includes("Download v3.1.0 ISO for ARM64"));
       githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
       assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
       assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");
@@ -1997,9 +2021,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Nothing is known yet: the page links GitHub's "latest" address and says nothing of an operator's settings.
     await db.prepare("DELETE FROM release_notes").run();
     page = await (await call("/download")).text();
-    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian13-amd64.iso"'));
+    assert.ok(!page.includes("for ARM64</h2>"), "no arm64 build is offered before one is known");
+    // The home page sends a visitor to /download, which offers each architecture's ISO.
     const home = await (await call("/")).text();
-    assert.ok(home.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    assert.ok(home.includes('href="/download" class="btn btn-primary btn-block"'));
     for (const html of [page, home]) assert.ok(!/ISO_DOWNLOAD_URL|worker secret|No pre-built release ISO/.test(html));
   });
 

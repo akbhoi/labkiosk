@@ -82,6 +82,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0047_printing.sql` | `tenants.printing_enabled` (default `0` for every organization) and `printers`: the organization's network printers (Settings → Printing) |
 | `0048_home_reset.sql` | `tenants.home_reset` (default `1` for every organization): Home in the kiosk bar asks "Start over?" and signs everyone out (Settings → General) |
 | `0049_release_architectures.sql` | `releases.architectures` (default `amd64`): the architectures a release has a signed build of; a workstation is offered only a release built for its own |
+| `0050_release_notes_arm64.sql` | `release_notes.arm64_iso_url`, `arm64_checksum_url`, `arm64_iso_bytes`, `arm64_iso_sha256`: a release's arm64 ISO, offered on `/download` beside amd64's; NULL before arm64 |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -529,7 +530,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0049_<description>.sql` (the next number after `0048`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0051_<description>.sql` (the next number after `0050`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.
