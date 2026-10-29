@@ -109,6 +109,10 @@ PRINTER_URI_PATTERN = re.compile(
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
 UI_LANGUAGE_EXTRA_DIR = "/etc/labkiosk/i18n"
 UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
+# As labkiosk-localization takes them, but never starting with "-", so a value
+# can only ever be setxkbmap's argument, not another of its options.
+KEYMAP_PATTERN = re.compile(r"^[a-z0-9]{1,16}\Z")
+KEYMAP_VARIANT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")
 # A catalog is UI text. These caps are what stops a compromised or simply
 # wrong control plane from filling the data partition, or handing the wizard
 # a document it will spend a second walking on every page load.
@@ -1374,6 +1378,9 @@ def configure_localization(data):
 
 def relock_keyboard(keymap, variant):
     """Apply a layout in the running session, then strip it again."""
+    if not KEYMAP_PATTERN.match(keymap) or (variant and not KEYMAP_VARIANT_PATTERN.match(variant)):
+        log(f"Not applying keyboard layout {keymap!r} variant {variant!r}: not a layout name.")
+        return
     env = dict(os.environ)
     env.setdefault("DISPLAY", ":0")
     layout_cmd = ["setxkbmap", "-layout", keymap]

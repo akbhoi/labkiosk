@@ -394,6 +394,30 @@ class InterfaceLanguageTags(unittest.TestCase):
                 self.assertNotRegex(source, r"""r["'][^"'\n]*\\\\Z""")
 
 
+class KeyboardRelock(unittest.TestCase):
+    """The agent runs setxkbmap itself, so it checks the layout itself too."""
+
+    def setUp(self):
+        self.ran = []
+        saved = (agent.subprocess.run, agent.log)
+        self.addCleanup(lambda: (setattr(agent.subprocess, "run", saved[0]), setattr(agent, "log", saved[1])))
+        agent.subprocess.run = lambda command, **kwargs: self.ran.append(command) or agent.subprocess.CompletedProcess(command, 0, "", "")
+        agent.log = lambda message: None
+
+    def test_a_layout_and_variant_reach_setxkbmap_as_its_arguments(self):
+        agent.relock_keyboard("de", "nodeadkeys")
+        self.assertEqual(self.ran, [["setxkbmap", "-layout", "de", "-variant", "nodeadkeys"], ["labkiosk-lock-keys"]])
+
+    def test_nothing_runs_for_a_value_that_is_not_a_layout_name(self):
+        for keymap, variant in (("-print", ""), ("us", "-print"), ("us;id", ""), ("us\n", ""), ("US", "")):
+            with self.subTest(keymap=keymap, variant=variant):
+                agent.relock_keyboard(keymap, variant)
+        self.assertEqual(self.ran, [])
+
+    def test_the_agent_takes_every_layout_the_helper_does(self):
+        self.assertEqual(agent.KEYMAP_PATTERN.pattern, localization.KEYMAP_PATTERN.pattern)
+
+
 class TimeServers(unittest.TestCase):
     def test_a_shell_fragment_is_refused(self):
         for bad in ("ntp.example.com; rm -rf /", "ntp.example.com\nNTP=evil", "a b c d e"):
