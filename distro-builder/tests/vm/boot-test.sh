@@ -178,7 +178,7 @@ done
 [ "$(id -u)" = 0 ] || die "run as root: it partitions a loop device and chroots into the image"
 [ -f "$ISO" ] || die "no ISO at $ISO"
 [ -w /dev/kvm ] || die "/dev/kvm is not available: without KVM the kiosk cannot come up inside the 10-minute health window"
-for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs sfdisk losetup python3 gpg gpgv gpgconf \
+for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs e2fsck sfdisk losetup python3 gpg gpgv gpgconf \
             swtpm cryptsetup mkfs.vfat virt-fw-vars; do
     command -v "$tool" >/dev/null || die "$tool is not installed"
 done
@@ -245,6 +245,19 @@ if len(found) != 1:
     sys.exit(f"expected one partition named {sys.argv[1]}")
 print(found[0]["start"] * table.get("sectorsize", 512))
 ' "$2"
+}
+
+# replay_journal IMAGE OFFSET: write into the ext4 file system at OFFSET what
+# its journal holds. debugfs reads a file system as it stands, and a VM stopped
+# by a signal leaves its last changes (a file made or removed seconds before)
+# in the journal only.
+replay_journal() {
+    local loop status=0
+    loop="$(losetup -f --show -o "$2" "$1")"
+    e2fsck -y -E journal_only "$loop" >/dev/null 2>&1 || status=$?
+    losetup -d "$loop"
+    # 1: the journal was replayed.
+    [ "$status" -le 1 ] || die "e2fsck could not replay the journal at offset $2 of $1 (status $status)"
 }
 
 # --------------------------------------------------------------------------
@@ -1220,6 +1233,8 @@ if [ "$FAILED" -eq 0 ]; then
 
     preset_root="$(partition_offset "$PRESET_DISK" ROOT)"
     preset_data="$(partition_offset "$PRESET_DISK" DATA)"
+    replay_journal "$PRESET_DISK" "$preset_root"
+    replay_journal "$PRESET_DISK" "$preset_data"
     if debugfs -R "cat /boot/grub/labkiosk-password.cfg" "$PRESET_DISK?offset=$preset_root" 2>/dev/null \
             | grep -qF "$PRESET_HASH"; then
         pass "preset: the stick's administrator password is the installed boot menu's"

@@ -436,14 +436,23 @@ jobs:
       # applied to the release's test after its image is built, and never
       # committed: they change the test only, never the image or the tag. A
       # fix the release already carries is skipped; one that fits neither way
-      # stops the run, so a check it repairs never runs unrepaired.
+      # stops the run, so a check it repairs never runs unrepaired. A fix to a
+      # part of the test that came later starts with "Since: v<version>" and
+      # is left out of an older release.
       - name: Bring the boot test's own fixes into ${{ matrix.tag }}
         if: matrix.arch == 'amd64'
+        env:
+          BASE: ${{ matrix.base }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           for patch in "$PWD"/distro-builder/tests/vm/release-fixes/*.patch; do
             name="$(basename "$patch")"
+            since="$(sed -n '1s/^Since: v\([0-9][0-9.]*\)$/\1/p' "$patch")"
+            if [ -n "$since" ] && [ "$(printf '%s\n%s\n' "$since" "$BASE" | sort -V | head -n 1)" != "$since" ]; then
+              echo "$name is for v$since and later, not ${{ matrix.tag }}."
+              continue
+            fi
             if git -C rebuild-src apply --check "$patch" 2>/dev/null; then
               git -C rebuild-src apply "$patch"
               echo "Applied $name to ${{ matrix.tag }}'s boot test."

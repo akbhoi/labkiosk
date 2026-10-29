@@ -591,10 +591,20 @@ class Workflow(unittest.TestCase):
         self.assertLess(self.workflow.index("- name: Compile the ISO"), apply, "the image is built before the test changes")
         self.assertLess(apply, self.workflow.index("rebuild-src/distro-builder/tests/vm/boot-test.sh"))
         self.assertIn("apply --check --reverse", self.workflow, "a fix the release already has is skipped")
+        self.assertIn("sed -n '1s/^Since: v\\([0-9][0-9.]*\\)$/\\1/p' \"$patch\"", self.workflow)
+        self.assertIn("BASE: ${{ matrix.base }}", self.workflow, "a fix for a later release is left out of an older one")
 
 
 class ReleaseFixes(unittest.TestCase):
     """Each patch for an older release's boot test changes that test and nothing else."""
+
+    def test_a_patch_starts_with_its_diff_or_the_first_release_it_is_for(self):
+        folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
+        for name in sorted(n for n in os.listdir(folder) if n.endswith(".patch")):
+            with open(os.path.join(folder, name), encoding="utf-8") as handle:
+                first = handle.readline().rstrip("\n")
+            with self.subTest(name=name):
+                self.assertRegex(first, r"^(diff --git |Since: v[0-9]+\.[0-9]+\.[0-9]+$)")
 
     def test_each_patch_touches_only_the_vm_tests(self):
         folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
