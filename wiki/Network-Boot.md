@@ -19,7 +19,7 @@ From a checkout of the repository, with a release ISO:
 
 ```bash
 python3 distro-builder/tools/labkiosk-netboot.py prepare \
-    --iso labkiosk-debian12-amd64.iso \
+    --iso labkiosk-debian13-amd64.iso \
     --out /srv/labkiosk-netboot \
     --server-address 192.168.1.10 \
     --org oakridge --key XXXXX-XXXXX-XXXXX-XXXXX \
@@ -36,16 +36,17 @@ python3 distro-builder/tools/labkiosk-netboot.py prepare \
 | `--control-plane` | Only for a control plane other than the platform's, such as `https://kiosk.example.org` |
 | `--admin-hash` | A `grub-mkpasswd-pbkdf2` digest of the administrator password. It locks the boot menu against editing and gates the workstations' network and registration settings. Strongly recommended |
 | `--timezone` | The workstations' time zone, `Asia/Kolkata` unless given |
+| `--arch` | The release's architecture: `amd64` (the default) or `arm64`. One folder serves one architecture; prepare an arm64 release, from `labkiosk-debian13-arm64.iso`, into a folder of its own |
 
 It writes:
 
 | Path | What |
 | :--- | :--- |
-| `labkiosk/shimx64.efi` | Microsoft-signed shim, taken from the release itself |
-| `labkiosk/grubx64.efi` | Debian-signed network GRUB, which shim starts |
+| `labkiosk/shimx64.efi` | Microsoft-signed shim, taken from the release itself (`shimaa64.efi` for arm64) |
+| `labkiosk/grubx64.efi` | Debian-signed network GRUB, which shim starts (`grubaa64.efi` for arm64) |
 | `labkiosk/grub.cfg` | The boot menu; copied to `debian-installer/amd64/grub/`, where that GRUB looks for it, and `grub/` |
-| `labkiosk/boot.ipxe` | The same boot for iPXE (legacy BIOS) |
-| `labkiosk/undionly.kpxe` | iPXE for BIOS PXE, when the server has the `ipxe` package |
+| `labkiosk/boot.ipxe` | The same boot for iPXE (legacy BIOS; amd64 only) |
+| `labkiosk/undionly.kpxe` | iPXE for BIOS PXE, when the server has the `ipxe` package (amd64 only) |
 | `labkiosk/<version>/` | `vmlinuz`, `initrd.img`, `filesystem.squashfs` |
 
 Running it again with a newer release adds that version's folder and switches the menus to it in one step; workstations pick it up at their next start. Delete an old version's folder once nothing boots it.
@@ -57,11 +58,12 @@ Serve the folder on port 80 (any web server; `python3 -m http.server 80 --direct
 | Workstation firmware | DHCP answer |
 | :--- | :--- |
 | UEFI, PXE (client architecture 7 or 9) | Boot file `labkiosk/shimx64.efi`, over TFTP |
+| ARM64 UEFI, PXE (client architecture 11) | Boot file `labkiosk/shimaa64.efi`, over TFTP, from the folder prepared with `--arch arm64` |
 | Legacy BIOS (client architecture 0) | Boot file `labkiosk/undionly.kpxe` over TFTP; then, when the request comes from iPXE (user class `iPXE`), `http://<server>/labkiosk/boot.ipxe` |
 
 How to express this depends on the DHCP server; its documentation for "PXE" and "iPXE chainloading" covers it. In the firmware of each workstation, enable network boot (PXE) and put it first.
 
-**UEFI HTTP Boot is not supported.** Debian 12's signed GRUB, which Secure Boot requires, has no HTTP client ([Debian bug #1016873](https://bugs.debian.org/1016873)): started over HTTP it stops at its own prompt without reading its menu. Use PXE on UEFI machines; the system image itself still comes over HTTP.
+**UEFI HTTP Boot is not supported.** Debian 12's signed GRUB, which Secure Boot requires, has no HTTP client ([Debian bug #1016873](https://bugs.debian.org/1016873)): started over HTTP it stops at its own prompt without reading its menu. Debian 13's has not been tested for it yet. Use PXE on UEFI machines; the system image itself still comes over HTTP.
 
 UEFI workstations boot with **Secure Boot on**: the firmware checks shim, shim checks GRUB, GRUB checks the kernel, exactly as from the disk. Legacy BIOS has no Secure Boot.
 

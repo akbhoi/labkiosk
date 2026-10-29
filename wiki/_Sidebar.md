@@ -29,6 +29,8 @@
 - [Disk Installer](Disk-Installer)
 - [Kiosk Hardening](Kiosk-Hardening)
 - [Building the ISO](Building-the-ISO)
+- [Building for Your Platform](Building-for-Your-Platform)
+- [Raspberry Pi](Raspberry-Pi)
 
 **Control plane internals**
 

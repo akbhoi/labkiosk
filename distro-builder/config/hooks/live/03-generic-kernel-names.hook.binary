@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs in binary/ (the ISO's tree), after the boot loaders are configured and
+# before the checksums and the ISO are written.
+#
+# Everything that reads a release finds its kernel and initrd at
+# /live/vmlinuz and /live/initrd.img: the disk installer, the over-the-air
+# manifest, network boot, the smoke test and the Raspberry Pi card. live-build
+# gives them those names beside the versioned files on amd64, but not on every
+# architecture (the arm64 ISO had only vmlinuz-<version>). Where a name is
+# missing, hard-link it to the one versioned file: xorriso stores the pair once.
+set -e
+
+for name in vmlinuz initrd.img; do
+    [ -e "live/$name" ] && continue
+    set -- live/"$name"-*
+    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+        echo "[Hook] ERROR: live/$name is missing and there is not exactly one live/$name-<version> to name so" >&2
+        ls -l live >&2
+        exit 1
+    fi
+    ln "$1" "live/$name"
+    echo "[Hook] live/$name -> $1"
+done

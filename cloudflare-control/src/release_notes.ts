@@ -23,12 +23,31 @@ import { compareVersions, releaseMajor } from "./releases";
 /** The repository releases are published in. */
 export const RELEASES_REPO = "akbhoi/labkiosk";
 export const RELEASES_URL = `https://github.com/${RELEASES_REPO}/releases`;
-/** The files every release carries (the "Create GitHub Release" step of build-iso.yml). */
-export const RELEASE_ISO_NAME = "labkiosk-debian12-amd64.iso";
+/**
+ * The files every release carries (the "Create GitHub Release" step of
+ * build-iso.yml): an ISO per architecture, labkiosk-debian<N>-<arch>.iso for
+ * the Debian release N it is built on, each beside its .sha256. Up to 4.x
+ * that is labkiosk-debian12-amd64.iso alone.
+ */
+export const RELEASE_ISO_NAME = "labkiosk-debian13-amd64.iso";
 export const RELEASE_CHECKSUM_NAME = `${RELEASE_ISO_NAME}.sha256`;
+export const ARM64_RELEASE_ISO_NAME = "labkiosk-debian13-arm64.iso";
+const releaseIsoPattern = (arch: string) => new RegExp(`^labkiosk-debian(\\d{1,3})-${arch}\\.iso$`);
 /** Always the newest release, whatever its version: what the page links before any release is known. */
 export const LATEST_ISO_URL = `${RELEASES_URL}/latest/download/${RELEASE_ISO_NAME}`;
 export const LATEST_CHECKSUM_URL = `${RELEASES_URL}/latest/download/${RELEASE_CHECKSUM_NAME}`;
+
+/** The file name an ISO address ends in, such as labkiosk-debian13-amd64.iso; null for anything else. */
+export function isoFileName(url: string | null | undefined): string | null {
+  const name = String(url || "").split("/").pop() || "";
+  return /^labkiosk-debian\d{1,3}-[a-z0-9]{2,16}\.iso$/.test(name) ? name : null;
+}
+
+/** The Debian release an ISO is built on, from its name ("Debian 13"); null when the name does not say. */
+export function isoDebianRelease(name: string | null): string | null {
+  const match = /^labkiosk-debian(\d{1,3})-/.exec(name || "");
+  return match ? `Debian ${match[1]}` : null;
+}
 
 /** Releases read from GitHub in one run, and shown on the page. */
 const RELEASES_READ = 8;
@@ -51,6 +70,11 @@ export interface ReleaseNote {
   iso_bytes: number | null;
   /** The ISO's SHA-256 (64 lowercase hex digits), as GitHub computed it on upload, or null. */
   iso_sha256: string | null;
+  /** The same four of the release's arm64 ISO (migration 0050); null before arm64. */
+  arm64_iso_url: string | null;
+  arm64_checksum_url: string | null;
+  arm64_iso_bytes: number | null;
+  arm64_iso_sha256: string | null;
   /** The change list as GitHub published it. */
   source_body: string;
   /** JSON list of sentences written by the model, or null when there is none. */
@@ -230,6 +254,31 @@ function assetUrl(release: GitHubRelease, name: string): { url: string; size: nu
   return { url, size: Math.max(0, Math.floor(Number(asset?.size) || 0)), sha256: digest ? digest[1] : null };
 }
 
+/** Ends the download guide that build-iso.yml puts above GitHub's change list (.github/release-body.md). */
+export const CHANGE_LIST_MARKER = "<!-- labkiosk:changes -->";
+
+/**
+ * The change list of a release body: what follows the download guide's
+ * marker, or else GitHub's generated "## What's Changed" heading on, when the
+ * body has one. The guide (what to download, requirements, how to install) is
+ * for people on GitHub, not a change, and is kept out of the highlights and
+ * the summary.
+ */
+export function changeList(body: string): string {
+  const marker = body.indexOf(CHANGE_LIST_MARKER);
+  if (marker >= 0) return body.slice(marker + CHANGE_LIST_MARKER.length).trimStart();
+  const match = /^## What's Changed[ \t]*$/m.exec(body);
+  return match ? body.slice(match.index) : body;
+}
+
+/** A release's ISO for one architecture, whichever Debian release it is built on, and its checksum file. */
+function isoAssets(release: GitHubRelease, arch: string) {
+  const pattern = releaseIsoPattern(arch);
+  const name = (release.assets || []).map((a) => (typeof a?.name === "string" ? a.name : "")).find((n) => pattern.test(n));
+  if (!name) return { iso: null, checksum: null };
+  return { iso: assetUrl(release, name), checksum: assetUrl(release, `${name}.sha256`) };
+}
+
 /**
  * Read the newest releases from GitHub into `release_notes`. Returns how many
  * were stored and the newest one's tag. A failure to reach GitHub is thrown for
@@ -260,14 +309,15 @@ export async function storeReleaseNotes(
     const url = typeof release.html_url === "string" ? release.html_url : "";
     const published = Math.floor(Date.parse(String(release.published_at || "")) / 1000);
     if (!TAG_PATTERN.test(tag) || url !== `${RELEASES_URL}/tag/${tag}` || !Number.isFinite(published)) continue;
-    const iso = assetUrl(release, RELEASE_ISO_NAME);
-    const checksum = assetUrl(release, RELEASE_CHECKSUM_NAME);
-    const body = String(release.body ?? "").replace(/\r\n/g, "\n").slice(0, MAX_SOURCE_CHARS);
+    const { iso, checksum } = isoAssets(release, "amd64");
+    const arm64 = isoAssets(release, "arm64");
+    const body = changeList(String(release.body ?? "").replace(/\r\n/g, "\n")).slice(0, MAX_SOURCE_CHARS);
     // A change list edited on GitHub is summarized again; an unchanged one keeps its summary.
     await db
       .prepare(
-        `INSERT INTO release_notes (tag, name, published_at, url, iso_url, checksum_url, iso_bytes, iso_sha256, source_body, summary, summary_model, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        `INSERT INTO release_notes (tag, name, published_at, url, iso_url, checksum_url, iso_bytes, iso_sha256,
+           arm64_iso_url, arm64_checksum_url, arm64_iso_bytes, arm64_iso_sha256, source_body, summary, summary_model, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
          ON CONFLICT(tag) DO UPDATE SET
            name = excluded.name,
            published_at = excluded.published_at,
@@ -276,6 +326,10 @@ export async function storeReleaseNotes(
            checksum_url = excluded.checksum_url,
            iso_bytes = excluded.iso_bytes,
            iso_sha256 = excluded.iso_sha256,
+           arm64_iso_url = excluded.arm64_iso_url,
+           arm64_checksum_url = excluded.arm64_checksum_url,
+           arm64_iso_bytes = excluded.arm64_iso_bytes,
+           arm64_iso_sha256 = excluded.arm64_iso_sha256,
            summary = CASE WHEN release_notes.source_body = excluded.source_body THEN release_notes.summary ELSE NULL END,
            summary_model = CASE WHEN release_notes.source_body = excluded.source_body THEN release_notes.summary_model ELSE NULL END,
            source_body = excluded.source_body,
@@ -290,6 +344,10 @@ export async function storeReleaseNotes(
         checksum?.url ?? null,
         iso?.size || null,
         iso?.sha256 ?? null,
+        arm64.iso?.url ?? null,
+        arm64.checksum?.url ?? null,
+        arm64.iso?.size || null,
+        arm64.iso?.sha256 ?? null,
         body,
         ts
       )

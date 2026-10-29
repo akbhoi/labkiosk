@@ -9,10 +9,14 @@
 # ==============================================================================
 set -eu
 
-ISO_NAME="${ISO_NAME:-labkiosk-debian12-amd64.iso}"
+# The architecture of this container is the one the image is built for
+# (auto/config reads the same LABKIOSK_ARCH).
+LABKIOSK_ARCH="${LABKIOSK_ARCH:-$(dpkg --print-architecture)}"
+export LABKIOSK_ARCH
+ISO_NAME="${ISO_NAME:-labkiosk-debian13-$LABKIOSK_ARCH.iso}"
 OUT_DIR="${OUT_DIR:-/build/out}"
 # live-build's own output name, derived from LB_IMAGE_NAME in config/common.
-LB_OUTPUT="live-image-amd64.hybrid.iso"
+LB_OUTPUT="live-image-$LABKIOSK_ARCH.hybrid.iso"
 
 cd /build
 

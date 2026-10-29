@@ -48,6 +48,8 @@ distro-builder/config/chroot
 distro-builder/config/common
 distro-builder/config/source
 distro-builder/config/package-lists/live.list.chroot
+# Copied from config/arch/<arch>/ by auto/config for one build.
+distro-builder/config/package-lists/arch.list.chroot
 distro-builder/config/hooks/live/0010-disable-kexec-tools.hook.chroot
 distro-builder/config/hooks/live/0050-disable-sysvinit-tmpfs.hook.chroot
 distro-builder/config/hooks/normal/

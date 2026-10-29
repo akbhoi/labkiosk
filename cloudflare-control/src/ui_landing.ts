@@ -22,7 +22,7 @@ import { fnv1a } from "./ui_layout";
 import { GEO_DATA_PATH } from "./geo";
 import { DOCS_NAV, DOCS_PAGES, DocsPage } from "./docs_content.generated";
 import { LinkResolver, renderMarkdown } from "./markdown";
-import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, MajorDownload, RELEASES_URL, RELEASE_CHECKSUM_NAME, RELEASE_ISO_NAME, ReleaseNote, releaseHighlights } from "./release_notes";
+import { ARM64_RELEASE_ISO_NAME, LATEST_CHECKSUM_URL, LATEST_ISO_URL, MajorDownload, RELEASES_URL, RELEASE_ISO_NAME, ReleaseNote, isoDebianRelease, isoFileName, releaseHighlights } from "./release_notes";
 import { SupportStatus } from "./releases";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
@@ -156,11 +156,12 @@ function renderPublicShell(
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
     : "";
 
-  // ISO_DOWNLOAD_URL names a mirror; without one the newest GitHub release is the download.
-  const isoUrl = (data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null) || LATEST_ISO_URL;
-  const isoAction = `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-block">
+  // ISO_DOWNLOAD_URL names a mirror; without one, /download offers each
+  // architecture's ISO of the newest release it knows.
+  const mirrorUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
+  const isoAction = `<a href="${escapeHtml(mirrorUrl || "/download")}"${mirrorUrl ? ' target="_blank" rel="noopener noreferrer"' : ""} class="btn btn-primary btn-block">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Download Latest Release (.ISO)
+        ${mirrorUrl ? "Download Latest Release (.ISO)" : "Choose the Latest Release (x86-64 or ARM64)"}
       </a>`;
 
   return `<!DOCTYPE html>
@@ -491,7 +492,7 @@ ${FONT_LINKS}
       <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
         <h3 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h3>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
-          Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
+          Download <code>${RELEASE_ISO_NAME}</code> (Intel and AMD PCs) or <code>${ARM64_RELEASE_ISO_NAME}</code> (64-bit ARM computers that boot with UEFI) and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
         </p>
         <h3 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h3>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
@@ -1572,7 +1573,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
     <section class="hero">
       <div class="hero-badge-container">
         <span class="badge badge-blue">Source-Available &bull; Free for Education up to 45 PCs</span>
-        <span class="badge badge-green">Debian 12 + Cloudflare Edge</span>
+        <span class="badge badge-green">Debian 13 + Cloudflare Edge</span>
       </div>
       <h1 class="hero-title">Turn Any Computer Into a <span>Secure Browser Workstation</span></h1>
       <p class="hero-desc">
@@ -2044,7 +2045,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <tbody>
             <tr>
               <td><strong>Processor (CPU)</strong></td>
-              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer)</td>
+              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer), or 64-bit ARM that boots with UEFI</td>
               <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
             </tr>
             <tr>
@@ -2069,7 +2070,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported); a 64-bit ARM computer with UEFI firmware; or a Raspberry Pi 4, Pi 400 or Compute Module 4 from its own card image. <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2151,7 +2152,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free for non-profit, accredited schools, colleges and universities, and for non-commercial evaluation and research, on up to 45 computers. Any deployment with more than 45 computers, or by a business, needs a commercial or subscriber license.
+            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 13 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free for non-profit, accredited schools, colleges and universities, and for non-commercial evaluation and research, on up to 45 computers. Any deployment with more than 45 computers, or by a business, needs a commercial or subscriber license.
           </div>
         </div>
 
@@ -2227,7 +2228,7 @@ function featuresMainHtml(): string {
     <section class="page-hero">
       <div class="hero-badge-container">
         <span class="badge badge-blue">Built for Central Management</span>
-        <span class="badge badge-green">Debian 12 + Cloudflare Edge</span>
+        <span class="badge badge-green">Debian 13 + Cloudflare Edge</span>
       </div>
       <h1 class="page-hero-title">Enterprise Kiosk <span>Capabilities</span></h1>
       <p class="page-hero-desc">
@@ -2398,7 +2399,7 @@ function specsMainHtml(): string {
       </div>
       <h1 class="page-hero-title">Technical Specifications &amp; <span>Hardware Requirements</span></h1>
       <p class="page-hero-desc">
-        Engineered to give existing computers a second life and run lightning-fast on modern x86-64 thin clients without costly storage or RAM upgrades.
+        Engineered to give existing computers a second life and run lightning-fast on modern x86-64 and ARM64 thin clients without costly storage or RAM upgrades.
       </p>
     </section>
 
@@ -2415,7 +2416,7 @@ function specsMainHtml(): string {
           <tbody>
             <tr>
               <td><strong>Processor (CPU)</strong></td>
-              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer)</td>
+              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer), or 64-bit ARM that boots with UEFI</td>
               <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
             </tr>
             <tr>
@@ -2440,7 +2441,7 @@ function specsMainHtml(): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported); a 64-bit ARM computer with UEFI firmware; or a Raspberry Pi 4, Pi 400 or Compute Module 4 from its own card image. <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2452,10 +2453,10 @@ function specsMainHtml(): string {
           <div>
             <h3 style="font-size: 1.0625rem; font-weight: 650; margin-bottom: 8px; color: var(--accent-text);">Workstation Client Stack</h3>
             <ul style="list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6;">
-              <li>Debian 12 (Bookworm) Live-Build distribution</li>
+              <li>Debian 13 (Trixie) Live-Build distribution, for x86-64 and ARM64</li>
               <li>Kiosk session started by the kiosk user without a login prompt, X running without root where the graphics allow</li>
               <li>Openbox minimal window manager with disabled keybindings</li>
-              <li>Loopback Agent Daemon (Python 3.11, bound strictly to 127.0.0.1:8888)</li>
+              <li>Loopback Agent Daemon (Python 3.13, bound strictly to 127.0.0.1:8888)</li>
               <li>MV3 Browser Extension with shadow-DOM navigation &amp; lock curtain</li>
             </ul>
           </div>
@@ -2621,7 +2622,7 @@ function pricingMainHtml(): string {
             </li>
             <li>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Build customized Debian 12 ISOs via Docker</span>
+              <span>Build customized Debian 13 ISOs via Docker, for your own platform</span>
             </li>
             <li>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
@@ -2681,6 +2682,8 @@ function releaseCardHtml(
   const isoUrl = note.iso_url ? safeHttpUrl(note.iso_url) : null;
   const checksumUrl = note.checksum_url ? safeHttpUrl(note.checksum_url) : null;
   const size = isoSizeLabel(note.iso_bytes);
+  const arm64Url = note.arm64_iso_url ? safeHttpUrl(note.arm64_iso_url) : null;
+  const arm64Size = isoSizeLabel(note.arm64_iso_bytes);
   return `
           <div class="changelog-card">
             <div class="changelog-head">
@@ -2709,10 +2712,46 @@ function releaseCardHtml(
             ${note.iso_sha256 ? `<p class="changelog-checksum">SHA256 <code>${escapeHtml(note.iso_sha256)}</code></p>` : ""}
             <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
               ${releaseUrl ? `<a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Release notes</a>` : ""}
-              ${isoUrl ? `<a href="${escapeHtml(isoUrl)}" class="btn btn-secondary btn-sm">Download ${escapeHtml(note.tag)} ISO${size ? ` (${escapeHtml(size)})` : ""}</a>` : ""}
+              ${isoUrl ? `<a href="${escapeHtml(isoUrl)}" class="btn btn-secondary btn-sm">Download ${escapeHtml(note.tag)} ISO${arm64Url ? " for x86-64" : ""}${size ? ` (${escapeHtml(size)})` : ""}</a>` : ""}
+              ${arm64Url ? `<a href="${escapeHtml(arm64Url)}" class="btn btn-secondary btn-sm">Download ${escapeHtml(note.tag)} ISO for ARM64${arm64Size ? ` (${escapeHtml(arm64Size)})` : ""}</a>` : ""}
               ${checksumUrl ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">${note.iso_sha256 ? "SHA256 file" : "SHA256"}</a>` : ""}
             </div>
           </div>`;
+}
+
+/**
+ * The newest release's arm64 ISO, when it has one: for 64-bit ARM computers
+ * and virtual machines that boot with UEFI. A Raspberry Pi boots with its own
+ * firmware, not UEFI, and does not start it.
+ */
+function arm64DownloadHtml(latest: ReleaseNote | null): string {
+  const isoUrl = latest?.arm64_iso_url ? safeHttpUrl(latest.arm64_iso_url) : null;
+  if (!latest || !isoUrl) return "";
+  const checksumUrl = latest.arm64_checksum_url ? safeHttpUrl(latest.arm64_checksum_url) : null;
+  const isoName = isoFileName(isoUrl) || ARM64_RELEASE_ISO_NAME;
+  const size = isoSizeLabel(latest.arm64_iso_bytes);
+  const releaseUrl = safeHttpUrl(latest.url);
+  return `
+      <div class="download-hero-card">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px;">
+          <h2 style="font-size: 1.375rem; font-weight: 700; color: var(--text-main);">Lab Kiosk OS ${escapeHtml(latest.tag)} for ARM64</h2>
+          <span class="badge badge-blue">UEFI</span>
+        </div>
+        <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
+          For 64-bit ARM computers and virtual machines that boot with UEFI. A Raspberry Pi starts from its own firmware, not UEFI: a Raspberry Pi 4, Pi 400 or Compute Module 4 takes the SD card image <code>labkiosk-debian13-raspi-arm64.img.xz</code>${releaseUrl ? `, published with <a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer">the release</a>` : ""}.
+        </p>
+        <div style="margin: 24px 0; display: flex; flex-wrap: wrap; gap: 12px;">
+          <a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-lg">Download ${escapeHtml(latest.tag)} for ARM64${size ? ` (${escapeHtml(size)})` : ""}</a>
+          ${checksumUrl ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-lg">${escapeHtml(isoName)}.sha256</a>` : ""}
+        </div>
+        ${
+          latest.arm64_iso_sha256
+            ? `<div class="checksum-box"><strong>SHA256 Checksum:</strong><br><code class="checksum-value">${escapeHtml(latest.arm64_iso_sha256)}</code><br>
+          Compare it with the output of <code>sha256sum ${escapeHtml(isoName)}</code> before writing the image.</div>`
+            : ""
+        }
+      </div>
+`;
 }
 
 function downloadMainHtml(
@@ -2731,6 +2770,11 @@ function downloadMainHtml(
   const isoUrl = mirrorUrl || (latest?.iso_url ? safeHttpUrl(latest.iso_url) : null) || LATEST_ISO_URL;
   const checksumUrl = (latest?.checksum_url ? safeHttpUrl(latest.checksum_url) : null) || LATEST_CHECKSUM_URL;
   const size = isoSizeLabel(latest?.iso_bytes) || "~720 MB";
+  // The names and the Debian release are the release's own, from its files.
+  const isoName = isoFileName(latest?.iso_url) || RELEASE_ISO_NAME;
+  const checksumName = `${isoName}.sha256`;
+  const debian = isoDebianRelease(isoName) || "Debian";
+  const arm64 = arm64DownloadHtml(latest);
   const downloadAction = `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg btn-block">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download ${latest ? escapeHtml(latest.tag) : "the latest release"} (.ISO)
@@ -2770,18 +2814,18 @@ function downloadMainHtml(
       </div>
       <h1 class="page-hero-title">Download <span>Lab Kiosk OS</span></h1>
       <p class="page-hero-desc">
-        Lightweight, immutable Debian 12 live-build image. Flash to a USB flash drive and turn any computer into a managed browser workstation.
+        Lightweight, immutable ${escapeHtml(debian)} live-build image for x86-64 and ARM64. Flash to a USB flash drive and turn any computer into a managed browser workstation.
       </p>
     </section>
 
     <section class="section-wrap" style="padding-top: 0;">
       <div class="download-hero-card">
         <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px;">
-          <h2 style="font-size: 1.375rem; font-weight: 700; color: var(--text-main);">Lab Kiosk OS${latest ? ` ${escapeHtml(latest.tag)}` : ""} (x86-64)</h2>
+          <h2 style="font-size: 1.375rem; font-weight: 700; color: var(--text-main);">Lab Kiosk OS${latest ? ` ${escapeHtml(latest.tag)}` : ""} for Intel and AMD (x86-64)</h2>
           <span class="badge badge-green">Stable Release</span>
         </div>
         <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
-          Includes Linux 6.1 LTS kernel, Chromium enterprise policy, loopback agent daemon, and tmpfs RAM overlay.
+          Includes the ${escapeHtml(debian)} long-term kernel, Chromium enterprise policy, loopback agent daemon, and tmpfs RAM overlay.
         </p>
 
         <div class="download-meta-grid">
@@ -2799,7 +2843,7 @@ function downloadMainHtml(
           </div>
           <div class="download-meta-item">
             <span class="download-meta-label">Base OS</span>
-            <span class="download-meta-val">Debian 12 Bookworm</span>
+            <span class="download-meta-val">${escapeHtml(debian)}</span>
           </div>
         </div>
 
@@ -2812,15 +2856,15 @@ function downloadMainHtml(
           ${
             latest?.iso_sha256
               ? `<code class="checksum-value">${escapeHtml(latest.iso_sha256)}</code><br>
-          Compare it with the output of <code>sha256sum ${RELEASE_ISO_NAME}</code> before writing the image. It is also published with the release as
-          <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${RELEASE_CHECKSUM_NAME}</a>.`
+          Compare it with the output of <code>sha256sum ${escapeHtml(isoName)}</code> before writing the image. It is also published with the release as
+          <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(checksumName)}</a>.`
               : `Published with every release as
-          <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${RELEASE_CHECKSUM_NAME}</a>.
-          Compare it with the output of <code>sha256sum ${RELEASE_ISO_NAME}</code> before writing the image.`
+          <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(checksumName)}</a>.
+          Compare it with the output of <code>sha256sum ${escapeHtml(isoName)}</code> before writing the image.`
           }
         </div>
       </div>
-
+${arm64}
       <div style="max-width: 840px; margin: 0 auto 56px;">
         <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">3-Step Deployment Guide</h2>
         <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
@@ -3087,7 +3131,7 @@ export function renderDownloadHtml(data: LandingOptions): string {
   const mirrorUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
   return renderPublicShell(data, {
     title: "Lab Kiosk OS - Download Bootable ISO & Flashing Guide",
-    description: "Download the latest Lab Kiosk Debian 12 live-build ISO image, SHA256 checksums, 3-step flashing instructions, and Docker build commands.",
+    description: "Download the latest Lab Kiosk Debian live-build ISO image for x86-64 or ARM64, SHA256 checksums, 3-step flashing instructions, and Docker build commands.",
     activeNav: "download",
     mainHtml: downloadMainHtml(mirrorUrl, data.releases || [], data.releaseSupport || [])
   });

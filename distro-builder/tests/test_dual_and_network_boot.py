@@ -322,7 +322,7 @@ class InstallerBesideAnotherSystem(unittest.TestCase):
         removable = install.index('"--removable"')
         self.assertLess(install.rindex("if not beside:", 0, removable), removable)
         bios = install.index('"--target=i386-pc"')
-        self.assertIn("if not beside and not", install[install.rindex("if ", 0, bios):bios])
+        self.assertIn("and not beside and not", install[install.rindex("if ", 0, bios):bios])
         # Beside another system the ESP formatted and booted from is Lab Kiosk's own.
         self.assertIn('run_cmd(["mkfs.vfat", "-F", "32", "-n", BESIDE_ESP_LABEL if beside else "ESP", part_esp])',
                       install)
@@ -627,6 +627,61 @@ class BootServerTool(unittest.TestCase):
             self.assertIn("labkiosk/2.9.0/vmlinuz", menus.pop())
             self.assertTrue(read(out, "labkiosk", "boot.ipxe").startswith("#!ipxe\n"))
             self.assertFalse([n for n in os.listdir(os.path.join(out, "labkiosk")) if ".tmp-" in n])
+
+    def prepare_arm64(self, tmp, out, arch_files):
+        live = os.path.join(tmp, "live")
+        os.makedirs(live, exist_ok=True)
+        for name in tool.IMAGE_FILES:
+            with open(os.path.join(live, name), "wb") as handle:
+                handle.write(name.encode())
+        extracted = {}
+        for path, content in arch_files:
+            extracted[path] = os.path.join(tmp, os.path.basename(path))
+            with open(extracted[path], "w", encoding="utf-8") as handle:
+                handle.write(content)
+
+        def extract(squashfs, path, scratch):
+            if path not in extracted:
+                raise SystemExit(f"labkiosk-netboot: /{path} is not in the image")
+            return extracted[path]
+
+        argv = ["prepare", "--live-dir", live, "--out", out, "--server-address", "192.168.1.10", "--arch", "arm64"]
+        with mock.patch.object(tool, "extract_from_squashfs", side_effect=extract), \
+                mock.patch.object(tool, "UNDIONLY_CANDIDATES", (os.path.join(tmp, "live", "vmlinuz"),)), \
+                mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            return tool.main(argv)
+
+    def test_an_arm64_release_is_served_through_its_own_shim_with_no_bios_boot(self):
+        arm = tool.PLATFORMS["arm64"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "www")
+            self.assertEqual(self.prepare_arm64(tmp, out, ((tool.VERSION_FILE, "4.1.0\n"), (arm["shim"], "shim"),
+                                                           (arm["grub"], "grub"))), 0)
+            self.assertEqual(read(out, "labkiosk", "shimaa64.efi"), "shim")
+            self.assertEqual(read(out, "labkiosk", "grubaa64.efi"), "grub")
+            self.assertEqual(read(out, "labkiosk", "ARCHITECTURE"), "arm64\n")
+            self.assertTrue(os.path.isfile(os.path.join(out, "debian-installer", "arm64", "grub", "grub.cfg")))
+            for absent in ("shimx64.efi", "boot.ipxe", "undionly.kpxe"):
+                self.assertFalse(os.path.exists(os.path.join(out, "labkiosk", absent)), absent)
+
+    def test_an_image_of_another_architecture_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "www")
+            # An amd64 image: no arm64 shim inside.
+            with self.assertRaises(SystemExit):
+                self.prepare_arm64(tmp, out, ((tool.VERSION_FILE, "4.1.0\n"), (tool.SHIM, "shim"), (tool.NETWORK_GRUB, "grub")))
+            self.assertFalse(os.path.exists(out))
+
+    def test_one_folder_serves_one_architecture(self):
+        arm = tool.PLATFORMS["arm64"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "www")
+            os.makedirs(os.path.join(out, "labkiosk"))
+            with open(os.path.join(out, "labkiosk", "ARCHITECTURE"), "w", encoding="utf-8") as handle:
+                handle.write("amd64\n")
+            with self.assertRaises(SystemExit) as raised:
+                self.prepare_arm64(tmp, out, ((tool.VERSION_FILE, "4.1.0\n"), (arm["shim"], "s"), (arm["grub"], "g")))
+            self.assertIn("serves amd64", str(raised.exception.code))
 
     def test_wrong_arguments_stop_it(self):
         base = ["prepare", "--live-dir", "/nonexistent", "--out", "/nonexistent", "--server-address", "192.168.1.10"]

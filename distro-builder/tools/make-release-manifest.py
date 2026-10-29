@@ -14,6 +14,10 @@ written here and checks every chunk hash before it writes the chunk to disk.
 A `security` release (`--kind security --base-version 2.6.0`) is written only
 by security-rebuild.yml (section 7): the same source as its base release,
 rebuilt with newer Debian packages, one patch version up on the same line.
+
+`--architecture` names what the image was built for. An amd64 manifest leaves
+the field out, so updaters from before arm64 still take it; any other names
+it, and only a workstation of that architecture takes it.
 """
 
 import argparse
@@ -32,6 +36,9 @@ CHUNK_SIZE = 8 * 1024 * 1024
 VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
 CHANNELS = ("stable", "beta")
 KINDS = ("feature", "security")
+DEFAULT_ARCHITECTURE = "amd64"
+# The same pattern as labkiosk-update's ARCHITECTURE_PATTERN.
+ARCHITECTURE_PATTERN = re.compile(r"^[a-z0-9]{2,16}\Z")
 
 
 def line_of(version):
@@ -59,7 +66,7 @@ def hash_file(path, chunk_size):
 
 
 def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_size=CHUNK_SIZE,
-                   kind="feature", base_version=None):
+                   kind="feature", base_version=None, architecture=DEFAULT_ARCHITECTURE):
     for name, value in (("version", version), ("security floor", security_floor)):
         if not VERSION_PATTERN.match(value):
             raise ValueError(f"{name} {value!r} is not a release version")
@@ -67,6 +74,8 @@ def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_s
         raise ValueError(f"channel must be one of {', '.join(CHANNELS)}")
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {', '.join(KINDS)}")
+    if not ARCHITECTURE_PATTERN.match(architecture or ""):
+        raise ValueError(f"architecture {architecture!r} is not a Debian architecture name")
     if kind == "feature" and base_version is not None:
         raise ValueError("only a security release names a base version")
     if kind == "security":
@@ -80,7 +89,7 @@ def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_s
         if not os.path.isfile(path):
             raise ValueError(f"{path} is missing")
         files.append(dict(name=name, **hash_file(path, chunk_size)))
-    return {
+    manifest = {
         "version": version,
         "channel": channel,
         "kind": kind,
@@ -89,6 +98,9 @@ def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_s
         "securityFloor": security_floor,
         "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(built_at)),
     }
+    if architecture != DEFAULT_ARCHITECTURE:
+        manifest["architecture"] = architecture
+    return manifest
 
 
 def main(argv=None):
@@ -99,6 +111,8 @@ def main(argv=None):
     parser.add_argument("--channel", required=True, choices=CHANNELS)
     parser.add_argument("--kind", choices=KINDS, default="feature")
     parser.add_argument("--base-version", help="the release a security release rebuilds")
+    parser.add_argument("--architecture", default=DEFAULT_ARCHITECTURE,
+                        help="the architecture the image is built for (default amd64)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
 
@@ -107,7 +121,8 @@ def main(argv=None):
     try:
         built_at = int(epoch) if epoch else int(time.time())
         manifest = build_manifest(args.live, args.version, args.security_floor, args.channel, built_at,
-                                  kind=args.kind, base_version=args.base_version)
+                                  kind=args.kind, base_version=args.base_version,
+                                  architecture=args.architecture)
     except ValueError as err:
         print(f"make-release-manifest: {err}", file=sys.stderr)
         return 1

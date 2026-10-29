@@ -111,4 +111,13 @@ if [ "$update_keys" -lt 2 ]; then
 fi
 echo "[Hook] $update_keys release-signing keys for over-the-air updates."
 
+# 7. The architecture this image is built for. labkiosk-update takes only a
+#    release signed for it (a manifest without "architecture" is amd64's, as
+#    every release before arm64 was), and asks the control plane for that
+#    architecture's build. Written here from dpkg, never from the source tree,
+#    so it cannot disagree with the binaries in the image.
+dpkg --print-architecture > /usr/share/labkiosk/architecture
+chmod 0644 /usr/share/labkiosk/architecture
+echo "[Hook] Image architecture: $(cat /usr/share/labkiosk/architecture)."
+
 echo "[Hook] Hardening complete."

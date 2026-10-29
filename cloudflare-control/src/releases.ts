@@ -2,7 +2,10 @@
  * Over-the-air releases (docs/OTA_UPDATES.md sections 5.3 to 5.7).
  *
  * CI signs each release and uploads it to the releases bucket as five files
- * under `releases/<version>/`. A super admin's Releases page finds them there,
+ * under `releases/<version>/`: the amd64 build, which every release has. A
+ * build for another architecture is the same five files under
+ * `releases/<version>/<architecture>/`, uploaded before amd64's manifest, and
+ * goes only to the workstations of that architecture. A super admin's Releases page finds them there,
  * records each one in `releases`, and classifies a feature release `beta` or
  * `stable`; until then it reaches no workstation. An organization's
  * workstations are offered the newest unrevoked release of its channel (a
@@ -47,6 +50,10 @@ export const UPDATE_CHANNELS: readonly UpdateChannel[] = ["stable", "beta"];
 /** The files of one release, as build-iso.yml uploads them. */
 export const RELEASE_FILES = ["vmlinuz", "initrd.img", "filesystem.squashfs", "manifest.json.sig", "manifest.json"] as const;
 const RELEASE_PREFIX = "releases/";
+/** The architecture of `releases/<version>/` itself, and of every workstation that does not say. */
+export const DEFAULT_ARCHITECTURE = "amd64";
+/** A Debian architecture name, as labkiosk-update's ARCHITECTURE_PATTERN accepts it. */
+export const ARCHITECTURE_PATTERN = /^[a-z0-9]{2,16}$/;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 /** Releases looked at per sync: each new one is a manifest read from R2. */
 const MAX_NEW_PER_SYNC = 50;
@@ -94,6 +101,8 @@ export interface ReleaseRow {
   classified_at: number | null;
   classified_by: string | null;
   revoked_at: number | null;
+  /** Comma-separated: the architectures the release has a signed build for. */
+  architectures: string;
 }
 
 /** A release as the Releases page and a workstation see it. */
@@ -108,6 +117,8 @@ export interface ReleaseSummary {
   foundAt: number;
   classifiedAt: number | null;
   revokedAt: number | null;
+  /** The architectures it has a signed build for, amd64 first. */
+  architectures: string[];
 }
 
 /** The release offered to one organization, as a workstation fetches it. */
@@ -457,7 +468,9 @@ function majorGated(access: MajorAccess): boolean {
  * The parts of a manifest the console shows and the offer is ordered by.
  * Throws on anything that is not a manifest build-iso.yml would write.
  */
-export function parseManifest(text: string): Omit<ReleaseSummary, "channel" | "foundAt" | "classifiedAt" | "revokedAt"> {
+export function parseManifest(
+  text: string
+): Omit<ReleaseSummary, "channel" | "foundAt" | "classifiedAt" | "revokedAt" | "architectures"> & { architecture: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -490,7 +503,12 @@ export function parseManifest(text: string): Omit<ReleaseSummary, "channel" | "f
     sizeBytes += size;
   }
   if (names.size !== 3) throw new Error("manifest.json does not list the three image files");
+  // An amd64 build leaves its architecture out, as every release before arm64 did.
+  if (m.architecture !== undefined && (typeof m.architecture !== "string" || !ARCHITECTURE_PATTERN.test(m.architecture) || m.architecture === DEFAULT_ARCHITECTURE)) {
+    throw new Error("manifest.json has an invalid architecture");
+  }
   return {
+    architecture: (m.architecture as string | undefined) ?? DEFAULT_ARCHITECTURE,
     version: m.version,
     kind: m.kind,
     baseVersion: (m.baseVersion as string | null | undefined) ?? null,
@@ -511,8 +529,48 @@ export function summarize(row: ReleaseRow): ReleaseSummary {
     builtAt: row.built_at,
     foundAt: Number(row.found_at) || 0,
     classifiedAt: row.classified_at ?? null,
-    revokedAt: row.revoked_at ?? null
+    revokedAt: row.revoked_at ?? null,
+    architectures: releaseArchitectures(row.architectures)
   };
+}
+
+/** The architectures column as a list, amd64 first; amd64 alone when it is empty. */
+export function releaseArchitectures(column: string | null | undefined): string[] {
+  const listed = (column || "").split(",").map((a) => a.trim()).filter((a) => ARCHITECTURE_PATTERN.test(a));
+  const others = [...new Set(listed.filter((a) => a !== DEFAULT_ARCHITECTURE))].sort();
+  return [DEFAULT_ARCHITECTURE, ...others];
+}
+
+/**
+ * The builds of other architectures in a release's folder: each a folder
+ * `releases/<version>/<architecture>/` whose signed manifest names that
+ * architecture and that version. One that does not is an error, so a release
+ * is never recorded with a build a workstation would refuse.
+ */
+async function otherArchitectures(bucket: R2Bucket, version: string): Promise<string[]> {
+  const folder = `${RELEASE_PREFIX}${version}/`;
+  const found: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix: folder, delimiter: "/", cursor });
+    for (const prefix of page.delimitedPrefixes) {
+      const architecture = prefix.slice(folder.length).replace(/\/$/, "");
+      if (!ARCHITECTURE_PATTERN.test(architecture) || architecture === DEFAULT_ARCHITECTURE) {
+        throw new Error(`${prefix} is not the folder of an architecture's build`);
+      }
+      const object = await bucket.get(`${prefix}manifest.json`);
+      if (!object) throw new Error(`the ${architecture} build has no manifest.json`);
+      if (object.size > MAX_MANIFEST_BYTES) throw new Error(`the ${architecture} build's manifest.json is too large`);
+      const parsed = parseManifest(await object.text());
+      if (parsed.version !== version || parsed.architecture !== architecture) {
+        throw new Error(`the ${architecture} folder holds the ${parsed.architecture} manifest of ${parsed.version}`);
+      }
+      if (!(await bucket.head(`${prefix}manifest.json.sig`))) throw new Error(`the ${architecture} build's manifest.json.sig is missing`);
+      found.push(architecture);
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return found.sort();
 }
 
 /** Every release recorded, newest version first. */
@@ -569,13 +627,16 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
       const text = await object.text();
       const parsed = parseManifest(text);
       if (parsed.version !== version) throw new Error(`the folder ${version} holds the manifest of ${parsed.version}`);
+      if (parsed.architecture !== DEFAULT_ARCHITECTURE) throw new Error(`the folder ${version} holds a ${parsed.architecture} manifest, not amd64's`);
       if (!(await bucket.head(`${RELEASE_PREFIX}${version}/manifest.json.sig`))) throw new Error("manifest.json.sig is missing");
+      // Uploaded before amd64's manifest, so they are all there by now.
+      const architectures = [DEFAULT_ARCHITECTURE, ...(await otherArchitectures(bucket, version))].join(",");
       await db
         .prepare(
-          `INSERT OR IGNORE INTO releases (version, channel, kind, base_version, security_floor, size_bytes, built_at, manifest, found_at)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT OR IGNORE INTO releases (version, channel, kind, base_version, security_floor, size_bytes, built_at, manifest, found_at, architectures)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .bind(version, parsed.kind, parsed.baseVersion, parsed.securityFloor, parsed.sizeBytes, parsed.builtAt, text, now)
+        .bind(version, parsed.kind, parsed.baseVersion, parsed.securityFloor, parsed.sizeBytes, parsed.builtAt, text, now, architectures)
         .run();
       // The first release of a major above every one recorded starts closed:
       // no workstation is moved to it until a super admin opens or grants it.
@@ -642,7 +703,8 @@ export async function offeredReleases(
   db: D1Database,
   channel: UpdateChannel | null | undefined,
   tenantId: string | null,
-  now = Math.floor(Date.now() / 1000)
+  now = Math.floor(Date.now() / 1000),
+  architecture: string = DEFAULT_ARCHITECTURE
 ): Promise<ReleaseOffer[]> {
   const channels = channel === "beta" ? ["stable", "beta"] : ["stable"];
   const [support, majors, grants] = await Promise.all([
@@ -652,12 +714,24 @@ export async function offeredReleases(
   ]);
   const res = await db
     .prepare(
-      `SELECT version, kind, channel, size_bytes, classified_at, found_at FROM releases
+      `SELECT version, kind, channel, size_bytes, classified_at, found_at, architectures FROM releases
        WHERE revoked_at IS NULL AND (kind = 'security' OR channel IN (${channels.map(() => "?").join(",")}))`
     )
     .bind(...channels)
-    .all<{ version: string; kind: ReleaseKind; channel: UpdateChannel | null; size_bytes: number; classified_at: number | null; found_at: number }>();
-  const rows = (res.results || []).filter((row) => isReleaseVersion(row.version));
+    .all<{
+      version: string;
+      kind: ReleaseKind;
+      channel: UpdateChannel | null;
+      size_bytes: number;
+      classified_at: number | null;
+      found_at: number;
+      architectures: string;
+    }>();
+  // Only the releases with a build for this architecture: an arm64 workstation
+  // is never offered a release it would refuse.
+  const rows = (res.results || []).filter(
+    (row) => isReleaseVersion(row.version) && releaseArchitectures(row.architectures).includes(architecture)
+  );
   // The lines this channel offers a feature release of: a security release of
   // any other line is offered only to the workstations already on it.
   const lines = new Set(
@@ -839,9 +913,9 @@ export function securityReleasesPending(
  * platform has no release address configured. https only, except a local
  * development address; a workstation's updater checks the same.
  */
-export function releaseFolderUrl(env: Env, version: string): string | null {
+export function releaseFolderUrl(env: Env, version: string, architecture: string = DEFAULT_ARCHITECTURE): string | null {
   const base = (env.RELEASES_BASE_URL || "").trim();
-  if (!base || !isReleaseVersion(version)) return null;
+  if (!base || !isReleaseVersion(version) || !ARCHITECTURE_PATTERN.test(architecture)) return null;
   const validated = safeHttpUrl(base);
   if (!validated) return null;
   let parsed: URL;
@@ -852,7 +926,8 @@ export function releaseFolderUrl(env: Env, version: string): string | null {
   }
   if (parsed.search || parsed.hash || parsed.username || parsed.password) return null;
   if (parsed.protocol !== "https:" && !isLocalAddress(parsed.hostname)) return null;
-  return `${validated.replace(/\/+$/, "")}/${RELEASE_PREFIX}${version}`;
+  const folder = `${validated.replace(/\/+$/, "")}/${RELEASE_PREFIX}${version}`;
+  return architecture === DEFAULT_ARCHITECTURE ? folder : `${folder}/${architecture}`;
 }
 
 /**

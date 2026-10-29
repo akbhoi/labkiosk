@@ -1,6 +1,6 @@
 # LabKiosk Distro Builder & Client OS — AI Agent Codex
 
-> **Scope:** This document is the authoritative architectural specification and coding standard for the **Debian 12 Live Kiosk Operating System**, containerized ISO build pipeline, local Python agent daemon, automated hard disk installer, and Chromium Manifest V3 extension.
+> **Scope:** This document is the authoritative architectural specification and coding standard for the **Debian 13 Live Kiosk Operating System** (amd64 and arm64), containerized ISO build pipeline, local Python agent daemon, automated hard disk installer, and Chromium Manifest V3 extension.
 > For the Cloudflare edge SaaS control plane, refer to [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.agents/skills/labkiosk-core/SKILL.md`](../.agents/skills/labkiosk-core/SKILL.md).
 
 ---
@@ -439,7 +439,9 @@ distro-builder/
 - **UEFI PXE and BIOS iPXE only.** Debian 12's signed network GRUB has no HTTP client (Debian
   bug #1016873; the VM test saw 2.06-13+deb12u2 stop at `grub>` after a UEFI HTTP Boot), so the
   GRUB menu loads the kernel and initrd from GRUB's own boot device (TFTP), never `(http,…)`, and
-  UEFI HTTP Boot is not offered. Revisit with the Debian 13 major release.
+  UEFI HTTP Boot is not offered. Whether Debian 13's signed GRUB has one is not checked yet; until
+  a VM test shows it, keep TFTP. `prepare --arch arm64` lays out an arm64 release (`shimaa64.efi`,
+  `grubaa64.efi`); one folder serves one architecture.
 - The boot network is trusted: GRUB's menu, kernel and initrd come over plain TFTP (or HTTP for
   iPXE), the squashfs over plain HTTP, and Secure Boot verifies only shim, GRUB and the kernel. The enrollment key is readable on that
   network. Say so wherever network boot is documented.
@@ -829,7 +831,7 @@ docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akb
 > podman machine stop && podman machine set --rootful && podman machine start
 > ```
 >
-> Check with: `docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'`
+> Check with: `docker run --rm --privileged debian:trixie-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'`
 
 *Note: Never bind-mount the source tree directly over `/build` in the container on Windows, because
 Windows 9P/drvfs mounts enforce `nodev`/`noexec` and break `mknod`. Only `out/` is bind-mounted,
@@ -858,7 +860,7 @@ iPXE). Step 4b prints the boot's timings. An installed disk's BIOS boot is cover
 `/dev/kvm`, so it does not run on Windows:
 
 ```bash
-sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
+sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian13-amd64.iso
 ```
 
 CI runs it as parallel jobs from the same ISO artifact, one per group of `BOOT_TEST_GROUPS`

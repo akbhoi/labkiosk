@@ -80,6 +80,10 @@ import {
 import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
+  offeredReleases,
+  releaseArchitectures,
+  releaseFolderUrl,
+  syncReleases,
   installsByItself,
   isReleaseVersion,
   normalizeUpdateReport,
@@ -119,7 +123,7 @@ import {
   verifyPassword
 } from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
-import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
+import { changeList, listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
 import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
 import { headingId, renderMarkdown } from "../src/markdown";
 import { renderPortalHtml } from "../src/ui_portal";
@@ -552,7 +556,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(download, /Download/);
     assert.match(download, /SHA256 Checksum/);
     // The page points at what is published; it never states a version or a checksum of its own.
-    assert.ok(download.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso.sha256"'));
+    assert.ok(download.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian13-amd64.iso.sha256"'));
     assert.ok(!/\bv\d+\.\d+\.\d+\b/.test(download), "no version number is written into the page");
     assert.ok(!/\b[0-9a-f]{64}\b/.test(download), "no checksum is written into the page");
     // The footer is on every page: its section links go to the home page, where the sections are.
@@ -1807,6 +1811,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual(await rotateUncheckedEnrollmentKeys(db), [], "nothing left to rotate");
   });
 
+  test("A release body's download guide is not part of its change list", () => {
+    const guide = "## Which file do I need?\n\n- A Raspberry Pi 4: the card image\n\n<!-- labkiosk:changes -->\n\n";
+    assert.equal(changeList(`${guide}**Full Changelog**: https://github.com/akbhoi/labkiosk/compare/v5.0.0...v5.0.1`),
+      "**Full Changelog**: https://github.com/akbhoi/labkiosk/compare/v5.0.0...v5.0.1", "the marker ends the guide even when GitHub lists no pull request");
+    assert.equal(changeList(`${guide}## What's Changed\n* Fix by @a`), "## What's Changed\n* Fix by @a");
+    assert.equal(changeList("## Which file\n\n- x\n\n## What's Changed\n* Fix by @a"), "## What's Changed\n* Fix by @a", "a release from before the marker");
+    assert.equal(changeList("- Fix the clock"), "- Fix the clock", "a body with neither is kept whole");
+  });
+
   test("The download page shows what GitHub published for each release, summarized for customers", async () => {
     const db = getDatabase(mockEnv);
     const body = [
@@ -1983,6 +1996,34 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.match(page, /End of life:<\/strong> Lab Kiosk 2\.x \(since 31 March 2027\)\. It receives no further updates/);
       assert.ok(page.includes("Latest Release v3.0.0"));
       await db.prepare("DELETE FROM release_support WHERE major = 2").run();
+      // A release built for both architectures, on Debian 13: each ISO is stored and offered, under its own name.
+      const download = (tag: string, name: string) => `https://github.com/akbhoi/labkiosk/releases/download/${tag}/${name}`;
+      const both = release("v3.1.0", "2026-10-14T06:00:00Z", {
+        body: `## Which file do I need?\n\n- Intel or AMD PC: the amd64 ISO\n\n<!-- labkiosk:changes -->\n\n${body}`,
+        assets: (["amd64", "arm64"] as const).flatMap((arch) => [
+          { name: `labkiosk-debian13-${arch}.iso`, size: arch === "amd64" ? 801112064 : 790626304, digest: `sha256:${(arch === "amd64" ? "34" : "12").repeat(32)}`, browser_download_url: download("v3.1.0", `labkiosk-debian13-${arch}.iso`) },
+          { name: `labkiosk-debian13-${arch}.iso.sha256`, size: 94, browser_download_url: download("v3.1.0", `labkiosk-debian13-${arch}.iso.sha256`) }
+        ])
+      });
+      githubAnswer = new Response(JSON.stringify([both, release("v3.0.0", "2026-10-13T06:00:00Z"), security, release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
+      assert.deepEqual(await (await syncCall(configured, `Bearer ${token}`)).json(), { stored: 8, latest: "v3.1.0" });
+      const newest = (await listReleaseNotes(db))[0];
+      // The download guide above GitHub's change list is not a change.
+      assert.ok(!newest.source_body.includes("Which file do I need") && newest.source_body.startsWith("## What's Changed"), newest.source_body);
+      assert.equal(newest.iso_url, download("v3.1.0", "labkiosk-debian13-amd64.iso"));
+      assert.equal(newest.iso_sha256, "34".repeat(32));
+      assert.equal(newest.arm64_iso_url, download("v3.1.0", "labkiosk-debian13-arm64.iso"));
+      assert.equal(newest.arm64_checksum_url, download("v3.1.0", "labkiosk-debian13-arm64.iso.sha256"));
+      assert.equal(newest.arm64_iso_sha256, "12".repeat(32));
+      assert.equal((await listReleaseNotes(db)).find((r) => r.tag === "v3.0.0")?.arm64_iso_url, null, "a release before arm64 has none");
+      page = await (await call("/download")).text();
+      assert.ok(page.includes("Lab Kiosk OS v3.1.0 for Intel and AMD (x86-64)") && page.includes("Lab Kiosk OS v3.1.0 for ARM64"));
+      assert.ok(page.includes(`href="${download("v3.1.0", "labkiosk-debian13-arm64.iso")}"`));
+      assert.ok(page.includes(`<code class="checksum-value">${"12".repeat(32)}</code>`));
+      assert.ok(page.includes("sha256sum labkiosk-debian13-amd64.iso") && page.includes("sha256sum labkiosk-debian13-arm64.iso"));
+      assert.ok(page.includes('<span class="download-meta-val">Debian 13</span>'), "the base is the release's own");
+      assert.ok(page.includes("Download v3.1.0 ISO for x86-64") && page.includes("Download v3.1.0 ISO for ARM64"));
+      assert.ok(page.includes("labkiosk-debian13-raspi-arm64.img.xz</code>, published with <a href=\"https://github.com/akbhoi/labkiosk/releases/tag/v3.1.0\""), "a Pi owner is pointed at the card image");
       githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
       assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
       assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");
@@ -1993,9 +2034,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Nothing is known yet: the page links GitHub's "latest" address and says nothing of an operator's settings.
     await db.prepare("DELETE FROM release_notes").run();
     page = await (await call("/download")).text();
-    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian13-amd64.iso"'));
+    assert.ok(!page.includes("for ARM64</h2>"), "no arm64 build is offered before one is known");
+    // The home page sends a visitor to /download, which offers each architecture's ISO.
     const home = await (await call("/")).text();
-    assert.ok(home.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    assert.ok(home.includes('href="/download" class="btn btn-primary btn-block"'));
     for (const html of [page, home]) assert.ok(!/ISO_DOWNLOAD_URL|worker secret|No pre-built release ISO/.test(html));
   });
 
@@ -8156,6 +8199,62 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(logs.some((l: any) => l.action === "release.classify" && /2\.9\.0 -> beta/.test(l.details)));
   });
 
+  test("Releases: a build for another architecture is recorded with its release and offered to that architecture alone", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const arm = (version: string, architecture = "arm64") => JSON.stringify({ ...JSON.parse(releaseManifest(version)), architecture });
+    const bucket = fakeReleasesBucket({
+      // amd64 alone, as every release before arm64.
+      "releases/4.0.0/manifest.json": releaseManifest("4.0.0"),
+      "releases/4.0.0/manifest.json.sig": "sig",
+      // Both, the arm64 build in a folder of its own.
+      "releases/4.1.0/manifest.json": releaseManifest("4.1.0"),
+      "releases/4.1.0/manifest.json.sig": "sig",
+      "releases/4.1.0/arm64/manifest.json": arm("4.1.0"),
+      "releases/4.1.0/arm64/manifest.json.sig": "sig",
+      // An arm64 folder holding another version's build is reported, and the release is not recorded.
+      "releases/4.2.0/manifest.json": releaseManifest("4.2.0"),
+      "releases/4.2.0/manifest.json.sig": "sig",
+      "releases/4.2.0/arm64/manifest.json": arm("4.1.0"),
+      "releases/4.2.0/arm64/manifest.json.sig": "sig",
+      // An arm64 build without its signature, too.
+      "releases/4.3.0/manifest.json": releaseManifest("4.3.0"),
+      "releases/4.3.0/manifest.json.sig": "sig",
+      "releases/4.3.0/arm64/manifest.json": arm("4.3.0"),
+      // amd64's folder holding an arm64 manifest.
+      "releases/4.4.0/manifest.json": arm("4.4.0"),
+      "releases/4.4.0/manifest.json.sig": "sig",
+      // A manifest naming amd64 outright is not one CI writes.
+      "releases/4.5.0/manifest.json": arm("4.5.0", "amd64"),
+      "releases/4.5.0/manifest.json.sig": "sig"
+    });
+    const sync = await syncReleases(bucket, db);
+    assert.deepEqual(sync.added, ["4.0.0", "4.1.0"]);
+    const problems = Object.fromEntries(sync.problems.map((p) => [p.version, p.problem]));
+    assert.match(problems["4.2.0"], /arm64 folder holds the arm64 manifest of 4\.1\.0/);
+    assert.match(problems["4.3.0"], /arm64 build's manifest\.json\.sig is missing/);
+    assert.match(problems["4.4.0"], /holds a arm64 manifest, not amd64's/);
+    assert.match(problems["4.5.0"], /invalid architecture/);
+    const stored = await db.prepare("SELECT version, architectures FROM releases ORDER BY version").all<{ version: string; architectures: string }>();
+    assert.deepEqual(stored.results?.map((row) => ({ ...row })), [
+      { version: "4.0.0", architectures: "amd64" },
+      { version: "4.1.0", architectures: "amd64,arm64" }
+    ]);
+    await db.prepare("UPDATE releases SET channel = 'stable'").run();
+    const versions = async (architecture?: string) =>
+      (await offeredReleases(db, "stable", null, Math.floor(Date.now() / 1000), architecture)).map((r) => r.version);
+    assert.deepEqual(await versions(), ["4.1.0", "4.0.0"], "amd64 when the workstation does not say");
+    assert.deepEqual(await versions("arm64"), ["4.1.0"], "an arm64 workstation is never offered an amd64-only release");
+    assert.deepEqual(await versions("riscv64"), []);
+    assert.deepEqual(releaseArchitectures("arm64,amd64,../x,arm64"), ["amd64", "arm64"]);
+    assert.deepEqual(releaseArchitectures(""), ["amd64"]);
+
+    const env = { ...mockEnv, RELEASES_BASE_URL: "https://releases.example.org/" } as Env;
+    assert.equal(releaseFolderUrl(env, "4.1.0"), "https://releases.example.org/releases/4.1.0");
+    assert.equal(releaseFolderUrl(env, "4.1.0", "arm64"), "https://releases.example.org/releases/4.1.0/arm64");
+    assert.equal(releaseFolderUrl(env, "4.1.0", "../x"), null);
+  });
+
   test("Update settings: the channel belongs to staff holding the updates permission", async () => {
     const anonymous = await call("/api/settings/updates?tenant=greenwood");
     assert.ok([401, 403].includes(anonymous.status));
@@ -8208,6 +8307,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       url: "https://releases.example.org/releases/2.9.0",
       automatic: false
     }, "an updater that does not say what it runs installs nothing by itself");
+    const amd = await (await callWith(releasesEnv, "/api/devices/update?arch=amd64", { bearer: token })).json<any>();
+    assert.equal(amd.release.url, "https://releases.example.org/releases/2.9.0", "amd64's build is the folder itself");
+    assert.equal((await callWith(releasesEnv, "/api/devices/update?arch=../amd64", { bearer: token })).status, 400);
+    const arm = await (await callWith(releasesEnv, "/api/devices/update?arch=arm64", { bearer: token })).json<any>();
+    assert.equal(arm.release, null, "an arm64 workstation is not offered a release with no arm64 build");
     assert.equal((await callWith(mockEnv, "/api/devices/update", { bearer: token })).status, 503, "no public address configured");
     const plainHttp = { ...releasesEnv, RELEASES_BASE_URL: "http://releases.example.org" } as Env;
     assert.equal((await callWith(plainHttp, "/api/devices/update", { bearer: token })).status, 503, "https only");

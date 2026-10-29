@@ -505,7 +505,7 @@ Configure production variables in the **Cloudflare Dashboard**:
      should list the public pages under, when the zone redirects the apex to it (e.g.
      `www.labkiosk.yourdomain.com`). It must be `DEFAULT_DOMAIN` or a host under it; without it the
      apex is canonical.
-   - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
+   - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 13 Kiosk ISO (e.g. GitHub Releases artifact).
    - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
    - `RELEASES_BASE_URL` (optional): the public https address of the `labkiosk-releases` bucket (see "Over-the-air updates").
    - `MAIL_FROM`, `SUPPORT_ADDRESS`, `SUPPORT_FORWARD_TO`: email (see "Email").

@@ -1248,7 +1248,7 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
     the home page is blocked until the control plane is reachable."""
 
     PATCHED = ("apply_proxy_to_environment", "apply_saved_localization", "load_config",
-               "sync_chromium_policies", "telemetry_loop", "log")
+               "sync_chromium_policies", "telemetry_loop", "log", "is_network_boot", "is_live_session")
 
     def setUp(self):
         self.orig = {name: getattr(agent, name) for name in self.PATCHED}
@@ -1259,12 +1259,15 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
         agent.apply_saved_localization = lambda: None
         agent.load_config = lambda: None
         agent.log = lambda message: None
+        # An installed workstation unless a test says otherwise.
+        agent.is_network_boot = lambda: False
+        agent.is_live_session = lambda: False
         agent.sync_chromium_policies = lambda hosts, force=False: self.events.append(("sync", list(hosts), force))
 
         events = self.events
 
         class RecordingThread:
-            def __init__(self, target=None, daemon=None):
+            def __init__(self, target=None, daemon=None, name=None):
                 self.target = target
 
             def start(self):
@@ -1292,13 +1295,23 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
         self.run_main()
         self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server"),
                                        ("thread", "boot_report_loop"), ("thread", "usage_loop"), ("thread", "power_loop"),
-                                       ("thread", "printing_loop")])
+                                       ("thread", "printing_loop"), ("thread", "preset_enrol_loop")])
 
     def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
         agent.state["isConfigured"] = False
         self.run_main()
         self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop"), ("thread", "usage_loop"),
-                                       ("thread", "power_loop"), ("thread", "printing_loop")])
+                                       ("thread", "power_loop"), ("thread", "printing_loop"), ("thread", "preset_enrol_loop")])
+
+    def test_a_live_session_applies_its_stick_settings_and_a_network_boot_enrols(self):
+        agent.state["isConfigured"] = False
+        agent.is_live_session = lambda: True
+        self.run_main()
+        self.assertEqual(self.events[-1], ("thread", "apply_preset"))
+        self.events.clear()
+        agent.is_network_boot = lambda: True
+        self.run_main()
+        self.assertEqual(self.events[-1], ("thread", "network_boot_enrol_loop"))
 
 
 class ReenrolmentGating(unittest.TestCase):

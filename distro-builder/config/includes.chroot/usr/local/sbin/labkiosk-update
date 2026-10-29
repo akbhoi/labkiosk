@@ -106,6 +106,15 @@ SIGNATURE_NAME = "manifest.json.sig"
 VERIFIED_NAME = ".verified"
 
 MANIFEST_KEYS = {"version", "channel", "kind", "baseVersion", "files", "securityFloor", "builtAt"}
+# The architecture a release is built for. An amd64 manifest leaves it out, as
+# every release before arm64 did, so the updaters already installed take it;
+# every other architecture's manifest names it, which those updaters refuse.
+ARCHITECTURE_KEY = "architecture"
+DEFAULT_ARCHITECTURE = "amd64"
+ARCHITECTURE_PATTERN = re.compile(r"^[a-z0-9]{2,16}\Z")
+# Written by the image build (02-security.hook.chroot) from dpkg. An image
+# without it is from before arm64, and so amd64.
+ARCHITECTURE_FILE = "/usr/share/labkiosk/architecture"
 FILE_KEYS = {"name", "size", "sha256", "chunkSize", "chunks"}
 CHANNELS = ("stable", "beta")
 KINDS = ("feature", "security")
@@ -190,6 +199,22 @@ def version_key(version):
     return numbers, (0, tuple(parts))
 
 
+def image_architecture(path=ARCHITECTURE_FILE):
+    """The architecture this image was built for."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            architecture = handle.read().strip()
+    except FileNotFoundError:
+        return DEFAULT_ARCHITECTURE
+    if not ARCHITECTURE_PATTERN.match(architecture):
+        raise UpdateError(f"{path} does not name an architecture: {architecture!r}")
+    return architecture
+
+
+def manifest_architecture(manifest):
+    return manifest.get(ARCHITECTURE_KEY, DEFAULT_ARCHITECTURE)
+
+
 def read_security_floor(path=SECURITY_FLOOR_FILE):
     with open(path, "r", encoding="utf-8") as handle:
         floor = handle.read().strip()
@@ -244,8 +269,14 @@ def validate_manifest(data):
         manifest = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as err:
         raise UpdateError(f"manifest.json is not JSON: {err}") from err
-    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
-        raise UpdateError(f"manifest.json must have exactly the fields {sorted(MANIFEST_KEYS)}")
+    if not isinstance(manifest, dict) or set(manifest) - {ARCHITECTURE_KEY} != MANIFEST_KEYS:
+        raise UpdateError(f"manifest.json must have exactly the fields {sorted(MANIFEST_KEYS)}, "
+                          f"and {ARCHITECTURE_KEY} for a release not built for {DEFAULT_ARCHITECTURE}")
+    if ARCHITECTURE_KEY in manifest:
+        architecture = manifest[ARCHITECTURE_KEY]
+        if not isinstance(architecture, str) or not ARCHITECTURE_PATTERN.match(architecture) \
+                or architecture == DEFAULT_ARCHITECTURE:
+            raise UpdateError(f"architecture {architecture!r} is not one a manifest names")
     version = manifest["version"]
     floor = manifest["securityFloor"]
     if not isinstance(version, str) or not isinstance(floor, str):
@@ -285,13 +316,19 @@ def validate_manifest(data):
     return manifest
 
 
-def check_release(manifest, floor, running, env, root):
+def check_release(manifest, floor, running, env, root, architecture=DEFAULT_ARCHITECTURE):
     """
-    Refuse a release this disk must not take, before anything is written.
+    Refuse a release this disk must not take, before anything is written: one
+    below the security floor, the image it already boots, or one built for
+    another architecture than this image's (a LAN peer of another architecture
+    is refused here, from its manifest alone).
 
     True when it is already downloaded and verified: there is nothing to do.
     """
     version = manifest["version"]
+    built_for = manifest_architecture(manifest)
+    if built_for != architecture:
+        raise UpdateError(f"{version} is built for {built_for}, and this workstation runs {architecture}")
     if version_key(version) < version_key(floor):
         raise UpdateError(f"{version} is below this workstation's security floor {floor}")
     if version in (running, env.get("current")):
@@ -499,7 +536,7 @@ def free_old_images(root, boot_dir, env, keep):
 
 
 def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV, report=None,
-             expected=None, timeout=HTTP_TIMEOUT):
+             expected=None, timeout=HTTP_TIMEOUT, architecture=None):
     """
     Fetch, verify and store a signed release in root/images/<version>.
 
@@ -508,7 +545,9 @@ def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV
     `report(version, percent)` hears the download's progress, whole percents.
     With `expected`, a validly signed release of any other version is refused
     before anything is written: a peer on the LAN cannot swap the release.
+    `architecture` is this image's (image_architecture() when None).
     """
+    architecture = architecture or image_architecture()
     opener = opener or opener_for(running)
     boot_dir = os.path.join(root, slots.BOOT_DIR_NAME)
     env = slots.read_env(boot_dir)
@@ -528,7 +567,7 @@ def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV
     log(f"{version} ({manifest['kind']}, {manifest['channel']}) is signed by {signer}")
     if expected is not None and version != expected:
         raise UpdateError(f"{base_url} holds {version}, not {expected}")
-    if check_release(manifest, floor, running, env, root):
+    if check_release(manifest, floor, running, env, root, architecture):
         log(f"{version} is already downloaded and verified")
         return {"downloaded": version, "kind": manifest["kind"], "channel": manifest["channel"],
                 "signer": signer, "already": True}
@@ -791,7 +830,7 @@ def parse_lan(value):
     return {"peers": peers}
 
 
-def fetch_offer(opener, worker_url, token, running):
+def fetch_offer(opener, worker_url, token, running, architecture=DEFAULT_ARCHITECTURE):
     """
     What this workstation's organization is offered:
 
@@ -807,9 +846,13 @@ def fetch_offer(opener, worker_url, token, running):
     A control plane from before phase 4 sends neither securityUpdates nor
     security: no security release is then offered, and none is ever staged.
     One from before phase 5 sends no `lan`, which is None.
+
+    `arch` names this image's architecture, so each release's `url` is the
+    folder of that architecture's build; a control plane from before arm64
+    ignores it and answers with amd64's, which check_release then refuses.
     """
     request = urllib.request.Request(
-        worker_url + OFFER_PATH + "?" + urllib.parse.urlencode({"running": running}),
+        worker_url + OFFER_PATH + "?" + urllib.parse.urlencode({"running": running, "arch": architecture}),
         headers={"Authorization": f"Bearer {token}", "User-Agent": user_agent(running)},
     )
     try:
@@ -922,7 +965,8 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
         return {"state": "idle", "reason": "trial"}
     report("checking")
     try:
-        offer = fetch_offer(opener, worker_url, token, running)
+        architecture = image_architecture()
+        offer = fetch_offer(opener, worker_url, token, running, architecture)
         if offer["lan"] is None:
             share(False)
         target = offer["security"] or offer["release"]
@@ -948,7 +992,8 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
         for peer in (offer["lan"] or {}).get("peers", [])[:MAX_PEERS_TRIED]:
             try:
                 result = download(root, f"http://{peer}:{LAN_SHARE_PORT}/{version}", running, floor, keyring_dir,
-                                  peer_opener, gpgv, report=progress, expected=version, timeout=PEER_TIMEOUT)
+                                  peer_opener, gpgv, report=progress, expected=version, timeout=PEER_TIMEOUT,
+                                  architecture=architecture)
                 log(f"copied {version} from {peer} on the local network")
                 break
             except UpdateError as err:
@@ -956,7 +1001,7 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
                 log(f"could not copy {version} from {peer}: {err}")
         if result is None:
             result = download(root, target["url"], running, floor, keyring_dir, opener, gpgv,
-                              report=progress, expected=version)
+                              report=progress, expected=version, architecture=architecture)
         if result["downloaded"] != version:
             raise UpdateError(f"the control plane offered {version} but its folder holds {result['downloaded']}")
         if target is offer["security"]:
