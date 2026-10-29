@@ -135,6 +135,19 @@ class NothingUntestedIsPublished(unittest.TestCase):
     def test_the_smoke_test_is_shellchecked(self):
         self.assertIn("distro-builder/tests/vm/live-smoke-test.sh", read_workflow("ci.yml"))
 
+    def test_a_security_rebuild_installs_what_the_boot_test_needs(self):
+        def packages(name, step):
+            workflow = read_workflow(name)
+            start = workflow.index(f"- name: {step}")
+            command = re.search(r"apt-get install -y --no-install-recommends ((?:\\\n|[^\n])+)", workflow[start:])
+            self.assertIsNotNone(command, f"{name}: no apt-get install in '{step}'")
+            return set(command.group(1).replace("\\\n", " ").split()) - {"\\"}
+
+        needed = packages("build-iso.yml", "Boot-test the installed disk")
+        installed = packages("security-rebuild.yml", "Boot-test the installed disk")
+        self.assertIn("python3-virt-firmware", needed)
+        self.assertLessEqual(needed, installed, "the security rebuild runs the same boot test")
+
     def test_the_boot_test_jobs_cover_every_group(self):
         iso = read_workflow("build-iso.yml")
         groups = re.findall(r"^\s+groups: (\S+)$", iso, re.MULTILINE)

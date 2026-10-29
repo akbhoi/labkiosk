@@ -443,7 +443,8 @@ jobs:
       - name: Boot-test the installed disk
         if: matrix.arch == 'amd64'
         run: |
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf swtpm cryptsetup-bin
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xorriso squashfs-tools \
+            swtpm cryptsetup-bin dosfstools python3-virt-firmware
           sudo rebuild-src/distro-builder/tests/vm/boot-test.sh \
             "rebuild-src/distro-builder/out/$ISO" "$RUNNER_TEMP/boot-test"
 

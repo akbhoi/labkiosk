@@ -735,7 +735,8 @@ class AgentReportsHardware(unittest.TestCase):
 class AgentCountsUsage(unittest.TestCase):
     def setUp(self):
         self.now = [1000.0]
-        self.day = ["2026-10-20"]
+        # Today: take() drops days older than USAGE_MAX_AGE_DAYS, so a fixed date goes stale.
+        self.day = [time.strftime("%Y-%m-%d")]
         self.counter = agent.UsageCounter(clock=lambda: self.now[0], today=lambda: self.day[0])
         saved = {name: getattr(agent, name) for name in ("post_device_json", "log")}
         saved_state = dict(agent.state)
@@ -771,7 +772,7 @@ class AgentCountsUsage(unittest.TestCase):
         self.counter.tick("video.example.org", True)
         self.advance(600)  # asleep or switched off: only a bounded credit
         self.counter.tick("video.example.org", True)
-        day = self.days()["2026-10-20"]
+        day = self.days()[self.day[0]]
         self.assertEqual(day["activeSeconds"], 60 + agent.USAGE_TICK_MAX_CREDIT_SECONDS)
         self.assertEqual(day["onSeconds"], 60 + 60 + agent.USAGE_ON_MAX_CREDIT_SECONDS)
         self.assertEqual(day["sites"], [
@@ -785,7 +786,7 @@ class AgentCountsUsage(unittest.TestCase):
         self.advance(60)
         self.counter.tick("docs.example.org", True)
         self.counter.session_started()
-        day = self.days()["2026-10-20"]
+        day = self.days()[self.day[0]]
         self.assertEqual((day["sites"], day["sessions"], day["activeSeconds"]), ([], 1, 60), "time in use is counted all the same")
         self.counter.set_record_sites(True)
         self.counter.tick("docs.example.org", True)
