@@ -23,10 +23,10 @@ name: Security rebuild
 # rebuilt on every architecture when any of them has a fix: the release is one
 # version everywhere. The jobs: plan (which lines and builds), check (one per
 # build: is anything outdated?), decide, build (one per build: bump, build,
-# check; arm64 smoke-tests its live image), boot-test (one per group of the
-# release's own boot test, in parallel, on the amd64 ISO), publish (one per
-# line, once every build and boot test passed: sign each architecture,
-# upload, tag, announce).
+# check), smoke-test (the live image of every architecture but amd64),
+# boot-test (one per group of the release's own boot test, in parallel, on
+# the amd64 ISO), publish (one per line, once every build, smoke test and
+# boot test passed: sign each architecture, upload, tag, announce).
 #
 # The decisions -- which lines, which builds, which packages, the version
 # bump, the notes -- are distro-builder/tools/security-rebuild.py, tested in
@@ -262,6 +262,7 @@ jobs:
       builds: ${{ steps.decide.outputs.builds }}
       lines: ${{ steps.decide.outputs.lines }}
       boot_tests: ${{ steps.decide.outputs.boot_tests }}
+      smoke_tests: ${{ steps.decide.outputs.smoke_tests }}
     steps:
       - name: Checkout the tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,6 +298,7 @@ jobs:
           echo "builds=$(jq -c .builds <<< "$decided")" >> "$GITHUB_OUTPUT"
           echo "lines=$(jq -c .lines <<< "$decided")" >> "$GITHUB_OUTPUT"
           echo "boot_tests=$(jq -c .bootTests <<< "$decided")" >> "$GITHUB_OUTPUT"
+          echo "smoke_tests=$(jq -c .smokeTests <<< "$decided")" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.version }} (${{ matrix.arch }})
@@ -453,46 +455,27 @@ jobs:
             fi
           done
 
-      # The boot test runs in the boot-test jobs, one per group of the
-      # release's own test, in parallel as build-iso.yml runs it. They get the
-      # ISO and the test as it stands here: the release's, with the fixes
-      # above. A tarball keeps the scripts executable. The artifact's name has
-      # no "-<version>-", so the publish job's download leaves it out.
-      - name: Pack the ISO and its boot test
-        if: matrix.arch == 'amd64'
+      # The ISO is tested in jobs of its own, as build-iso.yml tests it: the
+      # amd64 one by the boot-test jobs, one per group of the release's own
+      # test, every other one by a smoke-test job. They get the ISO and the
+      # tests as they stand here: the release's, with the fixes above. A
+      # tarball keeps the scripts executable. The artifact's name has no
+      # "-<version>-", so the publish job's download leaves it out.
+      - name: Pack the ISO and its tests
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/boot-test-input"
-          mv "rebuild-src/distro-builder/out/$ISO" "rebuild-src/distro-builder/out/$ISO.sha256" "$RUNNER_TEMP/boot-test-input/"
-          tar -C rebuild-src -cf "$RUNNER_TEMP/boot-test-input/boot-test-src.tar" distro-builder/tests distro-builder/tools
+          mkdir -p "$RUNNER_TEMP/test-input"
+          mv "rebuild-src/distro-builder/out/$ISO" "rebuild-src/distro-builder/out/$ISO.sha256" "$RUNNER_TEMP/test-input/"
+          tar -C rebuild-src -cf "$RUNNER_TEMP/test-input/test-src.tar" distro-builder/tests distro-builder/tools
 
-      - name: Keep the ISO for the boot test
-        if: matrix.arch == 'amd64'
+      - name: Keep the ISO for its tests
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: boot-test-input-v${{ matrix.version }}
-          path: ${{ runner.temp }}/boot-test-input/
+          name: test-input-v${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/test-input/
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
-
-      # Every other architecture: the release's own live smoke test, as
-      # build-iso.yml runs it on a feature release.
-      - name: Smoke-test the live image
-        if: matrix.arch != 'amd64'
-        run: |
-          sudo apt-get install -y --no-install-recommends qemu-system-arm
-          sudo SMOKE_TIMEOUT=1800 rebuild-src/distro-builder/tests/vm/live-smoke-test.sh \
-            "rebuild-src/distro-builder/out/$ISO" "$RUNNER_TEMP/smoke"
-
-      - name: Upload the smoke test's serial log
-        if: failure() && matrix.arch != 'amd64'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: smoke-test-${{ matrix.version }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/smoke/serial.log
-          if-no-files-found: ignore
-          retention-days: 7
 
       # What the publish job signs and uploads: the live system, its package
       # list and the commit it was built from. Uploaded last, so a build that
@@ -510,6 +493,67 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  # Every architecture but amd64: the release's own live smoke test, as
+  # build-iso.yml runs it on a feature release, beside the boot test.
+  smoke-test:
+    name: Smoke test ${{ matrix.version }} (${{ matrix.arch }})
+    needs: [decide, build]
+    if: always() && needs.decide.result == 'success' && needs.decide.outputs.smoke_tests != '[]'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.decide.outputs.smoke_tests) }}
+    env:
+      ISO: ${{ matrix.iso }}
+
+    steps:
+      # A build that failed uploaded nothing, so this fails too and its line
+      # is not published.
+      - name: Collect the ISO and its smoke test
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: test-input-v${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/input
+
+      - name: Unpack the smoke test of ${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          (cd "$RUNNER_TEMP/input" && sha256sum -c "$ISO.sha256")
+          mkdir -p rebuild-src
+          tar -C rebuild-src -xf "$RUNNER_TEMP/input/test-src.tar"
+
+      - name: Smoke-test the live image
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-arm xorriso
+          sudo SMOKE_TIMEOUT=1800 rebuild-src/distro-builder/tests/vm/live-smoke-test.sh \
+            "$RUNNER_TEMP/input/$ISO" "$RUNNER_TEMP/smoke"
+
+      - name: Upload the smoke test's serial log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-test-serial-v${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/smoke/serial.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # What the publish job checks for: this architecture's live image booted.
+      - name: Record the pass
+        run: |
+          mkdir -p "$RUNNER_TEMP/passed"
+          echo "${{ matrix.version }} ${{ matrix.arch }}" > "$RUNNER_TEMP/passed/${{ matrix.arch }}"
+
+      - name: Keep the pass
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-tested-${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/passed/
+          if-no-files-found: error
+          retention-days: 7
 
   # The release's own boot test of the amd64 build, one job per group of it,
   # as build-iso.yml runs a feature release's: the groups boot the installed
@@ -533,7 +577,7 @@ jobs:
       - name: Collect the ISO and its boot test
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: boot-test-input-v${{ matrix.version }}
+          name: test-input-v${{ matrix.version }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/input
 
       - name: Unpack the boot test of ${{ matrix.tag }}
@@ -541,7 +585,7 @@ jobs:
           set -euo pipefail
           (cd "$RUNNER_TEMP/input" && sha256sum -c "$ISO.sha256")
           mkdir -p rebuild-src
-          tar -C rebuild-src -xf "$RUNNER_TEMP/input/boot-test-src.tar"
+          tar -C rebuild-src -xf "$RUNNER_TEMP/input/test-src.tar"
 
       # An empty group runs the whole test: a release's test from before
       # BOOT_TEST_GROUPS.
@@ -584,7 +628,7 @@ jobs:
 
   publish:
     name: Line ${{ matrix.line }} (${{ matrix.tag }})
-    needs: [decide, build, boot-test]
+    needs: [decide, build, smoke-test, boot-test]
     # A line is published when every one of its architectures was built; a
     # build that failed leaves its own line unpublished, not the others.
     if: always() && needs.decide.result == 'success' && needs.decide.outputs.lines != '[]'
@@ -646,6 +690,13 @@ jobs:
             fi
             if [ "$(cat "$built")" != "$commit" ]; then
               echo "::error::The $arch build of v${{ matrix.version }} built $(cat "$built"), not $commit."
+              exit 1
+            fi
+          done
+          # Every architecture but amd64 passed its live smoke test.
+          for arch in $ARCHITECTURES; do
+            if [ "$arch" != amd64 ] && [ ! -f "$RUNNER_TEMP/artifacts/smoke-tested-${{ matrix.version }}-$arch/$arch" ]; then
+              echo "::error::The $arch smoke test of v${{ matrix.version }} did not pass; the line is not published."
               exit 1
             fi
           done

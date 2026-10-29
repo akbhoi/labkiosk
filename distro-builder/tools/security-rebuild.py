@@ -510,9 +510,10 @@ def plan_builds(lines, platforms, epoch):
 
 def decide(builds, decisions, force=False):
     """
-    The builds to run, the boot tests to run on them and the lines to
-    publish. A boot test runs on the amd64 build, one job per group of the
-    release's own test (one job for all of it when the test has no groups).
+    The builds to run, the tests to run on them and the lines to publish. A
+    boot test runs on the amd64 build, one job per group of the release's own
+    test (one job for all of it when the test has no groups); every other
+    architecture's build gets a live smoke test, in a job of its own.
     `decisions` is the check of
     each build: {"version", "arch", "outdated": a count}. A line is rebuilt,
     for every one of its architectures, when any of them is outdated (or with
@@ -529,7 +530,7 @@ def decide(builds, decisions, force=False):
     by_version = {}
     for build in builds:
         by_version.setdefault(build["version"], []).append(build)
-    chosen, lines, boot_tests = [], [], []
+    chosen, lines, boot_tests, smoke_tests = [], [], [], []
     for version, targets in by_version.items():
         counts = [checked.get((version, target["arch"])) for target in targets]
         if None in counts:
@@ -545,11 +546,12 @@ def decide(builds, decisions, force=False):
                      | {"architectures": [target["arch"] for target in targets], "bootTestGroups": groups})
         for target in targets:
             if target["arch"] != DEFAULT_ARCHITECTURE:
+                smoke_tests.append({key: target[key] for key in ("tag", "version", "arch", "iso", "runner")})
                 continue
             for group in groups or [""]:
                 boot_tests.append({key: target[key] for key in ("tag", "version", "arch", "iso")}
                                   | {"group": group, "name": group or "all"})
-    return {"builds": chosen, "lines": lines, "bootTests": boot_tests}
+    return {"builds": chosen, "lines": lines, "bootTests": boot_tests, "smokeTests": smoke_tests}
 
 
 # --------------------------------------------------------------------------
