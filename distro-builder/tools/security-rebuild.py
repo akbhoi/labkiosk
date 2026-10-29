@@ -80,7 +80,7 @@ DISTRIBUTION_PATTERN = re.compile(r"^\s*--distribution\s+\"?([a-z]+)\"?\s*\\?\s*
 # The boot test's groups, each run in a job of its own like build-iso.yml does.
 # A release's test without ALL_GROUPS runs whole, in one job.
 BOOT_TEST = "distro-builder/tests/vm/boot-test.sh"
-BOOT_TEST_GROUPS_PATTERN = re.compile(r'^ALL_GROUPS="([a-z][a-z ]*)"\s*$', re.MULTILINE)
+BOOT_TEST_GROUPS_PATTERN = re.compile(r'^ALL_GROUPS="([a-z0-9][a-z0-9_ -]*)"\s*$', re.MULTILINE)
 
 # Where a version lives in the source tree, relative to the repository root.
 VERSION_FILE = "distro-builder/config/includes.chroot/usr/share/labkiosk/version"

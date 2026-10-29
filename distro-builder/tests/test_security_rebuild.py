@@ -412,6 +412,7 @@ class Platforms(unittest.TestCase):
     def test_the_boot_test_groups_are_the_release_tests_own(self):
         self.assertEqual(rebuild.boot_test_groups('set -eu\nALL_GROUPS="slots tpm beside"\n'), ["slots", "tpm", "beside"])
         self.assertEqual(rebuild.boot_test_groups("set -eu\n"), [], "an older test runs whole")
+        self.assertEqual(rebuild.boot_test_groups('ALL_GROUPS="tpm2 dual-boot net_boot"\n'), ["tpm2", "dual-boot", "net_boot"])
         with self.assertRaises(ValueError):
             rebuild.boot_test_groups('ALL_GROUPS="a"\nALL_GROUPS="b"\n')
 
