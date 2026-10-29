@@ -45,8 +45,11 @@ const server = http.createServer(async (req, res) => {
     const ab = await webRes.arrayBuffer();
     res.end(Buffer.from(ab));
   } catch (err: any) {
+    // The stack goes to this terminal, not to whoever made the request: the
+    // simulator's workstations reach this server over the network too.
+    console.error(err);
     res.statusCode = 500;
-    res.end(err.stack || err.message);
+    res.end("Internal Server Error");
   }
 });
 
