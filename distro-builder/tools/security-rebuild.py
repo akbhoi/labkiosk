@@ -33,12 +33,14 @@ the command says otherwise, messages on stderr.
 """
 
 import argparse
+import http.client
 import json
 import lzma
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -64,6 +66,9 @@ RUNNERS = {"amd64": "ubuntu-latest", "arm64": "ubuntu-24.04-arm"}
 # amd64 first: it is the folder's root in R2 and its manifest goes up last.
 DEFAULT_ARCHITECTURE = "amd64"
 HTTP_TIMEOUT = 120
+# deb.debian.org is a CDN; a dropped connection or a 5xx is retried, a 4xx is not.
+FETCH_ATTEMPTS = 4
+FETCH_BACKOFF_SECONDS = 10
 MAX_INDEX_BYTES = 256 * 1024 * 1024
 
 # What a source tree builds, relative to the repository root. A tree without
@@ -376,6 +381,27 @@ def read_index(path):
     return data.decode("utf-8")
 
 
+def fetch(url, sleep=time.sleep):
+    """One index, retried with a growing pause when the mirror drops the connection or answers 5xx."""
+    request = urllib.request.Request(url, headers={"User-Agent": "LabKioskSecurityRebuild/1"})
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+                return response.read(MAX_INDEX_BYTES + 1)
+        except urllib.error.HTTPError as err:
+            if err.code < 500 or attempt == FETCH_ATTEMPTS:
+                raise RuntimeError(f"could not fetch {url}: {err}") from err
+            failure = err
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+            # HTTPException covers IncompleteRead: the connection dropped mid-transfer.
+            if attempt == FETCH_ATTEMPTS:
+                raise RuntimeError(f"could not fetch {url} after {attempt} attempts: {err}") from err
+            failure = err
+        log(f"fetching {url} failed ({failure}); attempt {attempt + 1} of {FETCH_ATTEMPTS} in {FETCH_BACKOFF_SECONDS * attempt}s")
+        sleep(FETCH_BACKOFF_SECONDS * attempt)
+    raise AssertionError("unreachable")
+
+
 def fetch_indices(mirror, suite, architecture, components=COMPONENTS):
     """The Packages index of each component, from the security archive's mirror."""
     if not mirror.startswith("https://"):
@@ -387,12 +413,7 @@ def fetch_indices(mirror, suite, architecture, components=COMPONENTS):
     texts = []
     for component in components:
         url = f"{mirror.rstrip('/')}/dists/{suite}/{component}/binary-{architecture}/Packages.xz"
-        request = urllib.request.Request(url, headers={"User-Agent": "LabKioskSecurityRebuild/1"})
-        try:
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-                data = response.read(MAX_INDEX_BYTES + 1)
-        except (urllib.error.URLError, OSError) as err:
-            raise RuntimeError(f"could not fetch {url}: {err}") from err
+        data = fetch(url)
         if len(data) > MAX_INDEX_BYTES:
             raise RuntimeError(f"{url} is larger than {MAX_INDEX_BYTES} bytes")
         try:

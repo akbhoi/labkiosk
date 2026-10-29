@@ -277,6 +277,47 @@ class Check(unittest.TestCase):
                              "the archive is read over https only")
 
 
+class Fetch(unittest.TestCase):
+    """deb.debian.org sometimes drops a connection; one blip must not fail the day's rebuild."""
+
+    def setUp(self):
+        self.answers = []
+        self.pauses = []
+        saved = rebuild.urllib.request.urlopen
+        self.addCleanup(setattr, rebuild.urllib.request, "urlopen", saved)
+        rebuild.urllib.request.urlopen = self.urlopen
+
+    def urlopen(self, request, timeout):
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return contextlib.nullcontext(io.BytesIO(answer))
+
+    def fetch(self):
+        return rebuild.fetch("https://deb.debian.org/x/Packages.xz", sleep=self.pauses.append)
+
+    def http_error(self, code):
+        return rebuild.urllib.error.HTTPError("https://deb.debian.org/x/Packages.xz", code, "", {}, None)
+
+    def test_a_dropped_connection_or_a_5xx_is_retried(self):
+        self.answers = [rebuild.urllib.error.URLError("EOF occurred in violation of protocol"),
+                        rebuild.http.client.IncompleteRead(b"partial", 10), self.http_error(503), b"index"]
+        self.assertEqual(self.fetch(), b"index")
+        self.assertEqual(self.pauses, [n * rebuild.FETCH_BACKOFF_SECONDS for n in (1, 2, 3)])
+
+    def test_a_missing_index_is_not_retried(self):
+        self.answers = [self.http_error(404)]
+        with self.assertRaisesRegex(RuntimeError, "404"):
+            self.fetch()
+        self.assertEqual(self.pauses, [])
+
+    def test_it_gives_up_after_the_last_attempt(self):
+        self.answers = [OSError("reset")] * rebuild.FETCH_ATTEMPTS
+        with self.assertRaisesRegex(RuntimeError, f"after {rebuild.FETCH_ATTEMPTS} attempts"):
+            self.fetch()
+        self.assertEqual(len(self.pauses), rebuild.FETCH_ATTEMPTS - 1)
+
+
 class Bump(unittest.TestCase):
     def tree(self):
         tmp = tempfile.mkdtemp(prefix="lk-bump-")
