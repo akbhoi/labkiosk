@@ -139,7 +139,9 @@ class NothingUntestedIsPublished(unittest.TestCase):
         def packages(name, step):
             workflow = read_workflow(name)
             start = workflow.index(f"- name: {step}")
-            command = re.search(r"apt-get install -y --no-install-recommends ((?:\\\n|[^\n])+)", workflow[start:])
+            end = workflow.find("\n      - ", start)  # the next step, so a later step's install never counts
+            command = re.search(r"apt-get install -y --no-install-recommends ((?:\\\n|[^\n])+)",
+                                workflow[start:end if end != -1 else len(workflow)])
             self.assertIsNotNone(command, f"{name}: no apt-get install in '{step}'")
             return set(command.group(1).replace("\\\n", " ").split()) - {"\\"}
 
