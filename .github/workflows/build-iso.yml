@@ -10,20 +10,38 @@ on:
 permissions:
   contents: read
 
-# Three stages: build the ISO, boot-test it in parallel jobs (each on its own
-# runner, from the same artifact), and on a tag sign and publish it, only after
-# every boot-test job passed. Never let two of these run against the same ref.
+# Three stages: build an ISO per architecture, each natively on a runner of
+# that architecture; test them in parallel jobs (each on its own runner, from
+# the same artifact): amd64 through the full boot test, arm64 through the live
+# smoke test; and on a tag sign and publish every one of them, only after every
+# test job passed. A release has every architecture's build or none. Never let
+# two of these run against the same ref.
 concurrency:
   group: build-iso-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build-iso:
-    name: Build Live ISO
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    name: Build Live ISO (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     permissions:
       contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            # Shared with docker-publish.yml's amd64 build of the same image.
+            cache: labkiosk-iso-builder
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            cache: labkiosk-iso-builder-arm64
+
+    env:
+      ISO: labkiosk-debian13-${{ matrix.arch }}.iso
 
     steps:
       - name: Checkout Code
@@ -113,17 +131,19 @@ jobs:
 
       # Built through buildx so the apt layer is cached. The scope is shared
       # with docker-publish.yml, so a publish run and a release build reuse the
-      # same layers instead of each installing live-build from scratch.
+      # same layers instead of each installing live-build from scratch. The
+      # image runs on this runner's architecture, and so builds that ISO.
       - name: Build the ISO builder image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: distro-builder
           file: distro-builder/Dockerfile
+          platforms: linux/${{ matrix.arch }}
           push: false
           load: true
-          tags: ghcr.io/akbhoi/labkiosk-iso-builder:ci
-          cache-from: type=gha,scope=labkiosk-iso-builder
-          cache-to: type=gha,mode=max,scope=labkiosk-iso-builder
+          tags: ghcr.io/akbhoi/labkiosk-iso-builder:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.cache }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache }}
 
       # GitHub runners give a rootful Docker daemon, so --privileged really is
       # privileged and debootstrap's mknod succeeds. See distro-builder/README.md.
@@ -140,8 +160,9 @@ jobs:
           status=0
           docker run --privileged --rm \
             -e LABKIOSK_GRUB_PBKDF2 \
+            -e LABKIOSK_ARCH=${{ matrix.arch }} \
             -v "$PWD/distro-builder/out:/build/out" \
-            ghcr.io/akbhoi/labkiosk-iso-builder:ci || status=$?
+            ghcr.io/akbhoi/labkiosk-iso-builder:ci-${{ matrix.arch }} || status=$?
           kill "$sampler"
           peak=$(sort -n "$RUNNER_TEMP/disk-used.txt" | tail -1)
           echo "Disk: the build used at most $(( (${peak:-$used_before} - used_before) / 1024 )) GiB on / beyond what was in use before it."
@@ -150,19 +171,38 @@ jobs:
       - name: Verify the checksum
         working-directory: distro-builder/out
         run: |
-          cat labkiosk-debian12-amd64.iso.sha256
-          sha256sum -c labkiosk-debian12-amd64.iso.sha256
-          ls -lh labkiosk-debian12-amd64.iso
+          cat "$ISO.sha256"
+          sha256sum -c "$ISO.sha256"
+          ls -lh "$ISO"
+
+      # The image says what it was built for (02-security.hook.chroot); an ISO
+      # of the wrong architecture never reaches a test or a release.
+      - name: Check the image's architecture
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xorriso squashfs-tools
+          work="$RUNNER_TEMP/arch-check"
+          mkdir -p "$work"
+          xorriso -osirrox on -indev "distro-builder/out/$ISO" -extract /live/filesystem.squashfs "$work/fs.squashfs" >/dev/null 2>&1
+          unsquashfs -no-xattrs -d "$work/root" "$work/fs.squashfs" usr/share/labkiosk/architecture >/dev/null
+          built="$(tr -d '[:space:]' < "$work/root/usr/share/labkiosk/architecture")"
+          rm -rf "$work"
+          if [ "$built" != "${{ matrix.arch }}" ]; then
+            echo "::error::$ISO holds an image built for '$built'."
+            exit 1
+          fi
+          echo "$ISO is built for $built."
 
       - name: Upload ISO Artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: labkiosk-debian12-amd64-iso
+          name: labkiosk-debian13-${{ matrix.arch }}-iso
           # The checksum travels with the image; an artifact nobody can verify
           # is a downgrade from one they can.
           path: |
-            distro-builder/out/labkiosk-debian12-amd64.iso
-            distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+            distro-builder/out/${{ env.ISO }}
+            distro-builder/out/${{ env.ISO }}.sha256
           retention-days: 14
           compression-level: 0 # The ISO is already gzip-compressed internally.
 
@@ -172,7 +212,9 @@ jobs:
   # an ISO that cannot roll back is never published. It also installs with an
   # encrypted data partition sealed to a TPM, beside another system (dual
   # boot), and boots over the network: UEFI PXE with Secure Boot on, and BIOS
-  # iPXE. The groups (tests/vm/boot-test.sh) run side by side, so the wall time
+  # iPXE; and a pre-configured install stick (tools/labkiosk-iso.py) starts
+  # under Secure Boot, installs and registers itself. The groups
+  # (tests/vm/boot-test.sh) run side by side, so the wall time
   # is the slowest group rather than the sum.
   boot-test:
     name: Boot test (${{ matrix.name }})
@@ -190,6 +232,8 @@ jobs:
             groups: slots
           - name: tpm and beside
             groups: tpm,beside
+          - name: preset stick
+            groups: preset
 
     steps:
       - name: Checkout Code
@@ -198,12 +242,12 @@ jobs:
       - name: Download the ISO
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: labkiosk-debian12-amd64-iso
+          name: labkiosk-debian13-amd64-iso
           path: distro-builder/out
 
       - name: Verify the checksum
         working-directory: distro-builder/out
-        run: sha256sum -c labkiosk-debian12-amd64.iso.sha256
+        run: sha256sum -c labkiosk-debian13-amd64.iso.sha256
 
       - name: Boot-test the installed disk (${{ matrix.name }})
         env:
@@ -213,7 +257,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xorriso squashfs-tools \
             swtpm cryptsetup-bin dosfstools python3-virt-firmware
           sudo --preserve-env=BOOT_TEST_GROUPS distro-builder/tests/vm/boot-test.sh \
-            distro-builder/out/labkiosk-debian12-amd64.iso "$RUNNER_TEMP/boot-test"
+            distro-builder/out/labkiosk-debian13-amd64.iso "$RUNNER_TEMP/boot-test"
 
       - name: Upload boot-test screenshots
         if: failure()
@@ -223,12 +267,128 @@ jobs:
           path: |
             ${{ runner.temp }}/boot-test/*.ppm
             ${{ runner.temp }}/boot-test/*.log
+            ${{ runner.temp }}/boot-test/preset-live/serial.log
           if-no-files-found: ignore
           retention-days: 7
 
+  # arm64: the image itself, booted on an arm64 runner (KVM when the runner
+  # offers it, else emulated): kernel, live-boot, systemd, the kiosk session,
+  # the agent and Chromium. The installed-disk scenarios of boot-test.sh are
+  # amd64's; the installer, slots and updater are the same code on arm64.
+  smoke-test-arm64:
+    name: Live smoke test (arm64)
+    needs: build-iso
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the ISO
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: labkiosk-debian13-arm64-iso
+          path: distro-builder/out
+
+      - name: Verify the checksum
+        working-directory: distro-builder/out
+        run: sha256sum -c labkiosk-debian13-arm64.iso.sha256
+
+      - name: Boot the live image
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-arm xorriso
+          ls -l /dev/kvm 2>/dev/null || echo "No /dev/kvm on this runner: the guest is emulated."
+          sudo SMOKE_TIMEOUT=1800 distro-builder/tests/vm/live-smoke-test.sh \
+            distro-builder/out/labkiosk-debian13-arm64.iso "$RUNNER_TEMP/smoke"
+
+      - name: Upload the serial console
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-test-serial-arm64
+          path: ${{ runner.temp }}/smoke/serial.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The Raspberry Pi 4 family starts from its own firmware, not UEFI, so it
+  # gets the arm64 release on a card image instead of the ISO: the same
+  # kernel, initrd and system image, with the Pi's firmware from Debian's
+  # raspi-firmware package (apt checks its signature) and the Pi 4 device
+  # trees from the image's own kernel (tools/labkiosk-raspi.py). Built from
+  # the arm64 ISO the smoke test passed; no Pi boots it in CI.
+  raspi-image:
+    name: Raspberry Pi card image
+    needs: [build-iso, smoke-test-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the arm64 ISO
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: labkiosk-debian13-arm64-iso
+          path: distro-builder/out
+
+      - name: Verify the checksum
+        working-directory: distro-builder/out
+        run: sha256sum -c labkiosk-debian13-arm64.iso.sha256
+
+      - name: Install the image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xorriso squashfs-tools dosfstools mtools
+
+      # Debian 13's raspi-firmware, from non-free-firmware, fetched by apt in a
+      # trixie container so its Release signature is checked.
+      - name: Fetch the Raspberry Pi firmware
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/firmware"
+          docker run --rm -v "$RUNNER_TEMP/firmware:/out" -w /out debian:trixie-slim sh -euc '
+            sed -i "s/^Components: main$/Components: main non-free-firmware/" /etc/apt/sources.list.d/debian.sources
+            apt-get update -qq
+            apt-get download raspi-firmware
+            chown "$(stat -c %u:%g /out)" ./*.deb'
+          ls -l "$RUNNER_TEMP/firmware"
+
+      - name: Build the card image
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=("$RUNNER_TEMP"/firmware/raspi-firmware_*.deb)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            echo "::error::Expected one raspi-firmware package, found ${#debs[@]}."
+            exit 1
+          fi
+          image=distro-builder/out/labkiosk-debian13-raspi-arm64.img
+          python3 distro-builder/tools/labkiosk-raspi.py build \
+            --iso distro-builder/out/labkiosk-debian13-arm64.iso --firmware "${debs[0]}" --out "$image"
+          xz -T0 -6 "$image"
+          (cd distro-builder/out && sha256sum labkiosk-debian13-raspi-arm64.img.xz > labkiosk-debian13-raspi-arm64.img.xz.sha256)
+          ls -lh distro-builder/out/labkiosk-debian13-raspi-arm64.img.xz
+
+      - name: Upload the card image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: labkiosk-debian13-raspi-arm64-img
+          path: |
+            distro-builder/out/labkiosk-debian13-raspi-arm64.img.xz
+            distro-builder/out/labkiosk-debian13-raspi-arm64.img.xz.sha256
+          retention-days: 14
+          compression-level: 0
+
   release:
     name: Publish the release
-    needs: [build-iso, boot-test]
+    needs: [build-iso, boot-test, smoke-test-arm64, raspi-image]
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -239,26 +399,43 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download the ISO
+      - name: Download the amd64 ISO
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: labkiosk-debian12-amd64-iso
+          name: labkiosk-debian13-amd64-iso
           path: distro-builder/out
 
-      - name: Verify the checksum
+      - name: Download the arm64 ISO
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: labkiosk-debian13-arm64-iso
+          path: distro-builder/out
+
+      - name: Download the Raspberry Pi card image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: labkiosk-debian13-raspi-arm64-img
+          path: distro-builder/out
+
+      - name: Verify the checksums
         working-directory: distro-builder/out
-        run: sha256sum -c labkiosk-debian12-amd64.iso.sha256
+        run: |
+          sha256sum -c labkiosk-debian13-amd64.iso.sha256 labkiosk-debian13-arm64.iso.sha256 \
+            labkiosk-debian13-raspi-arm64.img.xz.sha256
 
       - name: Install xorriso
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xorriso
+          sudo apt-get install -y --no-install-recommends xorriso squashfs-tools
 
       # The manifest names every file's size, sha256 and 8 MiB chunk hashes; its
       # detached signature is what a workstation checks with gpgv before it
       # downloads a byte (docs/OTA_UPDATES.md section 5.3). The signature is
       # verified here against the keys the image carries, so a secret that does
       # not match them can never publish a release no workstation would take.
+      # Each architecture gets a manifest of its own; amd64's leaves the
+      # architecture out, as every manifest before arm64 did, so workstations
+      # still on 4.x take it.
       - name: Sign the over-the-air release
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
@@ -268,34 +445,45 @@ jobs:
           share=distro-builder/config/includes.chroot/usr/share/labkiosk
           version="$(tr -d '[:space:]' < "$share/version")"
           case "$version" in *-*) channel=beta ;; *) channel=stable ;; esac
-          release="$RUNNER_TEMP/release"
-          rm -rf "$release"
-          mkdir -p "$release"
-          xorriso -osirrox on -indev distro-builder/out/labkiosk-debian12-amd64.iso \
-            -extract /live/vmlinuz "$release/vmlinuz" \
-            -extract /live/initrd.img "$release/initrd.img" \
-            -extract /live/filesystem.squashfs "$release/filesystem.squashfs" >/dev/null 2>&1
-          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" python3 distro-builder/tools/make-release-manifest.py \
-            --live "$release" --version "$version" \
-            --security-floor "$(tr -d '[:space:]' < "$share/security-floor")" \
-            --channel "$channel" --out "$release/manifest.json"
-
           GNUPGHOME="$(mktemp -d)"
           export GNUPGHOME
           trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
           printf '%s\n' "$UPDATE_SIGNING_KEY" | gpg --batch --import
-          printf '%s' "${UPDATE_SIGNING_PASSPHRASE:-}" | gpg --batch --yes --pinentry-mode loopback \
-            --passphrase-fd 0 --detach-sign --output "$release/manifest.json.sig" "$release/manifest.json"
-
           keyrings=()
           for keyring in "$share"/update-keys/*.gpg; do keyrings+=(--keyring "$PWD/$keyring"); done
-          GNUPGHOME="$(mktemp -d)" gpgv "${keyrings[@]}" "$release/manifest.json.sig" "$release/manifest.json"
-          ls -l "$release"
+
+          for arch in amd64 arm64; do
+            release="$RUNNER_TEMP/release/$arch"
+            rm -rf "$release"
+            mkdir -p "$release"
+            xorriso -osirrox on -indev "distro-builder/out/labkiosk-debian13-$arch.iso" \
+              -extract /live/vmlinuz "$release/vmlinuz" \
+              -extract /live/initrd.img "$release/initrd.img" \
+              -extract /live/filesystem.squashfs "$release/filesystem.squashfs" >/dev/null 2>&1
+            SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" python3 distro-builder/tools/make-release-manifest.py \
+              --live "$release" --version "$version" \
+              --security-floor "$(tr -d '[:space:]' < "$share/security-floor")" \
+              --channel "$channel" --architecture "$arch" --out "$release/manifest.json"
+            printf '%s' "${UPDATE_SIGNING_PASSPHRASE:-}" | gpg --batch --yes --pinentry-mode loopback \
+              --passphrase-fd 0 --detach-sign --output "$release/manifest.json.sig" "$release/manifest.json"
+            GNUPGHOME="$(mktemp -d)" gpgv "${keyrings[@]}" "$release/manifest.json.sig" "$release/manifest.json"
+            ls -l "$release"
+            # The image's package list: the base the daily security rebuild
+            # compares with the archive, without downloading the ISO.
+            # dpkg-status is amd64's, as before arm64.
+            name=dpkg-status
+            [ "$arch" = amd64 ] || name="dpkg-status-$arch"
+            unsquashfs -no-xattrs -d "$RUNNER_TEMP/packages-$arch" "$release/filesystem.squashfs" var/lib/dpkg/status >/dev/null
+            mv "$RUNNER_TEMP/packages-$arch/var/lib/dpkg/status" "$RUNNER_TEMP/$name"
+          done
 
       # Each release is a folder of its own, written once: a manifest that
       # changed under a workstation halfway through its download would make it
       # start again. The manifest goes last, so a release is never visible
-      # before its files are.
+      # before its files are. amd64 sits at the folder's root, where 4.x looks,
+      # and every other architecture in a subfolder of its name; the subfolders
+      # go first, because the controller records a release's architectures
+      # when it first sees the root manifest.
       - name: Upload the over-the-air release to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -319,19 +507,44 @@ jobs:
             echo "::error::Could not check R2 for $prefix: $found"
             exit 1
           fi
-          for name in vmlinuz initrd.img filesystem.squashfs manifest.json.sig manifest.json; do
-            aws s3 cp --no-progress --endpoint-url "$endpoint" \
-              "$RUNNER_TEMP/release/$name" "s3://$R2_RELEASES_BUCKET/$prefix/$name"
+          for arch in arm64 amd64; do
+            folder="$prefix"
+            [ "$arch" = amd64 ] || folder="$prefix/$arch"
+            for name in vmlinuz initrd.img filesystem.squashfs manifest.json.sig manifest.json; do
+              aws s3 cp --no-progress --endpoint-url "$endpoint" \
+                "$RUNNER_TEMP/release/$arch/$name" "s3://$R2_RELEASES_BUCKET/$folder/$name"
+            done
           done
+
+      # The release page opens with which file to download for which machine,
+      # the requirements and how to install; GitHub's change list follows it.
+      - name: Write the release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sed "s|@VERSION@|$VERSION|g" .github/release-body.md > "$RUNNER_TEMP/release-body.md"
+          if grep -q '@VERSION@' "$RUNNER_TEMP/release-body.md"; then
+            echo "::error::.github/release-body.md still names @VERSION@ after substitution"
+            exit 1
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: "Lab Kiosk ${{ github.ref_name }}"
+          body_path: ${{ runner.temp }}/release-body.md
           generate_release_notes: true
           files: |
-            distro-builder/out/labkiosk-debian12-amd64.iso
-            distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+            distro-builder/out/labkiosk-debian13-amd64.iso
+            distro-builder/out/labkiosk-debian13-amd64.iso.sha256
+            distro-builder/out/labkiosk-debian13-arm64.iso
+            distro-builder/out/labkiosk-debian13-arm64.iso.sha256
+            distro-builder/out/labkiosk-debian13-raspi-arm64.img.xz
+            distro-builder/out/labkiosk-debian13-raspi-arm64.img.xz.sha256
+            ${{ runner.temp }}/dpkg-status
+            ${{ runner.temp }}/dpkg-status-arm64
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
 
