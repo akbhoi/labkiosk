@@ -33,6 +33,7 @@ the command says otherwise, messages on stderr.
 """
 
 import argparse
+import http.client
 import json
 import lzma
 import os
@@ -391,7 +392,8 @@ def fetch(url, sleep=time.sleep):
             if err.code < 500 or attempt == FETCH_ATTEMPTS:
                 raise RuntimeError(f"could not fetch {url}: {err}") from err
             failure = err
-        except (urllib.error.URLError, OSError) as err:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+            # HTTPException covers IncompleteRead: the connection dropped mid-transfer.
             if attempt == FETCH_ATTEMPTS:
                 raise RuntimeError(f"could not fetch {url} after {attempt} attempts: {err}") from err
             failure = err

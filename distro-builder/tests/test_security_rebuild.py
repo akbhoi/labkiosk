@@ -300,9 +300,10 @@ class Fetch(unittest.TestCase):
         return rebuild.urllib.error.HTTPError("https://deb.debian.org/x/Packages.xz", code, "", {}, None)
 
     def test_a_dropped_connection_or_a_5xx_is_retried(self):
-        self.answers = [rebuild.urllib.error.URLError("EOF occurred in violation of protocol"), self.http_error(503), b"index"]
+        self.answers = [rebuild.urllib.error.URLError("EOF occurred in violation of protocol"),
+                        rebuild.http.client.IncompleteRead(b"partial", 10), self.http_error(503), b"index"]
         self.assertEqual(self.fetch(), b"index")
-        self.assertEqual(self.pauses, [rebuild.FETCH_BACKOFF_SECONDS, 2 * rebuild.FETCH_BACKOFF_SECONDS])
+        self.assertEqual(self.pauses, [n * rebuild.FETCH_BACKOFF_SECONDS for n in (1, 2, 3)])
 
     def test_a_missing_index_is_not_retried(self):
         self.answers = [self.http_error(404)]
