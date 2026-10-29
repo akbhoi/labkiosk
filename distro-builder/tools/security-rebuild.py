@@ -77,6 +77,10 @@ AUTO_CONFIG = "distro-builder/auto/config"
 ARCH_FOLDER = "distro-builder/config/arch"
 ARCH_FILES = ("packages.list.chroot", "bootloaders")
 DISTRIBUTION_PATTERN = re.compile(r"^\s*--distribution\s+\"?([a-z]+)\"?\s*\\?\s*$", re.MULTILINE)
+# The boot test's groups, each run in a job of its own like build-iso.yml does.
+# A release's test without ALL_GROUPS runs whole, in one job.
+BOOT_TEST = "distro-builder/tests/vm/boot-test.sh"
+BOOT_TEST_GROUPS_PATTERN = re.compile(r'^ALL_GROUPS="([a-z][a-z ]*)"\s*$', re.MULTILINE)
 
 # Where a version lives in the source tree, relative to the repository root.
 VERSION_FILE = "distro-builder/config/includes.chroot/usr/share/labkiosk/version"
@@ -465,6 +469,14 @@ def source_platforms(auto_config, arch_paths):
     }
 
 
+def boot_test_groups(boot_test):
+    """The groups a boot-test.sh splits into (its ALL_GROUPS), or [] when it has none."""
+    found = BOOT_TEST_GROUPS_PATTERN.findall(boot_test)
+    if len(found) > 1:
+        raise ValueError(f"{BOOT_TEST} sets ALL_GROUPS {len(found)} times")
+    return found[0].split() if found else []
+
+
 def git_platforms(repo, tag):
     """source_platforms() of a tag of the repository at `repo`, read with git."""
     def git(*args):
@@ -475,7 +487,7 @@ def git_platforms(repo, tag):
     auto_config = git("show", f"{tag}:{AUTO_CONFIG}")
     listing = git("ls-tree", "-r", "--name-only", tag, "--", ARCH_FOLDER + "/")
     paths = [line[len(ARCH_FOLDER) + 1:] for line in listing.splitlines() if line.startswith(ARCH_FOLDER + "/")]
-    return source_platforms(auto_config, paths)
+    return source_platforms(auto_config, paths) | {"bootTestGroups": boot_test_groups(git("show", f"{tag}:{BOOT_TEST}"))}
 
 
 def plan_builds(lines, platforms, epoch):
@@ -491,13 +503,17 @@ def plan_builds(lines, platforms, epoch):
     for line in lines:
         source = platforms[line["tag"]]
         for target in source["architectures"]:
-            builds.append({**line, "epoch": epoch, "suite": source["suite"], **target})
+            builds.append({**line, "epoch": epoch, "suite": source["suite"],
+                           "bootTestGroups": source.get("bootTestGroups", []), **target})
     return builds
 
 
 def decide(builds, decisions, force=False):
     """
-    The builds to run and the lines to publish. `decisions` is the check of
+    The builds to run, the boot tests to run on them and the lines to
+    publish. A boot test runs on the amd64 build, one job per group of the
+    release's own test (one job for all of it when the test has no groups).
+    `decisions` is the check of
     each build: {"version", "arch", "outdated": a count}. A line is rebuilt,
     for every one of its architectures, when any of them is outdated (or with
     `force`): the release is one version, the same on every architecture. A
@@ -513,7 +529,7 @@ def decide(builds, decisions, force=False):
     by_version = {}
     for build in builds:
         by_version.setdefault(build["version"], []).append(build)
-    chosen, lines = [], []
+    chosen, lines, boot_tests = [], [], []
     for version, targets in by_version.items():
         counts = [checked.get((version, target["arch"])) for target in targets]
         if None in counts:
@@ -524,9 +540,16 @@ def decide(builds, decisions, force=False):
             continue
         chosen += targets
         first = targets[0]
+        groups = list(first.get("bootTestGroups") or [])
         lines.append({key: first[key] for key in ("line", "tag", "base", "version", "newest", "epoch", "suite")}
-                     | {"architectures": [target["arch"] for target in targets]})
-    return {"builds": chosen, "lines": lines}
+                     | {"architectures": [target["arch"] for target in targets], "bootTestGroups": groups})
+        for target in targets:
+            if target["arch"] != DEFAULT_ARCHITECTURE:
+                continue
+            for group in groups or [""]:
+                boot_tests.append({key: target[key] for key in ("tag", "version", "arch", "iso")}
+                                  | {"group": group, "name": group or "all"})
+    return {"builds": chosen, "lines": lines, "bootTests": boot_tests}
 
 
 # --------------------------------------------------------------------------
