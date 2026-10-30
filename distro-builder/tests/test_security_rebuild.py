@@ -15,6 +15,7 @@ import itertools
 import json
 import lzma
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -408,8 +409,16 @@ class Platforms(unittest.TestCase):
             with self.subTest(paths=paths), self.assertRaises(ValueError):
                 rebuild.source_platforms(auto_config, paths)
 
+    def test_the_boot_test_groups_are_the_release_tests_own(self):
+        self.assertEqual(rebuild.boot_test_groups('set -eu\nALL_GROUPS="slots tpm beside"\n'), ["slots", "tpm", "beside"])
+        self.assertEqual(rebuild.boot_test_groups("set -eu\n"), [], "an older test runs whole")
+        self.assertEqual(rebuild.boot_test_groups('ALL_GROUPS="tpm2 dual-boot net_boot"\n'), ["tpm2", "dual-boot", "net_boot"])
+        with self.assertRaises(ValueError):
+            rebuild.boot_test_groups('ALL_GROUPS="a"\nALL_GROUPS="b"\n')
+
     def test_this_tree_builds_both_architectures_on_debian_13(self):
         found = rebuild.git_platforms(REPO, "HEAD")
+        self.assertIn("preset", found["bootTestGroups"])
         self.assertEqual(found["suite"], "trixie-security")
         self.assertEqual([target["arch"] for target in found["architectures"]], ["amd64", "arm64"])
 
@@ -431,7 +440,8 @@ class Platforms(unittest.TestCase):
 class Decide(unittest.TestCase):
     def setUp(self):
         platforms = {"v5.0.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
-            "amd64/bootloaders", "amd64/packages.list.chroot", "arm64/bootloaders", "arm64/packages.list.chroot"])}
+            "amd64/bootloaders", "amd64/packages.list.chroot", "arm64/bootloaders", "arm64/packages.list.chroot"])
+            | {"bootTestGroups": ["slots", "tpm"]}}
         self.builds = rebuild.plan_builds([LINE], platforms, 1790000000)
 
     def test_a_fix_on_one_architecture_rebuilds_the_line_on_every_one(self):
@@ -440,16 +450,35 @@ class Decide(unittest.TestCase):
         self.assertEqual([b["arch"] for b in decided["builds"]], ["amd64", "arm64"])
         self.assertEqual(decided["lines"], [{"line": "5.0", "tag": "v5.0.0", "base": "5.0.0", "version": "5.0.1",
                                              "newest": True, "epoch": 1790000000, "suite": "trixie-security",
-                                             "architectures": ["amd64", "arm64"]}])
+                                             "architectures": ["amd64", "arm64"], "bootTestGroups": ["slots", "tpm"]}])
+
+    def test_the_amd64_build_is_boot_tested_one_job_per_group(self):
+        decided = rebuild.decide(self.builds, [{"version": "5.0.1", "arch": arch, "outdated": 1} for arch in ("amd64", "arm64")])
+        self.assertEqual(decided["bootTests"], [
+            {"tag": "v5.0.0", "version": "5.0.1", "arch": "amd64", "iso": "labkiosk-debian13-amd64.iso",
+             "group": group, "name": group} for group in ("slots", "tpm")])
+
+    def test_every_other_architecture_is_smoke_tested_in_a_job_of_its_own(self):
+        decided = rebuild.decide(self.builds, [{"version": "5.0.1", "arch": arch, "outdated": 1} for arch in ("amd64", "arm64")])
+        self.assertEqual(decided["smokeTests"], [
+            {"tag": "v5.0.0", "version": "5.0.1", "arch": "arm64", "iso": "labkiosk-debian13-arm64.iso",
+             "runner": "ubuntu-24.04-arm"}])
+
+    def test_a_test_without_groups_runs_whole_in_one_job(self):
+        for build in self.builds:
+            build["bootTestGroups"] = []
+        decided = rebuild.decide(self.builds, [{"version": "5.0.1", "arch": "amd64", "outdated": 1},
+                                               {"version": "5.0.1", "arch": "arm64", "outdated": 0}])
+        self.assertEqual([(t["group"], t["name"]) for t in decided["bootTests"]], [("", "all")])
 
     def test_a_current_line_is_rebuilt_only_by_hand(self):
         current = [{"version": "5.0.1", "arch": arch, "outdated": 0} for arch in ("amd64", "arm64")]
-        self.assertEqual(rebuild.decide(self.builds, current), {"builds": [], "lines": []})
+        self.assertEqual(rebuild.decide(self.builds, current), {"builds": [], "lines": [], "bootTests": [], "smokeTests": []})
         self.assertEqual(len(rebuild.decide(self.builds, current, force=True)["builds"]), 2)
 
     def test_a_line_missing_a_check_is_not_rebuilt(self):
         self.assertEqual(rebuild.decide(self.builds, [{"version": "5.0.1", "arch": "amd64", "outdated": 5}],
-                                        force=True), {"builds": [], "lines": []})
+                                        force=True), {"builds": [], "lines": [], "bootTests": [], "smokeTests": []})
 
     def test_an_answer_that_is_not_a_count_is_an_error(self):
         for bad in ({"version": "5.0.1", "arch": "amd64", "outdated": "1"}, {"version": "5.0.1", "arch": "amd64",
@@ -516,12 +545,37 @@ class Workflow(unittest.TestCase):
         self.assertIn('--pattern "$asset"', self.workflow)
 
     def test_each_build_runs_on_its_architecture_against_its_own_suite(self):
-        build = self.workflow.split("\n  build:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        build = self.workflow.split("\n  build:\n", 1)[1].split("\n  smoke-test:\n", 1)[0]
         self.assertIn("runs-on: ${{ matrix.runner }}", build)
         self.assertIn("platforms: linux/${{ matrix.arch }}", build)
         self.assertIn('--suite "$SUITE" --architecture "$ARCH"', build)
-        self.assertIn("if: matrix.arch == 'amd64'", build.split("Boot-test the installed disk", 1)[1][:80])
-        self.assertIn("live-smoke-test.sh", build)
+        self.assertIn("if: matrix.arch == 'amd64'", build.split("Bring the boot test's own fixes", 1)[1][:80])
+        self.assertNotIn("boot-test.sh", build, "the boot test runs in its own jobs")
+        self.assertNotIn("live-smoke-test.sh", build, "the smoke test runs in its own job")
+
+    def test_the_smoke_test_runs_on_its_architecture_and_gates_the_publish(self):
+        smoke = self.workflow.split("\n  smoke-test:\n", 1)[1].split("\n  boot-test:\n", 1)[0]
+        self.assertIn("include: ${{ fromJson(needs.decide.outputs.smoke_tests) }}", smoke)
+        self.assertIn("runs-on: ${{ matrix.runner }}", smoke)
+        self.assertIn('rebuild-src/distro-builder/tests/vm/live-smoke-test.sh \\\n            "$RUNNER_TEMP/input/$ISO"', smoke)
+        publish = self.workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn("needs: [decide, build, smoke-test, boot-test]", publish)
+        self.assertIn("smoke-tested-${{ matrix.version }}-$arch/$arch", publish)
+        self.assertLess(publish.index("smoke-tested-"), publish.index("git tag --annotate"))
+
+    def test_the_boot_test_runs_one_group_per_job_and_gates_the_publish(self):
+        boot = self.workflow.split("\n  boot-test:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("include: ${{ fromJson(needs.decide.outputs.boot_tests) }}", boot)
+        self.assertIn('export BOOT_TEST_GROUPS="$GROUP"', boot)
+        self.assertIn("sudo --preserve-env=BOOT_TEST_GROUPS rebuild-src/distro-builder/tests/vm/boot-test.sh", boot)
+        publish = self.workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn("boot-tested-${{ matrix.version }}-$group/$group", publish)
+        self.assertLess(publish.index("boot-tested-"), publish.index("git tag --annotate"))
+        # The ISO is large: the publish job's download pattern must not match its artifact.
+        pattern = re.escape("-4.0.1-").join(".*" for _ in range(2))
+        self.assertIsNone(re.fullmatch(pattern, "test-input-v4.0.1-amd64"))
+        self.assertIn("name: test-input-v${{ matrix.version }}-${{ matrix.arch }}", self.workflow)
+        self.assertIn('pattern: "*-${{ matrix.version }}-*"', publish)
 
     def test_the_builds_of_a_line_make_one_commit_and_publish_together(self):
         self.assertEqual(self.workflow.count('GIT_AUTHOR_DATE="@$EPOCH +0000" GIT_COMMITTER_DATE="@$EPOCH +0000"'), 2,
@@ -537,10 +591,20 @@ class Workflow(unittest.TestCase):
         self.assertLess(self.workflow.index("- name: Compile the ISO"), apply, "the image is built before the test changes")
         self.assertLess(apply, self.workflow.index("rebuild-src/distro-builder/tests/vm/boot-test.sh"))
         self.assertIn("apply --check --reverse", self.workflow, "a fix the release already has is skipped")
+        self.assertIn("sed -n '1s/^Since: v\\([0-9][0-9.]*\\)$/\\1/p' \"$patch\"", self.workflow)
+        self.assertIn("BASE: ${{ matrix.base }}", self.workflow, "a fix for a later release is left out of an older one")
 
 
 class ReleaseFixes(unittest.TestCase):
     """Each patch for an older release's boot test changes that test and nothing else."""
+
+    def test_a_patch_starts_with_its_diff_or_the_first_release_it_is_for(self):
+        folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
+        for name in sorted(n for n in os.listdir(folder) if n.endswith(".patch")):
+            with open(os.path.join(folder, name), encoding="utf-8") as handle:
+                first = handle.readline().rstrip("\n")
+            with self.subTest(name=name):
+                self.assertRegex(first, r"^(diff --git |Since: v[0-9]+\.[0-9]+\.[0-9]+$)")
 
     def test_each_patch_touches_only_the_vm_tests(self):
         folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
