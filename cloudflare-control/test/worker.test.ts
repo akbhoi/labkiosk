@@ -2208,6 +2208,25 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((answer as Response).status, 200);
   });
 
+  test("A burst of requests on a new isolate runs startup once", async () => {
+    const real = getDatabase(mockEnv);
+    let superAdminLookups = 0;
+    const db = new Proxy(real, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        if (key !== "prepare") return typeof value === "function" ? value.bind(target) : value;
+        return (sql: string) => {
+          if (sql.includes("WHERE role = 'super_admin'")) superAdminLookups++;
+          return target.prepare(sql);
+        };
+      }
+    });
+    const env: Env = { ...mockEnv, DB: db };
+    const answers = await Promise.all(Array.from({ length: 10 }, () => worker.fetch(request("/robots.txt"), env)));
+    assert.deepEqual(answers.map((res) => res.status), Array(10).fill(200));
+    assert.equal(superAdminLookups, 1, "startup ran once for ten requests");
+  });
+
   test("The documentation is the wiki, rendered page by page", async () => {
     // The generated module is the wiki folder, file for file.
     const wikiDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "wiki");

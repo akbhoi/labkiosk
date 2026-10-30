@@ -563,8 +563,12 @@ const ENROLL_FAILURE_RATE_LIMIT = { limit: 10, windowSeconds: 900 };
  * Only a finished result is kept, never the promise of one: a promise belongs to
  * the request that started it, and when that client disconnects its D1 calls stop
  * without settling. Every later request in the isolate then waited on it forever.
- * So requests that arrive during startup each run it; all of it is idempotent.
+ * A request that finds startup under way polls for the result on its own timers,
+ * so a burst on a new isolate runs it once, and takes over if nothing has finished
+ * after BOOTSTRAP_WAIT_MS. All of it is idempotent, so a slow run overlapping is harmless.
  */
+const BOOTSTRAP_WAIT_MS = 5000;
+const BOOTSTRAP_POLL_MS = 50;
 type Bootstrapped = { superAdmin: User; demos: Tenant[] };
 let bootstrapCache: {
   db: D1Database;
@@ -572,15 +576,37 @@ let bootstrapCache: {
   password?: string;
   result: Bootstrapped;
 } | null = null;
+let bootstrapRun: { db: D1Database; startedAt: number } | null = null;
 async function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
   const email = env.SUPER_ADMIN_EMAIL?.trim();
   const password = env.SUPER_ADMIN_PASSWORD;
 
   // Memoized per database instance and credentials.
-  if (bootstrapCache && bootstrapCache.db === db && bootstrapCache.email === email && bootstrapCache.password === password) {
-    return bootstrapCache.result;
+  const finished = () =>
+    bootstrapCache && bootstrapCache.db === db && bootstrapCache.email === email && bootstrapCache.password === password
+      ? bootstrapCache.result
+      : null;
+  const cached = finished();
+  if (cached) return cached;
+
+  while (bootstrapRun?.db === db && Date.now() - bootstrapRun.startedAt < BOOTSTRAP_WAIT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, BOOTSTRAP_POLL_MS));
+    const result = finished();
+    if (result) return result;
   }
 
+  const run = { db, startedAt: Date.now() };
+  bootstrapRun = run;
+  try {
+    const result = await runBootstrap(db, env, email, password);
+    bootstrapCache = { db, email, password, result };
+    return result;
+  } finally {
+    if (bootstrapRun === run) bootstrapRun = null;
+  }
+}
+
+async function runBootstrap(db: D1Database, env: Env, email: string | undefined, password: string | undefined): Promise<Bootstrapped> {
   // Idempotent CREATE TABLE IF NOT EXISTS, so `wrangler dev` works against a
   // fresh local D1 with no migration step. This is memoized per isolate, so
   // it costs one pass at startup rather than ~10 round-trips on every
@@ -618,9 +644,7 @@ async function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
     passwordPepper(env)
   );
   const demos = await ensureDemoTenants(db, superAdmin.id);
-  const result = { superAdmin, demos };
-  bootstrapCache = { db, email, password, result };
-  return result;
+  return { superAdmin, demos };
 }
 
 const DEFAULT_CONFIG: LabConfig = {
