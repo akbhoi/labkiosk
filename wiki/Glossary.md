@@ -20,7 +20,7 @@ What an installed workstation's last boot did with its system image (`installed`
 
 ### Broadcast
 
-A page URL pushed to a whole lab at once, persisted on the tenant row so it survives reboots and colo differences. Not its own command action: it is `navigate` to `target: "all"` plus a `broadcastEpoch`. → [Admin Console Guide](Admin-Console-Guide#broadcast--push-a-page-to-the-whole-lab)
+A page URL pushed to a whole lab at once, persisted on the tenant row so it survives reboots and colo differences. Not its own command action: it is `navigate` to `target: "all"` plus a `broadcastEpoch`. → [Admin Console Guide](Admin-Console-Guide#tab-1-broadcast-tabbroadcast)
 
 ### Broadcast epoch
 

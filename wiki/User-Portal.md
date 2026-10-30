@@ -52,7 +52,7 @@ There is no search box, no address bar, and no way to reach anything that is not
 
 A card's address and thumbnail may not use an IP address, a link shortener, a user name or password, or a domain on the platform's blocklist, and a card the platform took down (after a report from **Report this page** in the footer) stays hidden until it is restored. → [Super Admin Guide](Super-Admin-Guide#hosted-pages-link-rules-reports-and-takedown)
 
-Operators manage them under **Portal Apps** in the dashboard. → [Admin Console Guide](Admin-Console-Guide#the-user-portal)
+Operators manage them under **Portal Apps** in the dashboard. → [Admin Console Guide](Admin-Console-Guide#tab-2-user-portal-apps-tabportal)
 
 ---
 

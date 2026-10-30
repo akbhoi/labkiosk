@@ -2608,7 +2608,7 @@ function pricingMainHtml(): string {
               <span>Priority onboarding &amp; dedicated support SLA</span>
             </li>
           </ul>
-          <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="contact">Contact Sales &amp; Licensing</button>
+          <a class="btn btn-primary btn-block" href="/contact">Contact Sales &amp; Licensing</a>
         </div>
 
         <div class="pricing-card">
@@ -4155,6 +4155,11 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       max-width: 840px;
       margin: 0 auto 48px;
       box-shadow: var(--shadow-sm);
+      overflow-wrap: anywhere;
+    }
+    .download-hero-card .btn { white-space: normal; max-width: 100%; }
+    @media (max-width: 640px) {
+      .download-hero-card { padding: 20px; }
     }
     .download-meta-grid {
       display: grid;
@@ -4276,9 +4281,9 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .docs-article { margin-bottom: 48px; scroll-margin-top: 90px; }
     .docs-article h2 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 14px; color: var(--text-main); padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle); }
     .docs-article h3 { font-size: 1.25rem; font-weight: 650; margin: 24px 0 10px; color: var(--text-main); }
-    .docs-article p { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.7; margin-bottom: 16px; }
+    .docs-article p { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.7; margin-bottom: 16px; overflow-wrap: anywhere; }
     .docs-article ul { list-style: disc; padding-left: 24px; margin-bottom: 16px; font-size: 0.9375rem; color: var(--text-muted); line-height: 1.65; }
-    .docs-article li { margin-bottom: 6px; }
+    .docs-article li { margin-bottom: 6px; overflow-wrap: anywhere; }
     .docs-article pre {
       background: var(--bg-surface);
       border: 1px solid var(--border);

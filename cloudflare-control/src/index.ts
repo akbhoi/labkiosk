@@ -559,72 +559,92 @@ const ENROLL_FAILURE_RATE_LIMIT = { limit: 10, windowSeconds: 900 };
  * One-time startup work, memoized per isolate.
  * Previously this ran on every request, costing ~10 D1 round-trips before the
  * router even looked at the path.
+ *
+ * Only a finished result is kept, never the promise of one: a promise belongs to
+ * the request that started it, and when that client disconnects its D1 calls stop
+ * without settling. Every later request in the isolate then waited on it forever.
+ * A request that finds startup under way polls for the result on its own timers,
+ * so a burst on a new isolate runs it once, and takes over if nothing has finished
+ * after BOOTSTRAP_WAIT_MS. All of it is idempotent, so a slow run overlapping is harmless.
  */
+const BOOTSTRAP_WAIT_MS = 5000;
+const BOOTSTRAP_POLL_MS = 50;
 type Bootstrapped = { superAdmin: User; demos: Tenant[] };
 let bootstrapCache: {
   db: D1Database;
   email?: string;
   password?: string;
-  promise: Promise<Bootstrapped>;
+  result: Bootstrapped;
 } | null = null;
-function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
+let bootstrapRun: { db: D1Database; startedAt: number } | null = null;
+async function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
   const email = env.SUPER_ADMIN_EMAIL?.trim();
   const password = env.SUPER_ADMIN_PASSWORD;
 
   // Memoized per database instance and credentials.
-  if (
-    !bootstrapCache ||
-    bootstrapCache.db !== db ||
-    bootstrapCache.email !== email ||
-    bootstrapCache.password !== password
-  ) {
-    const promise = (async () => {
-      // Idempotent CREATE TABLE IF NOT EXISTS, so `wrangler dev` works against a
-      // fresh local D1 with no migration step. This is memoized per isolate, so
-      // it costs one pass at startup rather than ~10 round-trips on every
-      // request as it previously did. `migrations/` remains authoritative for
-      // schema changes to an already-deployed database.
-      const production = Boolean(env.DB) && env.ALLOW_LOCAL_DB !== "1";
-      if (production) {
-        // A deployed worker never creates its own tables; migrations/ is the
-        // only writer of the production schema. Refuse to serve on drift.
-        await assertSchemaCurrent(db);
-      } else {
-        await initSchema(db);
-      }
+  const finished = () =>
+    bootstrapCache && bootstrapCache.db === db && bootstrapCache.email === email && bootstrapCache.password === password
+      ? bootstrapCache.result
+      : null;
+  const cached = finished();
+  if (cached) return cached;
 
-      // Rule 7 (fail closed): a well-known super admin password is acceptable
-      // only for the in-memory database used by tests and local development.
-      if (production && (!email || !password)) {
-        throw new Error(
-          "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
-        );
-      }
-      // Live control, audit history and custom domains all depend on these.
-      if (production) {
-        const missing = requiredBindingsProblem(env);
-        if (missing) throw new Error(missing);
-        // A misspelt console host is a startup error, not a console nobody can reach.
-        superAdminHost(env);
-      }
-      if (!production && (Boolean(email) !== Boolean(password))) {
-        throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
-      }
-      const superAdmin = await ensureSuperAdmin(
-        db,
-        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN,
-        passwordPepper(env)
-      );
-      const demos = await ensureDemoTenants(db, superAdmin.id);
-      return { superAdmin, demos };
-    })().catch((err) => {
-      // Never cache a failed bootstrap, or the isolate stays broken forever.
-      if (bootstrapCache?.promise === promise) bootstrapCache = null;
-      throw err;
-    });
-    bootstrapCache = { db, email, password, promise };
+  while (bootstrapRun?.db === db && Date.now() - bootstrapRun.startedAt < BOOTSTRAP_WAIT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, BOOTSTRAP_POLL_MS));
+    const result = finished();
+    if (result) return result;
   }
-  return bootstrapCache.promise;
+
+  const run = { db, startedAt: Date.now() };
+  bootstrapRun = run;
+  try {
+    const result = await runBootstrap(db, env, email, password);
+    bootstrapCache = { db, email, password, result };
+    return result;
+  } finally {
+    if (bootstrapRun === run) bootstrapRun = null;
+  }
+}
+
+async function runBootstrap(db: D1Database, env: Env, email: string | undefined, password: string | undefined): Promise<Bootstrapped> {
+  // Idempotent CREATE TABLE IF NOT EXISTS, so `wrangler dev` works against a
+  // fresh local D1 with no migration step. This is memoized per isolate, so
+  // it costs one pass at startup rather than ~10 round-trips on every
+  // request as it previously did. `migrations/` remains authoritative for
+  // schema changes to an already-deployed database.
+  const production = Boolean(env.DB) && env.ALLOW_LOCAL_DB !== "1";
+  if (production) {
+    // A deployed worker never creates its own tables; migrations/ is the
+    // only writer of the production schema. Refuse to serve on drift.
+    await assertSchemaCurrent(db);
+  } else {
+    await initSchema(db);
+  }
+
+  // Rule 7 (fail closed): a well-known super admin password is acceptable
+  // only for the in-memory database used by tests and local development.
+  if (production && (!email || !password)) {
+    throw new Error(
+      "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
+    );
+  }
+  // Live control, audit history and custom domains all depend on these.
+  if (production) {
+    const missing = requiredBindingsProblem(env);
+    if (missing) throw new Error(missing);
+    // A misspelt console host is a startup error, not a console nobody can reach.
+    superAdminHost(env);
+  }
+  if (!production && (Boolean(email) !== Boolean(password))) {
+    throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
+  }
+  const superAdmin = await ensureSuperAdmin(
+    db,
+    email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN,
+    passwordPepper(env)
+  );
+  const demos = await ensureDemoTenants(db, superAdmin.id);
+  return { superAdmin, demos };
 }
 
 const DEFAULT_CONFIG: LabConfig = {

@@ -2171,6 +2171,62 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await at("https://labkiosk.org/contact/")).headers.get("Location"), "https://labkiosk.org/contact");
   });
 
+  test("Every button that opens a dialog names a dialog the page has", async () => {
+    for (const at of ["/", "/features", "/specs", "/hardware", "/pricing", "/download", "/contact", "/docs"]) {
+      const html = await (await call(at)).text();
+      const named = new Set([...html.matchAll(/data-modal="([^"]+)"/g)].map((m) => m[1]));
+      assert.ok(named.size > 0, at);
+      for (const modal of named) assert.ok(html.includes(`id="${modal}-modal"`), `${at} has no ${modal} dialog`);
+    }
+  });
+
+  test("A request that never finishes starting up does not hold up the next one", async () => {
+    // A request's D1 calls stop when its client disconnects. Later requests in that
+    // isolate must not wait on what it left unfinished, or they hang with it.
+    const real = getDatabase(mockEnv);
+    const never = new Promise<never>(() => {});
+    const stalledStatement: unknown = new Proxy({}, { get: (_, key) => (key === "bind" ? () => stalledStatement : () => never) });
+    let stalled = true;
+    const db = new Proxy(real, {
+      get(target, key) {
+        if (stalled) return key === "prepare" ? () => stalledStatement : () => never;
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
+    const env: Env = { ...mockEnv, DB: db };
+
+    void worker.fetch(request("/robots.txt"), env);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    stalled = false;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<"hung">((resolve) => { timer = setTimeout(() => resolve("hung"), 10_000); });
+    const answer = await Promise.race([worker.fetch(request("/robots.txt"), env), timedOut]);
+    clearTimeout(timer);
+    assert.notEqual(answer, "hung", "the second request waited on the first one's startup");
+    assert.equal((answer as Response).status, 200);
+  });
+
+  test("A burst of requests on a new isolate runs startup once", async () => {
+    const real = getDatabase(mockEnv);
+    let superAdminLookups = 0;
+    const db = new Proxy(real, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        if (key !== "prepare") return typeof value === "function" ? value.bind(target) : value;
+        return (sql: string) => {
+          if (sql.includes("WHERE role = 'super_admin'")) superAdminLookups++;
+          return target.prepare(sql);
+        };
+      }
+    });
+    const env: Env = { ...mockEnv, DB: db };
+    const answers = await Promise.all(Array.from({ length: 10 }, () => worker.fetch(request("/robots.txt"), env)));
+    assert.deepEqual(answers.map((res) => res.status), Array(10).fill(200));
+    assert.equal(superAdminLookups, 1, "startup ran once for ten requests");
+  });
+
   test("The documentation is the wiki, rendered page by page", async () => {
     // The generated module is the wiki folder, file for file.
     const wikiDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "wiki");
@@ -2186,11 +2242,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Every page is served at its own address, in the shell, with its sidebar; every link inside leads somewhere.
     const hrefs = new Set<string>();
+    const htmlAt = new Map<string, string>();
     for (const page of DOCS_PAGES) {
       const at = page.slug ? `/docs/${page.slug}` : "/docs";
       const res = await call(at);
       assert.equal(res.status, 200, at);
       const html = await res.text();
+      htmlAt.set(at, html);
       assert.ok(html.includes('class="docs-article docs-page"') && html.includes('aria-current="page"'), at);
       assert.ok(html.includes(`wiki/${page.file}</a> in the repository`), `${at} names its source`);
       assert.ok(html.includes(`<link rel="canonical" href="https://labkiosk.org${at}">`), `${at} is canonical`);
@@ -2201,7 +2259,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const href of hrefs) {
       if (href.startsWith("#") || href.startsWith("https://") || href.startsWith("http://")) continue;
       assert.ok(href.startsWith("/docs"), `${href} is a documentation address`);
-      assert.equal((await call(href.split("#")[0])).status, 200, `${href} is served`);
+      const [address, fragment] = href.split("#");
+      assert.equal((await call(address)).status, 200, `${href} is served`);
+      if (fragment) assert.ok(htmlAt.get(address)?.includes(`id="${fragment}"`), `${href} lands on a heading`);
     }
     assert.ok([...hrefs].some((h) => h === "/docs/quickstart") && [...hrefs].some((h) => h.startsWith("https://github.com/akbhoi/labkiosk/blob/main/docs/")));
 
