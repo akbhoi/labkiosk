@@ -872,17 +872,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       fetchMock.mock.restore();
     }
 
-    // The page loads the widget, and the CSP lets it, only when it is on.
-    const on = await worker.fetch(request("/"), turnstileEnv);
-    const onHtml = await on.text();
-    assert.match(onHtml, /<script nonce="[^"]+" src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit&amp;onload=lkTurnstileReady" async defer><\/script>/);
-    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="login-turnstile"'));
-    // Every public page carries the sign-in and registration forms, so every one carries their checks.
-    for (const page of ["/pricing", "/docs", "/contact"]) {
+    // Only the pages with a form load the widget: sign-in, registration and contact.
+    const turnstileScript = /<script nonce="[^"]+" src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit&amp;onload=lkTurnstileReady" async defer><\/script>/;
+    const formPages: Array<[string, string]> = [["/login", "login-turnstile"], ["/?login=1", "login-turnstile"], ["/register", "reg-turnstile"], ["/contact", "contact-turnstile"]];
+    for (const [page, slot] of formPages) {
       const html = await (await worker.fetch(request(page), turnstileEnv)).text();
-      assert.ok(html.includes('id="reg-turnstile"') && html.includes('id="login-turnstile"'), `${page} draws the checks`);
+      assert.match(html, turnstileScript, `${page} loads the widget`);
+      assert.ok(html.includes(`id="${slot}"`), `${page} draws its check`);
     }
-    assert.ok((await (await worker.fetch(request("/contact"), turnstileEnv)).text()).includes('id="contact-turnstile"'));
+    // The home page and the other public pages carry no form, so they load no widget.
+    for (const page of ["/", "/pricing", "/docs", "/iso"]) {
+      const html = await (await worker.fetch(request(page), turnstileEnv)).text();
+      assert.doesNotMatch(html, /turnstile\/v0\/api\.js|id="(?:reg|contact|login)-turnstile"|id="(?:login|register)-form"/, `${page} loads no widget and no form`);
+      assert.ok(html.includes('href="/login"') && html.includes('href="/register"'), `${page} links to the sign-in and registration pages`);
+    }
+    // The CSP still allows the widget on every page; it costs nothing where no script asks for it.
+    const on = await worker.fetch(request("/"), turnstileEnv);
     assert.match(on.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/challenges\.cloudflare\.com/);
     assert.match(on.headers.get("Content-Security-Policy") || "", /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
     const off = await call("/");
