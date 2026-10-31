@@ -500,7 +500,8 @@ cloudflare-control/
 
 - Missing configuration is an error, not a reason to fall back to something weaker.
 - `getDatabase()` throws without a D1 binding unless `ALLOW_LOCAL_DB=1`.
-- With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and `PASSWORD_PEPPER` (32+ characters, `passwordPepper()` in `auth.ts`) keys the HMAC over every stored password hash, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
+- With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and `PASSWORD_PEPPER` (32+ characters, `passwordPepper()` in `auth.ts`) keys the HMAC over every stored password hash, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`, one `db.batch()`, so one round trip); it never creates tables in production.
+- Static files, `robots.txt` and the sitemap are answered before startup, and a public page for a visitor with no session skips its database calls (`isDatabaseFreePublicRequest()` in `index.ts`), because each call delays the first visitor to a new isolate by the distance to the database. Such a page still refuses to serve without the secrets and bindings above (`assertPlatformConfigured()`), and anything that names an organization or carries a session runs startup in full.
 - In production it also refuses to serve without every platform resource (`requiredBindingsProblem()` in `hub.ts`, Rule 2d), naming each one that is missing. `ALLOW_LOCAL_DB=1` lets a missing one fall back to an in-process stand-in.
 - Public endpoints are throttled per source address (`rateLimitWait` / `recordRateLimitHit` in `db.ts`): registration and failed enrolments. Reserved slugs (`RESERVED_SLUGS` in `guard.ts`) can neither be registered nor assigned.
 

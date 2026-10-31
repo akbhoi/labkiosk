@@ -745,146 +745,149 @@ export async function ensureSuperAdmin(
   };
 }
 
+/** One column from each migration that added some: a missing one fails the whole batch. */
+const SCHEMA_PROBES: readonly string[] = [
+  "SELECT broadcast_epoch FROM tenants LIMIT 1",
+  "SELECT vnc_password FROM client_devices LIMIT 1",
+  "SELECT home_route FROM tenants LIMIT 1",
+  "SELECT role FROM tenant_users LIMIT 1",
+  "SELECT group_name FROM client_devices LIMIT 1",
+  "SELECT name FROM workstation_groups LIMIT 1",
+  "SELECT broadcast_epoch FROM client_devices LIMIT 1",
+  // 0014: live state moved to OrgHub; the organization carries its online count.
+  "SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1",
+  // 0015: the outcome of each workstation's last boot.
+  "SELECT image_version, update_state_at FROM client_devices LIMIT 1",
+  // 0016: errors and warnings workstations report.
+  "SELECT severity, occurred_at FROM workstation_issues LIMIT 1",
+  // 0017: opt-in automatic bug reports.
+  "SELECT bug_reports_enabled FROM tenants LIMIT 1",
+  "SELECT report_state, bug_signature FROM workstation_issues LIMIT 1",
+  "SELECT signature, issue_url FROM bug_reports LIMIT 1",
+  // 0018: bug report terms and triage.
+  "SELECT bug_reports_terms_version FROM tenants LIMIT 1",
+  "SELECT status, status_checked_at FROM bug_reports LIMIT 1",
+  "SELECT report_match FROM workstation_issues LIMIT 1",
+  // 0020: approval-gated signup, Remote Control approval, the support inbox.
+  "SELECT remote_control_status FROM tenants LIMIT 1",
+  "SELECT contact_phone, phone_verified_at FROM organization_profiles LIMIT 1",
+  "SELECT code_hash FROM email_codes LIMIT 1",
+  "SELECT reference, unread FROM conversations LIMIT 1",
+  "SELECT direction, email_message_id FROM conversation_messages LIMIT 1",
+  // 0022: Mail's Deleted folder.
+  "SELECT deleted_at FROM conversations LIMIT 1",
+  // 0023: two-factor sign-in by emailed code.
+  "SELECT two_factor_email FROM users LIMIT 1",
+  // 0024: conversations filed by purpose.
+  "SELECT category FROM conversations LIMIT 1",
+  // 0025: what each release changed, for /download.
+  "SELECT tag, summary FROM release_notes LIMIT 1",
+  // 0027: over-the-air updates.
+  "SELECT version, channel, revoked_at FROM releases LIMIT 1",
+  "SELECT update_channel FROM tenants LIMIT 1",
+  "SELECT update_phase, update_version, update_progress, update_detail, agent_version FROM client_devices LIMIT 1",
+  // 0028: the ISO's checksum, for /download.
+  "SELECT iso_sha256 FROM release_notes LIMIT 1",
+  // 0029: security releases at the next boot.
+  "SELECT security_updates FROM tenants LIMIT 1",
+  "SELECT update_kind, update_since FROM client_devices LIMIT 1",
+  // 0030: sharing updates on the local network.
+  "SELECT lan_sharing FROM tenants LIMIT 1",
+  // 0031: the log of a boot that ended without shutting down.
+  "SELECT log_text FROM workstation_issues LIMIT 1",
+  // 0032: how many workstations an organization may enrol.
+  "SELECT workstation_limit FROM tenants LIMIT 1",
+  // 0033: Remote Control seats and revocation.
+  "SELECT remote_control_seats, remote_control_revoked_at FROM tenants LIMIT 1",
+  // 0034: major releases and major upgrade grants (its release_lines went in 0040).
+  "SELECT major, open FROM release_majors LIMIT 1",
+  "SELECT tenant_id, major, granted_at, confirmed_at FROM major_upgrade_grants LIMIT 1",
+  // 0035: legal acceptances and document versions.
+  "SELECT document, version, source FROM legal_acceptances LIMIT 1",
+  "SELECT document, version, published_at, notified_at FROM legal_versions LIMIT 1",
+  // 0036: hosted content controls.
+  "SELECT domain FROM link_blocklist LIMIT 1",
+  "SELECT homepage_takedown_at, homepage_takedown_reason FROM tenants LIMIT 1",
+  "SELECT takedown_at, takedown_reason FROM portal_sites LIMIT 1",
+  // 0037: license plan and expiry.
+  "SELECT license_plan, license_expires_at FROM tenants LIMIT 1",
+  // 0038: console notifications and end-of-life reminders.
+  "SELECT id, tenant_id, kind, title, body FROM notifications LIMIT 1",
+  "SELECT notification_id, user_id, read_at FROM notification_reads LIMIT 1",
+  // 0039: major upgrade requests and pilot groups.
+  "SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1",
+  // 0040: support status and end of life per major release.
+  "SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1",
+  // 0041: online workstations on the HTTP heartbeat.
+  "SELECT http_workstations FROM tenants LIMIT 1",
+  // 0042: passkeys.
+  "SELECT id, rp_id, sign_count FROM user_passkeys LIMIT 1",
+  "SELECT passkey_challenge FROM login_challenges LIMIT 1",
+  // 0043: hardware video decoding per workstation.
+  "SELECT video_decoding, video_decoding_at FROM client_devices LIMIT 1",
+  // 0044: usage reports and each workstation's hardware.
+  "SELECT hardware, hardware_at FROM client_devices LIMIT 1",
+  "SELECT usage_sites FROM tenants LIMIT 1",
+  "SELECT on_seconds FROM usage_daily LIMIT 1",
+  "SELECT active_seconds FROM usage_sites LIMIT 1",
+  "SELECT organizations FROM platform_usage_daily LIMIT 1",
+  "SELECT organizations FROM platform_usage_sites LIMIT 1",
+  "SELECT organizations FROM hardware_models LIMIT 1",
+  // 0046: single sign-on with Google Workspace or Microsoft Entra ID.
+  "SELECT google_domains, microsoft_tenants, require_sso FROM sso_settings LIMIT 1",
+  "SELECT state_hash, code_verifier, return_origin, handoff_hash FROM sso_states LIMIT 1",
+  // 0045: power schedules.
+  "SELECT group_id, days, off_minute, on_minute FROM power_schedules LIMIT 1",
+  // 0047: printing, off by default, and the organization's network printers.
+  "SELECT printing_enabled FROM tenants LIMIT 1",
+  "SELECT id, name, uri, group_name, position FROM printers LIMIT 1",
+  // 0048: Home in the kiosk bar starts a new session.
+  "SELECT home_reset FROM tenants LIMIT 1",
+  // 0049: the architectures a release is built for.
+  "SELECT architectures FROM releases LIMIT 1",
+  // 0050: a release's arm64 ISO, for /download.
+  "SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1"
+];
+
 /**
  * Confirms a bound D1 database carries the current schema. A production worker
  * must never create tables itself: on an un-migrated database that leaves a
  * shape later migrations cannot ALTER, so the worker refuses to serve instead.
+ *
+ * One batch is one round trip. Run one at a time, these statements kept a new
+ * isolate 13 to 23 seconds from its first response where the database is far away.
  */
 export async function assertSchemaCurrent(db: D1Database): Promise<void> {
   try {
-    await db.prepare("SELECT broadcast_epoch FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT vnc_password FROM client_devices LIMIT 1").run();
-    await db.prepare("SELECT home_route FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT role FROM tenant_users LIMIT 1").run();
-    await db.prepare("SELECT group_name FROM client_devices LIMIT 1").run();
-    await db.prepare("SELECT name FROM workstation_groups LIMIT 1").run();
-    await db.prepare("SELECT broadcast_epoch FROM client_devices LIMIT 1").run();
-    // 0011 renamed the stored roles. A CHECK change is invisible to a column
-    // probe, so read the table definition itself.
-    const users = await db
-      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
-      .first<{ sql: string }>();
+    const results = await db.batch([
+      // 0011 renamed the stored roles. A CHECK change is invisible to a column
+      // probe, so read the table definition itself.
+      db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"),
+      // 0012 only adds an index, which no column probe can see.
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_workstation_groups_tenant_name'"),
+      // 0026 lets the contact form's codes into email_codes: a CHECK again.
+      db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_codes'"),
+      // 0019 only drops columns, which no column probe can see.
+      db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'client_devices'"),
+      // 0013 is data only: the retired `demo` organization must be gone.
+      db.prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1"),
+      ...SCHEMA_PROBES.map((sql) => db.prepare(sql))
+    ]);
+    const [users, groupNames, emailCodes, devices, retiredDemo] = results.map(
+      (result) => result.results?.[0] as { sql?: string } | undefined
+    );
     if (!users?.sql?.includes("'org_admin'")) {
       throw new Error("users.role still uses the pre-0011 role names");
     }
-    // 0012 only adds an index, which no column probe can see.
-    const groupNames = await db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_workstation_groups_tenant_name'")
-      .first<{ name: string }>();
     if (!groupNames) {
       throw new Error("workstation group names are not unique yet (0012)");
     }
-    // 0026 lets the contact form's codes into email_codes: a CHECK again.
-    const emailCodes = await db
-      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_codes'")
-      .first<{ sql: string }>();
     if (!emailCodes?.sql?.includes("'contact'")) {
       throw new Error("email_codes does not accept the contact form's codes yet (0026)");
     }
-    // 0014: live state moved to OrgHub; the organization carries its online count.
-    await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
-    // 0015: the outcome of each workstation's last boot.
-    await db.prepare("SELECT image_version, update_state_at FROM client_devices LIMIT 1").run();
-    // 0016: errors and warnings workstations report.
-    await db.prepare("SELECT severity, occurred_at FROM workstation_issues LIMIT 1").run();
-    // 0017: opt-in automatic bug reports.
-    await db.prepare("SELECT bug_reports_enabled FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT report_state, bug_signature FROM workstation_issues LIMIT 1").run();
-    await db.prepare("SELECT signature, issue_url FROM bug_reports LIMIT 1").run();
-    // 0018: bug report terms and triage.
-    await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
-    await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
-    // 0019 only drops columns, which no column probe can see.
-    const devices = await db
-      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'client_devices'")
-      .first<{ sql: string }>();
     if (devices?.sql?.includes("remote_host")) {
       throw new Error("the Remote Control tunnel columns are still present (0019)");
     }
-    // 0020: approval-gated signup, Remote Control approval, the support inbox.
-    await db.prepare("SELECT remote_control_status FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT contact_phone, phone_verified_at FROM organization_profiles LIMIT 1").run();
-    await db.prepare("SELECT code_hash FROM email_codes LIMIT 1").run();
-    await db.prepare("SELECT reference, unread FROM conversations LIMIT 1").run();
-    await db.prepare("SELECT direction, email_message_id FROM conversation_messages LIMIT 1").run();
-    // 0022: Mail's Deleted folder.
-    await db.prepare("SELECT deleted_at FROM conversations LIMIT 1").run();
-    // 0023: two-factor sign-in by emailed code.
-    await db.prepare("SELECT two_factor_email FROM users LIMIT 1").run();
-    // 0024: conversations filed by purpose.
-    await db.prepare("SELECT category FROM conversations LIMIT 1").run();
-    // 0025: what each release changed, for /download.
-    await db.prepare("SELECT tag, summary FROM release_notes LIMIT 1").run();
-    // 0027: over-the-air updates.
-    await db.prepare("SELECT version, channel, revoked_at FROM releases LIMIT 1").run();
-    await db.prepare("SELECT update_channel FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT update_phase, update_version, update_progress, update_detail, agent_version FROM client_devices LIMIT 1").run();
-    // 0028: the ISO's checksum, for /download.
-    await db.prepare("SELECT iso_sha256 FROM release_notes LIMIT 1").run();
-    // 0029: security releases at the next boot.
-    await db.prepare("SELECT security_updates FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT update_kind, update_since FROM client_devices LIMIT 1").run();
-    // 0030: sharing updates on the local network.
-    await db.prepare("SELECT lan_sharing FROM tenants LIMIT 1").run();
-    // 0031: the log of a boot that ended without shutting down.
-    await db.prepare("SELECT log_text FROM workstation_issues LIMIT 1").run();
-    // 0032: how many workstations an organization may enrol.
-    await db.prepare("SELECT workstation_limit FROM tenants LIMIT 1").run();
-    // 0033: Remote Control seats and revocation.
-    await db.prepare("SELECT remote_control_seats, remote_control_revoked_at FROM tenants LIMIT 1").run();
-    // 0034: major releases and major upgrade grants (its release_lines went in 0040).
-    await db.prepare("SELECT major, open FROM release_majors LIMIT 1").run();
-    await db.prepare("SELECT tenant_id, major, granted_at, confirmed_at FROM major_upgrade_grants LIMIT 1").run();
-    // 0035: legal acceptances and document versions.
-    await db.prepare("SELECT document, version, source FROM legal_acceptances LIMIT 1").run();
-    await db.prepare("SELECT document, version, published_at, notified_at FROM legal_versions LIMIT 1").run();
-    // 0036: hosted content controls.
-    await db.prepare("SELECT domain FROM link_blocklist LIMIT 1").run();
-    await db.prepare("SELECT homepage_takedown_at, homepage_takedown_reason FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT takedown_at, takedown_reason FROM portal_sites LIMIT 1").run();
-    // 0037: license plan and expiry.
-    await db.prepare("SELECT license_plan, license_expires_at FROM tenants LIMIT 1").run();
-    // 0038: console notifications and end-of-life reminders.
-    await db.prepare("SELECT id, tenant_id, kind, title, body FROM notifications LIMIT 1").run();
-    await db.prepare("SELECT notification_id, user_id, read_at FROM notification_reads LIMIT 1").run();
-    // 0039: major upgrade requests and pilot groups.
-    await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
-    // 0040: support status and end of life per major release.
-    await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
-    // 0041: online workstations on the HTTP heartbeat.
-    await db.prepare("SELECT http_workstations FROM tenants LIMIT 1").run();
-    // 0042: passkeys.
-    await db.prepare("SELECT id, rp_id, sign_count FROM user_passkeys LIMIT 1").run();
-    await db.prepare("SELECT passkey_challenge FROM login_challenges LIMIT 1").run();
-    // 0043: hardware video decoding per workstation.
-    await db.prepare("SELECT video_decoding, video_decoding_at FROM client_devices LIMIT 1").run();
-    // 0044: usage reports and each workstation's hardware.
-    await db.prepare("SELECT hardware, hardware_at FROM client_devices LIMIT 1").run();
-    await db.prepare("SELECT usage_sites FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT on_seconds FROM usage_daily LIMIT 1").run();
-    await db.prepare("SELECT active_seconds FROM usage_sites LIMIT 1").run();
-    await db.prepare("SELECT organizations FROM platform_usage_daily LIMIT 1").run();
-    await db.prepare("SELECT organizations FROM platform_usage_sites LIMIT 1").run();
-    await db.prepare("SELECT organizations FROM hardware_models LIMIT 1").run();
-    // 0046: single sign-on with Google Workspace or Microsoft Entra ID.
-    await db.prepare("SELECT google_domains, microsoft_tenants, require_sso FROM sso_settings LIMIT 1").run();
-    await db.prepare("SELECT state_hash, code_verifier, return_origin, handoff_hash FROM sso_states LIMIT 1").run();
-    // 0045: power schedules.
-    await db.prepare("SELECT group_id, days, off_minute, on_minute FROM power_schedules LIMIT 1").run();
-    // 0047: printing, off by default, and the organization's network printers.
-    await db.prepare("SELECT printing_enabled FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT id, name, uri, group_name, position FROM printers LIMIT 1").run();
-    // 0048: Home in the kiosk bar starts a new session.
-    await db.prepare("SELECT home_reset FROM tenants LIMIT 1").run();
-    // 0049: the architectures a release is built for.
-    await db.prepare("SELECT architectures FROM releases LIMIT 1").run();
-    // 0050: a release's arm64 ISO, for /download.
-    await db.prepare("SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1").run();
-    // 0013 is data only: the retired `demo` organization must be gone.
-    const retiredDemo = await db
-      .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
-      .first<{ id: string }>();
     if (retiredDemo) {
       throw new Error("the retired `demo` organization is still present (0013)");
     }
