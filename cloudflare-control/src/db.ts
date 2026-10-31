@@ -874,7 +874,7 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
       ...SCHEMA_PROBES.map((sql) => db.prepare(sql))
     ]);
     const [users, groupNames, emailCodes, devices, retiredDemo] = results.map(
-      (result) => result.results?.[0] as { sql?: string } | undefined
+      (result) => result.results[0] as { sql?: string } | undefined
     );
     if (!users?.sql?.includes("'org_admin'")) {
       throw new Error("users.role still uses the pre-0011 role names");
