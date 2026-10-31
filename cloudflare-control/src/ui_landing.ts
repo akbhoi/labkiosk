@@ -90,7 +90,7 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
 export interface LandingOptions {
   /** Message shown in a banner above the hero, e.g. after a rejected redirect. */
   error?: string;
-  /** Modal to open on load, used by /login, /register, /iso and redirects. */
+  /** "login" and "register" render the sign-in or registration page instead of the home page; "iso" opens the home page's download dialog. */
   openModal?: "login" | "register" | "iso";
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
@@ -144,13 +144,25 @@ function ssoOptionsHtml(sso: LandingOptions["sso"]): string {
 
 function renderPublicShell(
   data: LandingOptions,
-  meta: { title: string; description: string; activeNav?: string; mainHtml: string }
+  meta: {
+    title: string;
+    description: string;
+    activeNav?: string;
+    mainHtml: string;
+    /** The sign-in or registration page: its form is the page. Every other page links to these. */
+    authPage?: "login" | "register";
+    /** The page's own form carries a Turnstile slot (the contact page). */
+    turnstile?: boolean;
+  }
 ): string {
   const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
   const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
   const turnstileKey = data.turnstileSiteKey || null;
   const turnstileSlot = (id: string) => (turnstileKey ? `<div class="form-group turnstile-slot" id="${id}"></div>` : "");
   const loginTurnstileSlot = data.loginTurnstile === false ? "" : turnstileSlot("login-turnstile");
+  // Turnstile's script, and the challenge each widget runs, load only on a page whose form has a slot.
+  const turnstileOnPage =
+    Boolean(turnstileKey) && (meta.turnstile === true || meta.authPage === "register" || (meta.authPage === "login" && Boolean(loginTurnstileSlot)));
 
   const banner = data.error
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
@@ -206,8 +218,8 @@ ${FONT_LINKS}
       <button type="button" class="theme-toggle" data-action="toggle-theme" aria-label="Switch theme" title="Switch between light and dark">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
       </button>
-      <button class="btn btn-ghost nav-signin-btn" data-action="open-modal" data-modal="login">Sign In</button>
-      <button class="btn btn-primary nav-register-btn" data-action="open-modal" data-modal="register">Get Started</button>
+      <a class="btn btn-ghost nav-signin-btn" href="/login">Sign In</a>
+      <a class="btn btn-primary nav-register-btn" href="/register">Get Started</a>
       <button class="mobile-menu-btn" id="mobile-toggle" aria-label="Toggle navigation menu" aria-expanded="false" data-action="toggle-drawer">
         <svg class="icon-menu" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         <svg class="icon-close" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="display: none;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -266,205 +278,203 @@ ${FONT_LINKS}
       </a>
     </nav>
     <div class="mobile-drawer-actions">
-      <button class="btn btn-primary btn-block" data-action="drawer-open-modal" data-modal="register">Register Organization</button>
-      <button class="btn btn-ghost btn-block" data-action="drawer-open-modal" data-modal="login">Operator Sign In</button>
+      <a class="btn btn-primary btn-block" href="/register">Register Organization</a>
+      <a class="btn btn-ghost btn-block" href="/login">Operator Sign In</a>
     </div>
   </div>
 
   <main>
     ${banner}
-    ${meta.mainHtml}
-  </main>
-
-  <!-- Login Modal -->
-  <div class="modal-overlay" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
-    <div class="modal-box">
-      <button class="modal-close" data-action="close-modal" data-modal="login" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="login-modal-title">Admin &amp; Staff Sign In</h2>
-      <p class="modal-sub">Sign in to manage your organization's workstations.</p>
-      <div class="alert-box" id="login-alert" role="alert"></div>
-      ${ssoOptionsHtml(data.sso)}<form id="login-form">
-        <div class="form-group">
-          <label class="form-label" for="login-email">Email Address</label>
-          <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
+    ${
+      meta.authPage === "login"
+        ? `<section class="auth-page">
+      <div class="modal-box">
+        <h1 class="modal-title">Admin &amp; Staff Sign In</h1>
+        <p class="modal-sub">Sign in to manage your organization's workstations.</p>
+        <div class="alert-box" id="login-alert" role="alert"></div>
+        ${ssoOptionsHtml(data.sso)}<form id="login-form">
+          <div class="form-group">
+            <label class="form-label" for="login-email">Email Address</label>
+            <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password</label>
+            <input type="password" class="form-input" id="login-password" required placeholder="••••••••" autocomplete="current-password">
+          </div>
+          ${loginTurnstileSlot}
+          <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
+        </form>
+        <form id="login-2fa-form" hidden>
+          <div class="notice-box" id="login-2fa-notice" role="status"></div>
+          <button type="button" class="btn btn-primary btn-block" id="login-2fa-passkey" hidden style="margin-bottom: 14px;">Use your passkey</button>
+          <div class="form-group">
+            <label class="form-label" for="login-2fa-code" id="login-2fa-label">Sign-in code</label>
+            <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+          </div>
+          <div class="form-group">
+            <label class="check-row"><input type="checkbox" id="login-2fa-trust"> <span>Trust this browser for 30 days</span></label>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Verify and sign in</button>
+          <div class="code-row" style="margin-top: 10px;">
+            <button type="button" class="btn btn-ghost" id="login-2fa-email">Email me a code instead</button>
+            <button type="button" class="btn btn-ghost" id="login-2fa-back">Start over</button>
+          </div>
+          <p class="modal-sub" id="login-2fa-recovery" style="margin: 12px 0 0;">Lost your phone? Enter one of your recovery codes instead of the six digits.</p>
+        </form>
+        <div class="modal-switch">
+          New organization? <a href="/register">Register your organization</a>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="login-password">Password</label>
-          <input type="password" class="form-input" id="login-password" required placeholder="••••••••" autocomplete="current-password">
-        </div>
-        ${loginTurnstileSlot}
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
-      </form>
-      <form id="login-2fa-form" hidden>
-        <div class="notice-box" id="login-2fa-notice" role="status"></div>
-        <button type="button" class="btn btn-primary btn-block" id="login-2fa-passkey" hidden style="margin-bottom: 14px;">Use your passkey</button>
-        <div class="form-group">
-          <label class="form-label" for="login-2fa-code" id="login-2fa-label">Sign-in code</label>
-          <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
-        </div>
-        <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="login-2fa-trust"> <span>Trust this browser for 30 days</span></label>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">Verify and sign in</button>
-        <div class="code-row" style="margin-top: 10px;">
-          <button type="button" class="btn btn-ghost" id="login-2fa-email">Email me a code instead</button>
-          <button type="button" class="btn btn-ghost" id="login-2fa-back">Start over</button>
-        </div>
-        <p class="modal-sub" id="login-2fa-recovery" style="margin: 12px 0 0;">Lost your phone? Enter one of your recovery codes instead of the six digits.</p>
-      </form>
-      <div class="modal-switch">
-        New organization? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your organization</a>
       </div>
-    </div>
-  </div>
-
-  <!-- Register Modal -->
-  <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
-    <div class="modal-box modal-wide">
-      <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="reg-modal-title">Register Your Organization</h2>
-      <p class="modal-sub">We review every registration and email you when your console is active.</p>
-      <div class="alert-box" id="register-alert" role="alert"></div>
-      <div class="notice-box" id="register-done" role="status"></div>
-      <form id="register-form">
-        <div class="form-legend">Organization</div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-name">Organization name</label>
-            <input type="text" class="form-input" id="reg-name" required maxlength="120" placeholder="Greenwood Holdings" autocomplete="organization">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-legal-name">Legal or billing name <span class="input-hint">(optional)</span></label>
-            <input type="text" class="form-input" id="reg-legal-name" maxlength="160" placeholder="Greenwood Holdings Pvt Ltd">
-          </div>
-        </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-type">Type</label>
-            <select class="form-input" id="reg-type">
-              <option value="business">Business</option>
-              <option value="government">Government or public body</option>
-              <option value="library">Library</option>
-              <option value="education">Education</option>
-              <option value="nonprofit">Non-profit</option>
-              <option value="other">Other</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-workstations">Expected workstations</label>
-            <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-subdomain">Console address</label>
-          <div class="code-row">
-            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
-            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
-          </div>
-          <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
-        </div>
-
-        <div class="form-legend">Technical contact</div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-contact-name">Full name</label>
-            <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-phone">Phone number</label>
-            <div class="phone-row">
-              <div class="dial-picker">
-                <button type="button" class="form-input dial-button" id="reg-dial-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="reg-dial-panel" aria-label="Country calling code">
-                  <span class="flag" id="reg-dial-flag" aria-hidden="true"></span>
-                  <span id="reg-dial-code">Code</span>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-                <div class="dial-panel" id="reg-dial-panel" hidden>
-                  <input type="search" class="form-input" id="reg-dial-search" placeholder="Search by country or code" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="reg-dial-list" aria-autocomplete="list" aria-label="Search countries">
-                  <ul class="dial-list" id="reg-dial-list" role="listbox" aria-label="Countries"></ul>
-                </div>
-              </div>
-              <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
+    </section>`
+        : meta.authPage === "register"
+          ? `<section class="auth-page">
+      <div class="modal-box modal-wide">
+        <h1 class="modal-title">Register Your Organization</h1>
+        <p class="modal-sub">We review every registration and email you when your console is active.</p>
+        <div class="alert-box" id="register-alert" role="alert"></div>
+        <div class="notice-box" id="register-done" role="status"></div>
+        <form id="register-form">
+          <div class="form-legend">Organization</div>
+          <div class="form-split">
+            <div class="form-group">
+              <label class="form-label" for="reg-name">Organization name</label>
+              <input type="text" class="form-input" id="reg-name" required maxlength="120" placeholder="Greenwood Holdings" autocomplete="organization">
             </div>
-            <div class="input-hint" id="reg-phone-hint">Without the country code or a leading 0. We call or message this number to confirm it before approval.</div>
-            <div class="field-error" id="reg-phone-error" role="alert"></div>
+            <div class="form-group">
+              <label class="form-label" for="reg-legal-name">Legal or billing name <span class="input-hint">(optional)</span></label>
+              <input type="text" class="form-input" id="reg-legal-name" maxlength="160" placeholder="Greenwood Holdings Pvt Ltd">
+            </div>
           </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-email">Work email (your sign-in)</label>
-          <div class="code-row">
-            <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
-            <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
+          <div class="form-split">
+            <div class="form-group">
+              <label class="form-label" for="reg-type">Type</label>
+              <select class="form-input" id="reg-type">
+                <option value="business">Business</option>
+                <option value="government">Government or public body</option>
+                <option value="library">Library</option>
+                <option value="education">Education</option>
+                <option value="nonprofit">Non-profit</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="reg-workstations">Expected workstations</label>
+              <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
+            </div>
           </div>
-        </div>
-        ${turnstileSlot("reg-turnstile")}
-        <div class="form-group">
-          <label class="form-label" for="reg-code">Six-digit code from that email</label>
-          <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-password">Password</label>
-          <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
-          <div class="input-hint">At least 12 characters, with letters and numbers.</div>
-        </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-subdomain">Console address</label>
+            <div class="code-row">
+              <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
+              <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
+            </div>
+            <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
+          </div>
 
-        <div class="form-legend">Address &amp; billing</div>
-        <div class="form-group">
-          <label class="form-label" for="reg-country">Country</label>
-          <select class="form-input" id="reg-country" required autocomplete="country" disabled aria-describedby="reg-country-error">
-            <option value="">Loading countries…</option>
-          </select>
-          <div class="field-error" id="reg-country-error" role="alert"></div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-address1">Street address</label>
-          <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-address2">Address line 2 <span class="input-hint">(optional)</span></label>
-          <input type="text" class="form-input" id="reg-address2" maxlength="200" autocomplete="address-line2">
-        </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-city">City</label>
-            <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
+          <div class="form-legend">Technical contact</div>
+          <div class="form-split">
+            <div class="form-group">
+              <label class="form-label" for="reg-contact-name">Full name</label>
+              <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="reg-phone">Phone number</label>
+              <div class="phone-row">
+                <div class="dial-picker">
+                  <button type="button" class="form-input dial-button" id="reg-dial-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="reg-dial-panel" aria-label="Country calling code">
+                    <span class="flag" id="reg-dial-flag" aria-hidden="true"></span>
+                    <span id="reg-dial-code">Code</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  <div class="dial-panel" id="reg-dial-panel" hidden>
+                    <input type="search" class="form-input" id="reg-dial-search" placeholder="Search by country or code" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="reg-dial-list" aria-autocomplete="list" aria-label="Search countries">
+                    <ul class="dial-list" id="reg-dial-list" role="listbox" aria-label="Countries"></ul>
+                  </div>
+                </div>
+                <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
+              </div>
+              <div class="input-hint" id="reg-phone-hint">Without the country code or a leading 0. We call or message this number to confirm it before approval.</div>
+              <div class="field-error" id="reg-phone-error" role="alert"></div>
+            </div>
           </div>
           <div class="form-group">
-            <label class="form-label" for="reg-region" id="reg-region-label">State or region</label>
-            <select class="form-input" id="reg-region-select" autocomplete="address-level1" hidden></select>
-            <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
+            <label class="form-label" for="reg-email">Work email (your sign-in)</label>
+            <div class="code-row">
+              <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
+              <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
+            </div>
           </div>
-        </div>
-        <div class="form-split">
+          ${turnstileSlot("reg-turnstile")}
           <div class="form-group">
-            <label class="form-label" for="reg-postal"><span id="reg-postal-label">Postal code</span> <span class="input-hint" id="reg-postal-optional" hidden>(optional)</span></label>
-            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code" aria-describedby="reg-postal-error">
-            <div class="field-error" id="reg-postal-error" role="alert"></div>
+            <label class="form-label" for="reg-code">Six-digit code from that email</label>
+            <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
           </div>
           <div class="form-group">
-            <label class="form-label" for="reg-tax-id"><span id="reg-tax-label">Tax ID</span> <span class="input-hint">(optional)</span></label>
-            <input type="text" class="form-input" id="reg-tax-id" maxlength="40" aria-describedby="reg-tax-error">
-            <div class="field-error" id="reg-tax-error" role="alert"></div>
+            <label class="form-label" for="reg-password">Password</label>
+            <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
+            <div class="input-hint">At least 12 characters, with letters and numbers.</div>
           </div>
+
+          <div class="form-legend">Address &amp; billing</div>
+          <div class="form-group">
+            <label class="form-label" for="reg-country">Country</label>
+            <select class="form-input" id="reg-country" required autocomplete="country" disabled aria-describedby="reg-country-error">
+              <option value="">Loading countries…</option>
+            </select>
+            <div class="field-error" id="reg-country-error" role="alert"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-address1">Street address</label>
+            <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-address2">Address line 2 <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-address2" maxlength="200" autocomplete="address-line2">
+          </div>
+          <div class="form-split">
+            <div class="form-group">
+              <label class="form-label" for="reg-city">City</label>
+              <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="reg-region" id="reg-region-label">State or region</label>
+              <select class="form-input" id="reg-region-select" autocomplete="address-level1" hidden></select>
+              <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
+            </div>
+          </div>
+          <div class="form-split">
+            <div class="form-group">
+              <label class="form-label" for="reg-postal"><span id="reg-postal-label">Postal code</span> <span class="input-hint" id="reg-postal-optional" hidden>(optional)</span></label>
+              <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code" aria-describedby="reg-postal-error">
+              <div class="field-error" id="reg-postal-error" role="alert"></div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="reg-tax-id"><span id="reg-tax-label">Tax ID</span> <span class="input-hint">(optional)</span></label>
+              <input type="text" class="form-input" id="reg-tax-id" maxlength="40" aria-describedby="reg-tax-error">
+              <div class="field-error" id="reg-tax-error" role="alert"></div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
+            <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
+            <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
+          </div>
+          <div class="form-group">
+            <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a> and the <a href="/dpa" target="_blank" rel="noopener">Data Processing Agreement</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
+        </form>
+        <div class="modal-switch">
+          Already registered? <a href="/login">Sign in</a>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
-          <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
-          <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
-        </div>
-        <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a> and the <a href="/dpa" target="_blank" rel="noopener">Data Processing Agreement</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
-      </form>
-      <div class="modal-switch">
-        Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
       </div>
-    </div>
-  </div>
+    </section>`
+          : meta.mainHtml
+    }
+  </main>
 
   <!-- The home page demo's dialog: what a demo button would do, and the address to broadcast -->
   <div class="modal-overlay" id="sim-modal" role="dialog" aria-modal="true" aria-labelledby="sim-modal-title">
@@ -558,8 +568,8 @@ ${FONT_LINKS}
     <div class="footer-bottom">
       <div>&copy; 2026 Lab Kiosk OS • Free only for accredited educational institutions and non-commercial evaluation up to 45 computers • Commercial or subscriber license for everyone else</div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-        <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
-        <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
+        <a href="/login">Sign In</a>
+        <a href="/register">Register Organization</a>
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
         <a href="/content-policy">Content Policy</a>
@@ -586,10 +596,6 @@ ${FONT_LINKS}
     function closeModal(id) {
       const el = document.getElementById(id);
       if (el) el.classList.remove('active');
-    }
-    function switchModal(closeId, openId) {
-      closeModal(closeId);
-      openModal(openId);
     }
 
     // Mobile Navigation Drawer Toggle
@@ -622,12 +628,6 @@ ${FONT_LINKS}
         openModal(target.dataset.modal + '-modal');
       } else if (action === 'close-modal') {
         closeModal(target.dataset.modal + '-modal');
-      } else if (action === 'switch-modal') {
-        event.preventDefault();
-        switchModal(target.dataset.close + '-modal', target.dataset.modal + '-modal');
-      } else if (action === 'drawer-open-modal') {
-        toggleMobileNav(false);
-        openModal(target.dataset.modal + '-modal');
       } else if (action === 'close-drawer') {
         toggleMobileNav(false);
       } else if (action === 'toggle-drawer') {
@@ -695,7 +695,7 @@ ${FONT_LINKS}
 
     // Open the modal requested by the server
     const requestedModal = ${escapeJson(data.openModal || null)};
-    if (requestedModal === 'login' || requestedModal === 'register' || requestedModal === 'iso') {
+    if (requestedModal === 'iso') {
       openModal(requestedModal + '-modal');
     }
 
@@ -928,6 +928,15 @@ ${FONT_LINKS}
       return '';
     }
 
+    // The sign-in page (/login). A named organization (?tenant=, on a dev host or the apex) is
+    // carried onto it from any other page, as the dialog it replaced kept the address.
+    const namedTenant = new URLSearchParams(window.location.search).get('tenant');
+    if (namedTenant) {
+      document.querySelectorAll('a[href="/login"]').forEach((link) => {
+        link.setAttribute('href', '/login?tenant=' + encodeURIComponent(namedTenant));
+      });
+    }
+    if (document.getElementById('login-form')) {
     // Login Form Submission
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1179,7 +1188,9 @@ ${FONT_LINKS}
       }
     });
 
-    // Registration: confirm the email with a code, then submit the request.
+    }
+
+    // The registration page (/register): confirm the email with a code, then submit the request.
     // The organization is reviewed before it is activated, so no session follows.
     const registerAlert = document.getElementById('register-alert');
     function registerError(message) {
@@ -1188,6 +1199,7 @@ ${FONT_LINKS}
       registerAlert.scrollIntoView({ block: 'nearest' });
     }
 
+    if (document.getElementById('register-form')) {
     const sendCodeButton = document.getElementById('reg-send-code');
     sendCodeButton.addEventListener('click', async () => {
       const email = document.getElementById('reg-email').value.trim();
@@ -1494,11 +1506,7 @@ ${FONT_LINKS}
       return geoRequest;
     }
 
-    const registerModal = document.getElementById('register-modal');
-    new MutationObserver(() => {
-      if (registerModal.classList.contains('active')) loadGeo();
-    }).observe(registerModal, { attributes: true, attributeFilter: ['class'] });
-    if (registerModal.classList.contains('active')) loadGeo();
+    loadGeo();
 
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1555,11 +1563,12 @@ ${FONT_LINKS}
         registerError('Network error during registration');
       }
     });
+    }
   </script>
   <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
   <script nonce="${escapeAttr(data.nonce)}">${BUSY_SCRIPT}</script>
   ${
-    turnstileKey
+    turnstileOnPage
       ? `<script nonce="${escapeAttr(data.nonce)}" src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit&amp;onload=lkTurnstileReady" async defer></script>`
       : ""
   }
@@ -1580,9 +1589,9 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
         For companies, public services, retail, libraries, schools and anyone who puts shared computers in front of people: manage every screen remotely, lock them in one click, allow only the sites you approve, and wipe every session clean. Runs on any PC or thin client, with zero SSD wear.
       </p>
       <div class="hero-ctas">
-        <button class="btn btn-primary btn-lg" data-action="open-modal" data-modal="register">
+        <a class="btn btn-primary btn-lg" href="/register">
           Register Your Organization
-        </button>
+        </a>
         <button class="btn btn-ghost btn-lg" data-action="open-modal" data-modal="iso">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download Kiosk ISO
@@ -1676,7 +1685,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
                 <div style="font-size: 10px; color: var(--danger-text);">● Intercepted</div>
               </div>
             </div>
-            <button class="btn btn-primary btn-block" style="margin-top: 8px;" data-action="open-modal" data-modal="register">Register Your Organization</button>
+            <a class="btn btn-primary btn-block" style="margin-top: 8px;" href="/register">Register Your Organization</a>
           </div>
         </div>
       </div>
@@ -1807,7 +1816,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
                 <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free for education &le; 45 PCs; commercial license otherwise</td>
               </tr>
             </table>
-            <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Register Your Organization</button>
+            <a class="btn btn-primary btn-block" href="/register">Register Your Organization</a>
           </div>
         </div>
       </div>
@@ -2216,6 +2225,25 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
 export function renderLandingHtml(data: LandingOptions): string {
   const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
   const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
+  // Sign-in and registration are pages of their own, so the home page loads no form and no Turnstile.
+  if (data.openModal === "login") {
+    return renderPublicShell(data, {
+      title: "Sign In - Lab Kiosk",
+      description: "Sign in to manage your organization's Lab Kiosk workstations.",
+      activeNav: "login",
+      mainHtml: "",
+      authPage: "login"
+    });
+  }
+  if (data.openModal === "register") {
+    return renderPublicShell(data, {
+      title: "Register Your Organization - Lab Kiosk",
+      description: "Register your organization for Lab Kiosk. Every registration is reviewed before its console is activated.",
+      activeNav: "register",
+      mainHtml: "",
+      authPage: "register"
+    });
+  }
   return renderPublicShell(data, {
     title: PAGE_TITLE,
     description: PAGE_DESCRIPTION,
@@ -2384,7 +2412,7 @@ function featuresMainHtml(): string {
       </div>
 
       <div style="text-align: center; margin-top: 48px;">
-        <button class="btn btn-primary btn-lg" data-action="open-modal" data-modal="register">Register Your Organization</button>
+        <a class="btn btn-primary btn-lg" href="/register">Register Your Organization</a>
         <a href="/download" class="btn btn-ghost btn-lg" style="margin-left: 12px;">Download Kiosk ISO &rarr;</a>
       </div>
     </section>`;
@@ -2578,7 +2606,7 @@ function pricingMainHtml(): string {
               <span>Dedicated organization subdomain</span>
             </li>
           </ul>
-          <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Apply for Education Grant</button>
+          <a class="btn btn-primary btn-block" href="/register">Apply for Education Grant</a>
         </div>
 
         <div class="pricing-card featured">
@@ -3123,7 +3151,8 @@ export function renderContactHtml(data: LandingOptions): string {
     title: "Contact Lab Kiosk",
     description: "Write to the Lab Kiosk team about licensing, a deployment or a problem. Your message is answered by email.",
     activeNav: "contact",
-    mainHtml: contactMainHtml(data)
+    mainHtml: contactMainHtml(data),
+    turnstile: true
   });
 }
 
@@ -3604,6 +3633,9 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       padding: 20px;
     }
     .modal-overlay.active { display: flex; }
+    .auth-page { display: flex; justify-content: center; padding: 56px 20px 80px; }
+    .auth-page .modal-box { max-height: none; overflow: visible; box-shadow: var(--shadow-md); }
+    .auth-page .modal-title { padding-right: 0; }
     .modal-box {
       background: var(--bg-surface);
       border: 1px solid var(--border);
