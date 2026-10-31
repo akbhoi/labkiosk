@@ -129,6 +129,7 @@ import { headingId, renderMarkdown } from "../src/markdown";
 import { renderPortalHtml } from "../src/ui_portal";
 import type { PortalSite, Tenant } from "../src/types";
 import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
+import { sessionCookieName } from "../src/session_handoff";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
@@ -2201,13 +2202,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     const env: Env = { ...mockEnv, DB: db };
 
-    void worker.fetch(request("/robots.txt"), env);
+    void worker.fetch(request("/api/status"), env);
     await new Promise((resolve) => setTimeout(resolve, 20));
     stalled = false;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<"hung">((resolve) => { timer = setTimeout(() => resolve("hung"), 10_000); });
-    const answer = await Promise.race([worker.fetch(request("/robots.txt"), env), timedOut]);
+    const answer = await Promise.race([worker.fetch(request("/api/status"), env), timedOut]);
     clearTimeout(timer);
     assert.notEqual(answer, "hung", "the second request waited on the first one's startup");
     assert.equal((answer as Response).status, 200);
@@ -2227,7 +2228,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       }
     });
     const env: Env = { ...mockEnv, DB: db };
-    const answers = await Promise.all(Array.from({ length: 10 }, () => worker.fetch(request("/robots.txt"), env)));
+    const answers = await Promise.all(Array.from({ length: 10 }, () => worker.fetch(request("/api/status"), env)));
     assert.deepEqual(answers.map((res) => res.status), Array(10).fill(200));
     assert.equal(superAdminLookups, 1, "startup ran once for ten requests");
   });
@@ -6357,9 +6358,74 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Refuses to serve a bound database that has not been migrated", async () => {
     const empty = createLocalD1Database();
     await assert.rejects(
-      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.org", DB: empty, SUPER_ADMIN_EMAIL: "a@b.co", SUPER_ADMIN_PASSWORD: "x" } as Env),
+      () => worker.fetch(request("/api/status"), { DEFAULT_DOMAIN: "labkiosk.org", DB: empty, SUPER_ADMIN_EMAIL: "a@b.co", SUPER_ADMIN_PASSWORD: "x" } as Env),
       /migrations apply/
     );
+  });
+
+  /** A database that counts every call the Worker makes on it. */
+  function countingDatabase(db: D1Database) {
+    let calls = 0;
+    const counted = new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          calls++;
+          return value.apply(target, args);
+        };
+      }
+    });
+    return { db: counted, calls: () => calls };
+  }
+
+  test("A new isolate answers public pages and static files without touching the database", async () => {
+    const migrated = createLocalD1Database();
+    await initSchema(migrated);
+    const counted = countingDatabase(migrated);
+    const env = {
+      DEFAULT_DOMAIN: "labkiosk.org",
+      DB: counted.db,
+      SUPER_ADMIN_EMAIL: "owner@example.com",
+      SUPER_ADMIN_PASSWORD: "OwnerPassword2026!",
+      PASSWORD_PEPPER: "p".repeat(64),
+      ORG_HUB: {} as DurableObjectNamespace,
+      REMOTE_RELAY: {} as DurableObjectNamespace,
+      ASSETS: {} as Fetcher,
+      AUDIT_QUEUE: { send: async () => undefined } as unknown as Queue,
+      AUDIT_ARCHIVE: {} as R2Bucket,
+      FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
+      AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      CUSTOM_HOSTNAMES: {} as Workflow,
+      CF_API_TOKEN: "test-token",
+      CF_ZONE_ID: "test-zone"
+    } as Env;
+
+    for (const path of ["/", "/features", "/pricing", "/login", "/register", "/robots.txt", "/sitemap.xml", "/favicon.svg", SITE_STYLESHEET_PATH]) {
+      const res = await worker.fetch(request(path), env);
+      assert.equal(res.status, 200, path);
+      assert.equal(counted.calls(), 0, `${path} made no database call`);
+    }
+    // An analytics cookie is not a session.
+    const withAnalytics = await worker.fetch(request("/", { cookie: "_ga=GA1.1.1.1" }), env);
+    assert.equal(withAnalytics.status, 200);
+    assert.equal(counted.calls(), 0, "a visitor's other cookies change nothing");
+
+    // Naming an organization, or being signed in, is not a public page: startup runs.
+    await worker.fetch(request("/?tenant=web-demo"), env);
+    assert.ok(counted.calls() > 0, "?tenant= runs startup");
+  });
+
+  test("Public pages still refuse to serve a misconfigured Worker, and a session still runs startup", async () => {
+    const migrated = createLocalD1Database();
+    await initSchema(migrated);
+    const counted = countingDatabase(migrated);
+    const secrets = { DEFAULT_DOMAIN: "labkiosk.org", DB: counted.db, SUPER_ADMIN_EMAIL: "owner@example.com", SUPER_ADMIN_PASSWORD: "OwnerPassword2026!" };
+    await assert.rejects(() => worker.fetch(request("/"), secrets as Env), /ORG_HUB/);
+    assert.equal(counted.calls(), 0, "the refusal needs no database");
+    // The session is checked by startup's database, whatever it turns out to hold.
+    await assert.rejects(() => worker.fetch(request("/", { cookie: `${sessionCookieName(true)}=x` }), secrets as Env), /ORG_HUB/);
+    assert.ok(counted.calls() > 0, "a session cookie runs startup");
   });
 
   test("Refuses to seed the default super admin against a real database", async () => {
@@ -9884,12 +9950,41 @@ describe("Schema sources agree", () => {
   /** Just enough of D1 for assertSchemaCurrent(), over a real SQLite database. */
   function asD1(db: DatabaseSync): D1Database {
     const statement = (sql: string) => ({
+      sql,
       bind: () => statement(sql),
       run: async () => { db.prepare(sql).all(); return { success: true, results: [], meta: {} }; },
       first: async () => (db.prepare(sql).get() as unknown) ?? null
     });
-    return { prepare: statement } as unknown as D1Database;
+    return {
+      prepare: statement,
+      batch: async (statements: { sql: string }[]) =>
+        statements.map(({ sql }) => ({ success: true, results: db.prepare(sql).all(), meta: {} }))
+    } as unknown as D1Database;
   }
+
+  test("The schema check is one round trip to the database", async () => {
+    const real = asD1(migratedDb());
+    let batches = 0;
+    let singleStatements = 0;
+    const counted = {
+      prepare: (sql: string) => {
+        const statement = real.prepare(sql);
+        return new Proxy(statement, {
+          get(target, property, receiver) {
+            if (property === "run" || property === "first" || property === "all") singleStatements++;
+            return Reflect.get(target, property, receiver);
+          }
+        });
+      },
+      batch: (statements: D1PreparedStatement[]) => {
+        batches++;
+        return real.batch(statements);
+      }
+    } as unknown as D1Database;
+    await assertSchemaCurrent(counted);
+    assert.equal(batches, 1);
+    assert.equal(singleStatements, 0);
+  });
 
   test("A worker refuses a database that has not had 0011 or 0012 applied, and accepts one that has", async () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0011"))), /missing the current schema/);

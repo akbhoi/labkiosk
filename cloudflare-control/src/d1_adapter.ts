@@ -95,7 +95,8 @@ export function createLocalD1Database(): D1Database {
     async batch<T = unknown>(statements: any[]): Promise<D1Result<T>[]> {
       const results: D1Result<T>[] = [];
       for (const stmt of statements) {
-        results.push(await stmt.run());
+        // As in D1, a batched read answers with its rows.
+        results.push(await (/^\s*(SELECT|WITH)\b/i.test(stmt.statement) ? stmt.all() : stmt.run()));
       }
       return results;
     },
