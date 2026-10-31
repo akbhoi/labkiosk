@@ -59,19 +59,28 @@ def read_workflow(name):
 class NothingUntestedIsPublished(unittest.TestCase):
     """The deploy and the release run only after the checks of the same run passed."""
 
-    def test_the_control_plane_deploys_only_from_ci_after_its_tests(self):
+    def test_the_control_plane_deploys_only_from_workers_after_its_tests(self):
         deploy = read_workflow("deploy-cloudflare.yml")
         triggers = deploy.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(triggers.split(), ["workflow_call:"], "deploy-cloudflare.yml must run only when ci.yml calls it")
-        ci = read_workflow("ci.yml")
-        job = ci.split("\n  deploy:\n", 1)[1]
-        self.assertIn("needs: [changes, worker]", job)
+        self.assertEqual(triggers.split(), ["workflow_call:"], "deploy-cloudflare.yml must run only when workers.yml calls it")
+        workers = read_workflow("workers.yml")
+        job = workers.split("\n  deploy:\n", 1)[1]
+        self.assertIn("needs: [changes, control-plane, email-worker]", job)
         self.assertIn("uses: ./.github/workflows/deploy-cloudflare.yml", job)
         self.assertIn("github.ref == 'refs/heads/main'", job)
 
     def test_a_push_to_main_never_cancels_a_running_deploy(self):
-        ci = read_workflow("ci.yml")
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", ci)
+        workers = read_workflow("workers.yml")
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workers)
+
+    def test_every_change_to_a_deployed_worker_starts_its_tests(self):
+        # The deploy's own filter must never name a path the workflow's trigger
+        # leaves out, or a change to it would deploy nothing and test nothing.
+        workers = read_workflow("workers.yml")
+        triggers = workers.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        for path in ("cloudflare-control/**", "cloudflare-email-routing/**", "wiki/**",
+                     ".github/workflows/workers.yml", ".github/workflows/deploy-cloudflare.yml"):
+            self.assertEqual(triggers.count(f'- "{path}"'), 2, f"{path} must start both push and pull_request runs")
 
     def test_the_release_waits_for_every_boot_test_job(self):
         iso = read_workflow("build-iso.yml")
@@ -133,7 +142,7 @@ class NothingUntestedIsPublished(unittest.TestCase):
         self.assertLess(upload.index("filesystem.squashfs"), upload.index("manifest.json.sig manifest.json"))
 
     def test_the_smoke_test_is_shellchecked(self):
-        self.assertIn("distro-builder/tests/vm/live-smoke-test.sh", read_workflow("ci.yml"))
+        self.assertIn("distro-builder/tests/vm/live-smoke-test.sh", read_workflow("client.yml"))
 
     def test_a_security_rebuild_installs_what_the_boot_test_needs(self):
         def packages(name, step):

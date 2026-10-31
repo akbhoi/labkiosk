@@ -1,8 +1,8 @@
-name: Deploy Cloudflare Control Plane
+name: "Cloudflare Workers: deploy"
 
-# Called by ci.yml on main once its worker job has typechecked and tested this
-# commit (both Workers): a push that touches either Worker, or a manual run of
-# ci.yml. Never on its own, so nothing untested reaches production.
+# Called by workers.yml on main once it has typechecked and tested this commit
+# (both Workers): a push that touches either Worker, or a manual run of
+# workers.yml. Never on its own, so nothing untested reaches production.
 on:
   workflow_call:
 

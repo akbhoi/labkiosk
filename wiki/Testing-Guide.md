@@ -215,18 +215,16 @@ The simulator cannot test bootloaders, `overlayroot`, the installer, TTY masking
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes and pull requests to `main`, and daily:
+Pushes and pull requests to `main` run only the workflows whose inputs changed (each workflow's `paths` filter); a change to `docs/` or the README alone runs none.
 
-| Job | Does |
-| :--- | :--- |
-| `changes` | Lists what the push or pull request changed, so the image job can be skipped |
-| `images` | Builds and scans both `labkiosk` and `labkiosk-iso-builder` (no push), only when `Dockerfile`, `docker-compose.yml`, `distro-builder/` or `docker-test/` changed, and on the daily run |
-| `worker` | Node 24, pnpm, typecheck, integration tests |
-| `client` | Python compile, client unit tests, `node --check`, shellcheck, JSON validity, Chromium policy drift |
-| `deploy` | On `main` only: calls `deploy-cloudflare.yml` after `worker` passed, when the push touched either Worker or the run was started by hand |
+| Workflow | Runs when | Jobs |
+| :--- | :--- | :--- |
+| `workers.yml` | `cloudflare-control/`, `cloudflare-email-routing/` or `wiki/` changed (the wiki is bundled as `/docs`); by hand on `main` | `control-plane` and `email-worker` (Node 24, pnpm, typecheck, tests) in parallel; on `main`, `deploy` calls `deploy-cloudflare.yml` after both passed, when the push touched either Worker or the run was started by hand |
+| `client.yml` | `distro-builder/`, `docker-test/`, the `Dockerfile`, `docker-compose.yml`, `cloudflare-control/src/`, `wiki/` or `.github/` changed | `tests`: Python compile and the client unit tests; `lint`: `node --check`, shellcheck, JSON validity, Chromium policy drift, line endings, `overlayroot`, embedded Python |
+| `images.yml` | Something that goes into an image changed, and daily | Builds and scans `labkiosk` and `labkiosk-iso-builder` (no push) |
 
-`build-iso.yml` (version tags and manual dispatch) builds the ISO, then runs the boot test above as two parallel jobs (`slots`, and `tpm,beside`) before any GitHub Release is created; a failing scenario uploads the VM screenshots.
+`build-iso.yml` (version tags and manual dispatch) builds the ISO, then runs the boot test above as parallel jobs before any GitHub Release is created; a failing scenario uploads the VM screenshots.
 
-`deploy-cloudflare.yml` does not test again: it runs only from `ci.yml`, after the typecheck and tests passed on the same commit, so a failing test never reaches production.
+`deploy-cloudflare.yml` does not test again: it runs only from `workers.yml`, after the typecheck and tests passed on the same commit, so a failing test never reaches production.
 
 → [Development Workflow](Development-Workflow) · [Control Plane Internals](Control-Plane-Internals)

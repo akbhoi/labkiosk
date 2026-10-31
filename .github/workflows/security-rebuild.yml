@@ -1,4 +1,4 @@
-name: Security rebuild
+name: "Release: daily security rebuild"
 
 # Over-the-air updates, phase 4 (docs/OTA_UPDATES.md section 7). Every day,
 # for every release line that updates over the air, whose major release the
