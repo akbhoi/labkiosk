@@ -1,4 +1,4 @@
-name: Publish Docker Images to GitHub Packages
+name: "Release: Docker images to GHCR"
 
 on:
   push:

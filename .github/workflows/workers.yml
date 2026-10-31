@@ -1,0 +1,152 @@
+name: "Cloudflare Workers: test & deploy"
+
+# The control plane and the email Worker: typecheck and test both, and on main
+# deploy both through deploy-cloudflare.yml once those tests passed on this
+# very commit. Runs only when something that goes into a Worker changed: wiki/
+# is bundled into the control plane as its /docs pages, and a test fails when
+# src/docs_content.generated.ts no longer matches it.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "cloudflare-control/**"
+      - "cloudflare-email-routing/**"
+      - "wiki/**"
+      - ".github/workflows/workers.yml"
+      - ".github/workflows/deploy-cloudflare.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "cloudflare-control/**"
+      - "cloudflare-email-routing/**"
+      - "wiki/**"
+      - ".github/workflows/workers.yml"
+      - ".github/workflows/deploy-cloudflare.yml"
+  # On main, a manual deploy of the control plane, after the same tests.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pull requests: a new push cancels the run it supersedes. main: every push
+# gets its own run, so a later push never cancels a deploy halfway through its
+# migrations, nor skips one by replacing it while it waits.
+concurrency:
+  group: workers-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+
+  control-plane:
+    name: Control plane typecheck & tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+
+      - name: Setup Node.js v24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: cloudflare-control/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        run: pnpm --prefix cloudflare-control install --frozen-lockfile
+
+      - name: TypeScript Typecheck (worker and tests)
+        run: pnpm --prefix cloudflare-control run typecheck
+
+      - name: Run Integration Tests
+        run: pnpm --prefix cloudflare-control test
+
+  email-worker:
+    name: Email Worker typecheck & tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+
+      - name: Setup Node.js v24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: cloudflare-email-routing/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        run: pnpm --prefix cloudflare-email-routing install --frozen-lockfile
+
+      - name: TypeScript Typecheck
+        run: pnpm --prefix cloudflare-email-routing run typecheck
+
+      - name: Run Tests
+        run: pnpm --prefix cloudflare-email-routing test
+
+  # Whether a push to main touched what is deployed. wiki/ starts the tests but
+  # deploys nothing by itself: a wiki change reaches /docs only with its
+  # regenerated module under cloudflare-control/. Plain git: no third-party
+  # action for a diff. A range git cannot read (a force-push), or a manual run,
+  # counts as touching everything.
+  changes:
+    name: What changed
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.diff.outputs.deploy }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the previous push
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          [ "$EVENT" = push ] && base="$PUSH_BEFORE"
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git diff --name-only "$base...HEAD" > "$RUNNER_TEMP/changed.txt"
+            echo "Changed since ${base:0:12}:"; cat "$RUNNER_TEMP/changed.txt"
+          else
+            echo "No base to compare with ($EVENT): deploy."
+            echo cloudflare-control/ > "$RUNNER_TEMP/changed.txt"
+          fi
+          if grep -qE '^(cloudflare-control/|cloudflare-email-routing/|\.github/workflows/(workers|deploy-cloudflare)\.yml)' "$RUNNER_TEMP/changed.txt"; then
+            echo "deploy=true" | tee -a "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  # The control plane is deployed from main by deploy-cloudflare.yml, called
+  # here so it runs only after the typecheck and tests above passed on this
+  # very commit, instead of running them a second time.
+  deploy:
+    name: Deploy the control plane
+    needs: [changes, control-plane, email-worker]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && needs.changes.outputs.deploy == 'true'))
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy-cloudflare.yml
+    secrets: inherit
