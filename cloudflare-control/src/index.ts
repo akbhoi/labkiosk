@@ -606,6 +606,38 @@ async function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
   }
 }
 
+/** What a deployed Worker refuses to serve without. Reads no database. */
+function assertPlatformConfigured(env: Env): void {
+  // Rule 7 (fail closed): a well-known super admin password is acceptable
+  // only for the in-memory database used by tests and local development.
+  if (!env.SUPER_ADMIN_EMAIL?.trim() || !env.SUPER_ADMIN_PASSWORD) {
+    throw new Error(
+      "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
+    );
+  }
+  // Live control, audit history and custom domains all depend on these.
+  const missing = requiredBindingsProblem(env);
+  if (missing) throw new Error(missing);
+  // A misspelt console host is a startup error, not a console nobody can reach.
+  superAdminHost(env);
+  passwordPepper(env);
+}
+
+/**
+ * A deployed Worker's public page for a visitor with no session: the platform's
+ * own host, with no organization named. These skip startup, whose database calls
+ * would otherwise delay the first visitor to a new isolate. A local database
+ * still needs startup to create its tables.
+ */
+function isDatabaseFreePublicRequest(request: Request, url: URL, env: Env): boolean {
+  if (!env.DB || env.ALLOW_LOCAL_DB === "1") return false;
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  if (request.headers.has("authorization")) return false;
+  const cookies = parseCookies(request.headers.get("cookie"));
+  if (cookies[sessionCookieName(true)] || cookies[sessionCookieName(false)]) return false;
+  return allowsAnalytics(request, url, env);
+}
+
 async function runBootstrap(db: D1Database, env: Env, email: string | undefined, password: string | undefined): Promise<Bootstrapped> {
   // Idempotent CREATE TABLE IF NOT EXISTS, so `wrangler dev` works against a
   // fresh local D1 with no migration step. This is memoized per isolate, so
@@ -621,20 +653,7 @@ async function runBootstrap(db: D1Database, env: Env, email: string | undefined,
     await initSchema(db);
   }
 
-  // Rule 7 (fail closed): a well-known super admin password is acceptable
-  // only for the in-memory database used by tests and local development.
-  if (production && (!email || !password)) {
-    throw new Error(
-      "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
-    );
-  }
-  // Live control, audit history and custom domains all depend on these.
-  if (production) {
-    const missing = requiredBindingsProblem(env);
-    if (missing) throw new Error(missing);
-    // A misspelt console host is a startup error, not a console nobody can reach.
-    superAdminHost(env);
-  }
+  if (production) assertPlatformConfigured(env);
   if (!production && (Boolean(email) !== Boolean(password))) {
     throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
   }
@@ -1412,10 +1431,6 @@ export default {
       return Response.redirect(slashless.toString(), 301);
     }
 
-    const db = getDatabase(env);
-    await bootstrap(db, env);
-    useAuditQueue(env.AUDIT_QUEUE);
-
     // Same-origin JSON API: no cross-origin credentials are ever needed, so no
     // Access-Control-Allow-Origin is emitted. `/api/status` opts in explicitly
     // below because the first-boot wizard probes it from a file:// page.
@@ -1426,43 +1441,6 @@ export default {
     };
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: { Allow: "GET, POST, DELETE, OPTIONS" } });
-    }
-
-    if ((path === "/api/telemetry" && method === "POST") || (path === "/api/devices/ws" && method === "GET")) {
-      return handleWorkstationRequest(request, url, env, db, jsonHeaders);
-    }
-    if (path === "/api/devices/boot-report" && method === "POST") {
-      return handleBootReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/devices/restart-report" && method === "POST") {
-      return handleRestartReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/devices/disk-health" && method === "POST") {
-      return handleDiskHealthReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/devices/video-decoding" && method === "POST") {
-      return handleVideoDecodingReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/devices/hardware" && method === "POST") {
-      return handleHardwareReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/devices/usage" && method === "POST") {
-      return handleUsageReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/devices/power-report" && method === "POST") {
-      return handlePowerReport(request, db, jsonHeaders);
-    }
-    if (path === "/api/release-notes/sync" && method === "POST") {
-      return handleReleaseNotesSync(request, env, db, jsonHeaders);
-    }
-    if (path === "/api/release-support" && method === "GET") {
-      return handleReleaseSupportForCi(request, env, db, jsonHeaders);
-    }
-    if (path === "/api/devices/update" && method === "GET") {
-      return handleDeviceUpdate(request, env, db, jsonHeaders);
-    }
-    if (path === "/api/devices/remote" && method === "GET") {
-      return handleDeviceRemote(request, env, db, jsonHeaders);
     }
 
     // The noVNC client the Remote Control viewer loads, from static assets.
@@ -1525,21 +1503,6 @@ export default {
       return new Response(asset.body, { status: asset.status, headers });
     }
 
-    // One address for each public page: the platform's other host name (`www.`
-    // beside the apex, or the reverse) answers with the canonical one. Only the
-    // pages people land on: the sitemap, the mail logo and the consoles keep
-    // answering on both.
-    if ((method === "GET" || method === "HEAD") && INDEXABLE_PATHS.includes(path) && !isDevHost(request)) {
-      const canonical = canonicalHost(env);
-      const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
-      const host = hostname(request);
-      if (canonical && base && host !== canonical && (host === base || host === `www.${base}`)) {
-        const target = new URL(request.url);
-        target.hostname = canonical;
-        return Response.redirect(target.toString(), 301);
-      }
-    }
-
     // --- Search engines -----------------------------------------------------
     if (method === "GET" || method === "HEAD") {
       if (path === "/robots.txt") {
@@ -1563,6 +1526,69 @@ export default {
         return new Response(faviconSvg(PALETTE["--accent"][0], PALETTE["--accent-fg"][0]), {
           headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff" }
         });
+      }
+    }
+
+    // Everything above needs no database. So does a public page for a visitor with
+    // no session, and nothing below that page reads depends on startup having run,
+    // so a new isolate answers it at once. It still refuses to serve when misconfigured.
+    const db = getDatabase(env);
+    if (isDatabaseFreePublicRequest(request, url, env)) {
+      assertPlatformConfigured(env);
+    } else {
+      await bootstrap(db, env);
+    }
+    useAuditQueue(env.AUDIT_QUEUE);
+
+    if ((path === "/api/telemetry" && method === "POST") || (path === "/api/devices/ws" && method === "GET")) {
+      return handleWorkstationRequest(request, url, env, db, jsonHeaders);
+    }
+    if (path === "/api/devices/boot-report" && method === "POST") {
+      return handleBootReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/restart-report" && method === "POST") {
+      return handleRestartReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/disk-health" && method === "POST") {
+      return handleDiskHealthReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/video-decoding" && method === "POST") {
+      return handleVideoDecodingReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/hardware" && method === "POST") {
+      return handleHardwareReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/usage" && method === "POST") {
+      return handleUsageReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/power-report" && method === "POST") {
+      return handlePowerReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/release-notes/sync" && method === "POST") {
+      return handleReleaseNotesSync(request, env, db, jsonHeaders);
+    }
+    if (path === "/api/release-support" && method === "GET") {
+      return handleReleaseSupportForCi(request, env, db, jsonHeaders);
+    }
+    if (path === "/api/devices/update" && method === "GET") {
+      return handleDeviceUpdate(request, env, db, jsonHeaders);
+    }
+    if (path === "/api/devices/remote" && method === "GET") {
+      return handleDeviceRemote(request, env, db, jsonHeaders);
+    }
+
+    // One address for each public page: the platform's other host name (`www.`
+    // beside the apex, or the reverse) answers with the canonical one. Only the
+    // pages people land on: the sitemap, the mail logo and the consoles keep
+    // answering on both.
+    if ((method === "GET" || method === "HEAD") && INDEXABLE_PATHS.includes(path) && !isDevHost(request)) {
+      const canonical = canonicalHost(env);
+      const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
+      const host = hostname(request);
+      if (canonical && base && host !== canonical && (host === base || host === `www.${base}`)) {
+        const target = new URL(request.url);
+        target.hostname = canonical;
+        return Response.redirect(target.toString(), 301);
       }
     }
 
