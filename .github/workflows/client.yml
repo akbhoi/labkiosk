@@ -1,170 +1,48 @@
-name: CI Test Suite
+name: Kiosk client checks
 
+# The workstation side: the agent, installer and updater, the browser extension,
+# the image's hooks and scripts, and the workflows' own tests. Runs only when
+# something those checks read changed. The client's unit tests also read parts of
+# the control plane's source (shared constants and routes), the root Dockerfile,
+# the wiki and .github/, so those start it too.
 on:
   push:
     branches: [ main ]
+    paths:
+      - "distro-builder/**"
+      - "docker-test/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "cloudflare-control/src/**"
+      - "cloudflare-control/package.json"
+      - "wiki/**"
+      - ".github/**"
   pull_request:
     branches: [ main ]
-  # Daily, so both images are rebuilt and scanned for fixed criticals even when
-  # nothing that goes into them changed (APT_REFRESH refreshes their packages).
-  schedule:
-    - cron: "15 1 * * *"
-  # On main, also a manual deploy of the control plane, after the same tests.
+    paths:
+      - "distro-builder/**"
+      - "docker-test/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "cloudflare-control/src/**"
+      - "cloudflare-control/package.json"
+      - "wiki/**"
+      - ".github/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Pull requests: a new push cancels the run it supersedes. main: every push
-# gets its own run, so a later push never cancels a deploy halfway through its
-# migrations, nor skips one by replacing it while it waits.
+# A new push to a pull request cancels the run it supersedes; on main every
+# commit keeps its own result.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: client-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
-  # What the push or pull request touched, so the jobs that cannot be affected
-  # are skipped. Plain git: no third-party action for a diff. Anything that is
-  # not a push or a pull request, or a range git cannot read (a new branch, a
-  # force-push), counts as touching everything.
-  changes:
-    name: What changed
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      images: ${{ steps.diff.outputs.images }}
-      cloudflare: ${{ steps.diff.outputs.cloudflare }}
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Compare with the base
-        id: diff
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          case "$EVENT" in
-            pull_request) base="$PR_BASE" ;;
-            push) base="$PUSH_BEFORE" ;;
-            *) base="" ;;
-          esac
-          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-            git diff --name-only "$base...HEAD" > "$RUNNER_TEMP/changed.txt"
-            echo "Changed since ${base:0:12}:"; cat "$RUNNER_TEMP/changed.txt"
-          else
-            echo "No base to compare with ($EVENT): every job runs."
-            printf '%s\n' Dockerfile cloudflare-control/ > "$RUNNER_TEMP/changed.txt"
-          fi
-          matches() { grep -qE "$1" "$RUNNER_TEMP/changed.txt" && echo true || echo false; }
-          {
-            echo "images=$(matches '^(Dockerfile|docker-compose\.yml|\.dockerignore|distro-builder/|docker-test/|\.github/workflows/ci\.yml)')"
-            echo "cloudflare=$(matches '^(cloudflare-control/|cloudflare-email-routing/|\.github/workflows/(ci|deploy-cloudflare)\.yml)')"
-          } | tee -a "$GITHUB_OUTPUT"
-
-  images:
-    name: Container Images Build
-    needs: changes
-    if: needs.changes.outputs.images == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    # Both images are published from main by docker-publish.yml. Building them
-    # here as well means a broken Dockerfile fails on the pull request rather
-    # than after merge, and the gha cache scopes are shared with that workflow
-    # so the expensive apt layers are downloaded once across both.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: labkiosk
-            context: .
-            file: Dockerfile
-          - name: labkiosk-iso-builder
-            context: distro-builder
-            file: distro-builder/Dockerfile
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Today's date, so the package layer is rebuilt once a day (APT_REFRESH).
-      - name: Date the package layer
-        id: apt
-        run: echo "refresh=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Build ${{ matrix.name }} (no push)
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          push: false
-          load: true
-          tags: ci/${{ matrix.name }}:pr
-          build-args: APT_REFRESH=${{ steps.apt.outputs.refresh }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-
-      # The same gate docker-publish.yml applies after pushing, run here so a
-      # fixed critical in the base image fails the pull request instead of the
-      # release tag.
-      - name: Scan ${{ matrix.name }}
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ci/${{ matrix.name }}:pr
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: '1'
-  worker:
-    name: Cloudflare Worker Typecheck & Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
-
-      - name: Setup Node.js v24
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: |
-            cloudflare-control/pnpm-lock.yaml
-            cloudflare-email-routing/pnpm-lock.yaml
-
-      - name: Install Dependencies
-        run: pnpm --prefix cloudflare-control install --frozen-lockfile
-
-      - name: TypeScript Typecheck (worker and tests)
-        run: pnpm --prefix cloudflare-control run typecheck
-
-      - name: Run Integration Tests
-        run: pnpm --prefix cloudflare-control test
-
-      - name: Install Email Worker Dependencies
-        run: pnpm --prefix cloudflare-email-routing install --frozen-lockfile
-
-      - name: Email Worker Typecheck & Tests
-        run: |
-          pnpm --prefix cloudflare-email-routing run typecheck
-          pnpm --prefix cloudflare-email-routing test
-
-  client:
-    name: Kiosk Client Checks (agent, extension, image scripts)
+  tests:
+    name: Client unit tests (agent, installer, updater)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -177,9 +55,9 @@ jobs:
         with:
           node-version: 24
 
-      # shellcheck, and the image tools the Raspberry Pi card test builds a card with.
-      - name: Install shellcheck and the image tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck xorriso squashfs-tools dosfstools mtools
+      # The image tools the Raspberry Pi card and preset stick tests build with.
+      - name: Install the image tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends xorriso squashfs-tools dosfstools mtools
 
       # PYTHONPYCACHEPREFIX keeps __pycache__ out of config/includes.chroot.
       # live-build copies that tree verbatim into the ISO, so bytecode left here
@@ -208,11 +86,25 @@ jobs:
       # has had a suite since the beginning; this is the client's.
       - name: Client validators
         run: |
-          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m unittest discover             -s distro-builder/tests -t distro-builder/tests -v
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests -v
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1
           fi
+
+  lint:
+    name: Client static checks (scripts, JSON, shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js v24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
 
       - name: Extension scripts parse
         run: |
@@ -349,8 +241,13 @@ jobs:
           docker compose config --quiet
           echo "ok - docker-compose.yml parses"
 
+      # GitHub's Ubuntu runners ship shellcheck; installed only if one does not.
       - name: Shell scripts pass shellcheck
         run: |
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version | head -2
           shellcheck -S warning \
             distro-builder/config/includes.chroot/etc/openbox/autostart \
             distro-builder/build-iso.sh \
@@ -368,18 +265,3 @@ jobs:
             distro-builder/tests/vm/live-smoke-test.sh \
             distro-builder/tests/vm/preset_check.sh \
             docker-test/entrypoint.sh
-
-  # The control plane is deployed from main by deploy-cloudflare.yml, called
-  # here so it runs only after the typecheck and tests above passed on this
-  # very commit, instead of running them a second time.
-  deploy:
-    name: Deploy the control plane
-    needs: [changes, worker]
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && needs.changes.outputs.cloudflare == 'true'))
-    permissions:
-      contents: read
-    uses: ./.github/workflows/deploy-cloudflare.yml
-    secrets: inherit

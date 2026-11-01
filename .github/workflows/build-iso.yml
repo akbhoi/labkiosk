@@ -1,4 +1,4 @@
-name: Build Debian Kiosk ISO
+name: "Release: ISO, Raspberry Pi image and OTA update"
 
 on:
   workflow_dispatch:
