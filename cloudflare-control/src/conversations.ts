@@ -87,12 +87,14 @@ export function categoryForTopic(topic: string): ConversationCategory {
  * What the contact page lets a person write about. Each is a type of mail, so
  * a message arrives in the Super Admin console already sorted.
  */
-export const CONTACT_REASONS: readonly { value: ConversationCategory; label: string }[] = [
-  { value: "sales", label: "Sales and licensing" },
-  { value: "support", label: "Technical support" },
-  { value: "billing", label: "Billing and invoices" },
-  { value: "legal", label: "Privacy, security or legal" },
-  { value: "general", label: "Something else" }
+/** The contact form's reasons: `value` is what the form sends, `category` what Mail files it under. */
+export const CONTACT_REASONS: readonly { value: string; category: ConversationCategory; label: string }[] = [
+  { value: "sales", category: "sales", label: "Sales and licensing" },
+  { value: "reseller", category: "sales", label: "Become a reseller" },
+  { value: "support", category: "support", label: "Technical support" },
+  { value: "billing", category: "billing", label: "Billing and invoices" },
+  { value: "legal", category: "legal", label: "Privacy, security or legal" },
+  { value: "general", category: "general", label: "Something else" }
 ];
 
 /** The kinds the Tasks tab shows; Support shows the rest. */

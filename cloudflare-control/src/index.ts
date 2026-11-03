@@ -397,9 +397,19 @@ export class MailIntake extends WorkerEntrypoint<Env> {
   }
 }
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
-import { handleContactEmailCode, handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, notifyPlatformOwner, RouteContext } from "./signup";
+import {
+  handleContactEmailCode,
+  handleContactForm,
+  handleRegister,
+  handleRemoteControlRequest,
+  handleSignupEmailCode,
+  notifyPlatformOwner,
+  RouteContext,
+  sendOnConversation
+} from "./signup";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
-import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import { findConversation, inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import { certifyModel, decideReseller, findReseller, listCertifiedModels, listPublicResellers, listResellers, uncertifyModel } from "./partners";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
 import { FIREBASE_SDK_ORIGIN, FirebaseConfig, firebaseConfig, firebaseConfigProblem } from "./phone_verify";
 import {
@@ -3045,6 +3055,66 @@ export default {
       return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
     }
 
+    // Certified hardware and resellers (src/partners.ts), for the super admin.
+    // GET /api/super/partners: both lists.
+    // POST /api/super/hardware/certify {vendor, model, note?} and /uncertify {vendor, model}.
+    // POST /api/super/resellers/decide {id, decision: "approve" | "reject"}: approving
+    // lists the reseller on /hardware and tells them by email; rejecting an approved
+    // one takes it off the directory.
+    if (
+      (path === "/api/super/partners" && method === "GET") ||
+      ((path === "/api/super/hardware/certify" || path === "/api/super/hardware/uncertify" || path === "/api/super/resellers/decide") && method === "POST")
+    ) {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (method === "GET") {
+        const [certified, resellers] = await Promise.all([listCertifiedModels(db), listResellers(db)]);
+        return new Response(JSON.stringify({ certified, resellers }), { headers: jsonHeaders });
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json<Record<string, unknown>>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const now = Math.floor(Date.now() / 1000);
+      if (path === "/api/super/hardware/certify") {
+        const problem = await certifyModel(db, body, session!.user_id, now);
+        if (problem) return jsonError(problem, 400, jsonHeaders);
+        await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "hardware.certify", details: `${String(body.vendor)} ${String(body.model)}`.slice(0, 300) });
+        return new Response(JSON.stringify({ status: "ok", certified: await listCertifiedModels(db) }), { headers: jsonHeaders });
+      }
+      if (path === "/api/super/hardware/uncertify") {
+        if (!(await uncertifyModel(db, body))) return jsonError("That model is not certified", 404, jsonHeaders);
+        await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "hardware.uncertify", details: `${String(body.vendor)} ${String(body.model)}`.slice(0, 300) });
+        return new Response(JSON.stringify({ status: "ok", certified: await listCertifiedModels(db) }), { headers: jsonHeaders });
+      }
+      const decision = body.decision;
+      if (decision !== "approve" && decision !== "reject") return jsonError('decision is "approve" or "reject"', 400, jsonHeaders);
+      const reseller = typeof body.id === "string" ? await findReseller(db, body.id) : null;
+      if (!reseller) return jsonError("Reseller not found", 404, jsonHeaders);
+      const status = decision === "approve" ? "approved" : "rejected";
+      if (!(await decideReseller(db, reseller.id, status, session!.user_id, now))) {
+        return jsonError(`This reseller is already ${status}`, 409, jsonHeaders);
+      }
+      await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: `reseller.${decision}`, details: `id=${reseller.id} company=${reseller.company}`.slice(0, 300) });
+      let emailed = false;
+      if (status === "approved" && reseller.conversation_id) {
+        const conversation = await findConversation(db, reseller.conversation_id);
+        if (conversation) {
+          emailed = await sendOnConversation(
+            env,
+            db,
+            conversation,
+            `Hello ${reseller.contact_name},\n\n${reseller.company} is now listed as a Lab Kiosk reseller at https://${baseDomain}/hardware#resellers, ` +
+              `under ${reseller.city}, ${reseller.state}, with ${reseller.phone} and ${reseller.email}. Reply to this email to change the listing or to be taken off it.\n\nLab Kiosk`,
+            { subject: "You are listed as a Lab Kiosk reseller", authorUserId: session!.user_id, authorName: "Lab Kiosk" }
+          );
+        }
+      }
+      return new Response(JSON.stringify({ status: "ok", reseller: { ...reseller, status }, emailed }), { headers: jsonHeaders });
+    }
+
     // GET /api/super/usage?days=N: the platform's anonymous usage totals and the
     // hardware every organization's workstations run on, by model. Nothing here
     // names an organization (src/usage.ts, src/hardware.ts).
@@ -5483,7 +5553,12 @@ export default {
       );
     }
     if (path === "/hardware") {
-      const [models, computedAt] = await Promise.all([listPublicHardwareModels(db), hardwareModelsComputedAt(db)]);
+      const [models, computedAt, certified, resellers] = await Promise.all([
+        listPublicHardwareModels(db),
+        hardwareModelsComputedAt(db),
+        listCertifiedModels(db),
+        listPublicResellers(db)
+      ]);
       return new Response(
         renderHardwareHtml(
           {
@@ -5494,7 +5569,9 @@ export default {
             nonce
           },
           models,
-          computedAt
+          computedAt,
+          certified,
+          resellers
         ),
         { headers: htmlHeaders }
       );

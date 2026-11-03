@@ -18,7 +18,7 @@ import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor"
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
 import { renderStatusPaneHtml, renderStatusPaneScript } from "./ui_super_status";
-import { renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
+import { renderPartnersScript, renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
@@ -733,7 +733,7 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
-${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) : ""}
+${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.

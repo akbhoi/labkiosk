@@ -41,6 +41,7 @@ cloudflare-control/
 │   ├── addresses.ts                    # Generated console addresses; a chosen one (and the homepage) on request, kept beside it; the feature tip
 │   ├── monthly_summary.ts              # Last month in numbers on Workstations, from recorded usage; never emailed
 │   ├── exams.ts                        # Exam mode: schedule, hold a group on the exam site, events, report, purge
+│   ├── partners.ts                     # Certified hardware and the reseller directory on /hardware
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback

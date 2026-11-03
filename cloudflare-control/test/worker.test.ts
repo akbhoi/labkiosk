@@ -10539,6 +10539,84 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const own = await (await call("/admin/staff?tenant=greenwood", { cookie: staff.cookie })).text();
     assert.doesNotMatch(own, /data-nav="exams"/, "not in its menu");
   });
+
+  // --------------------------------------------- certified hardware and resellers (src/partners.ts)
+
+  test("Certified models are shown first on /hardware, and only the super admin certifies", async () => {
+    const certify = (cookie: string, body: unknown) => call("/api/super/hardware/certify", { ...json(body), cookie });
+    assert.equal((await certify(orgSessionCookie, { vendor: "LENOVO", model: "ThinkCentre M70q" })).status, 403);
+    assert.equal((await certify(superSessionCookie, { vendor: "", model: "x" })).status, 400);
+    const done = await callJson("/api/super/hardware/certify", { ...json({ vendor: "LENOVO", model: "ThinkCentre M70q", note: "BIOS 1.20 or later" }), cookie: superSessionCookie });
+    assert.equal(done.res.status, 200);
+    assert.deepEqual(done.data.certified.map((c: any) => [c.vendor, c.model, c.note]), [["LENOVO", "ThinkCentre M70q", "BIOS 1.20 or later"]]);
+    // The same model in another spelling is the same model.
+    await callJson("/api/super/hardware/certify", { ...json({ vendor: "Lenovo", model: "thinkcentre m70q", note: "" }), cookie: superSessionCookie });
+    const listed = await callJson("/api/super/partners", { cookie: superSessionCookie });
+    assert.equal(listed.data.certified.length, 1);
+    assert.equal(listed.data.certified[0].note, null);
+
+    const page = await (await call("/hardware")).text();
+    assert.match(page, /Certified models/);
+    assert.match(page, /thinkcentre m70q/);
+    assert.match(page, /href="\/contact\?reason=reseller"/, "anyone can apply to be a reseller");
+    assert.doesNotMatch(page, /Where to buy/, "no directory before the first reseller is approved");
+
+    assert.equal((await call("/api/super/hardware/uncertify", { ...json({ vendor: "lenovo", model: "THINKCENTRE M70Q" }), cookie: superSessionCookie })).status, 200);
+    assert.equal((await call("/api/super/hardware/uncertify", { ...json({ vendor: "lenovo", model: "THINKCENTRE M70Q" }), cookie: superSessionCookie })).status, 404);
+    assert.doesNotMatch(await (await call("/hardware")).text(), /Certified models/);
+  });
+
+  test("A reseller applies with the contact form, and is listed on /hardware once approved", async () => {
+    const application = {
+      name: "Asha Rao",
+      organization: "Kalinga Computers",
+      email: "asha@kalinga-computers.example",
+      reason: "reseller",
+      message: "We sell refurbished desktops to schools in Odisha.",
+      phone: "+91 98765 43210",
+      state: "Odisha",
+      city: "Bhubaneswar",
+      website: "kalinga-computers.example",
+      stocks: "Dell OptiPlex 3000"
+    };
+    const contactPage = await (await call("/contact")).text();
+    assert.match(contactPage, /<option value="reseller">Become a reseller<\/option>/);
+    assert.match(contactPage, /id="contact-reseller" hidden/);
+
+    const incomplete = await callJson("/api/contact", { ...json({ ...application, state: "", emailCode: "123456" }), headers: { "CF-Connecting-IP": "203.0.113.91" } });
+    assert.equal(incomplete.res.status, 400);
+    assert.match(incomplete.data.error, /state/);
+
+    const sent = await submitContact(application, "203.0.113.91");
+    assert.equal(sent.res.status, 200, JSON.stringify(sent.data));
+    const db = getDatabase(mockEnv);
+    const row = await db.prepare("SELECT * FROM resellers WHERE email = ?").bind(application.email).first<any>();
+    assert.equal(row.status, "pending");
+    assert.equal(row.website, "https://kalinga-computers.example/");
+    const conversation = await db.prepare("SELECT category, subject FROM conversations WHERE id = ?").bind(row.conversation_id).first<any>();
+    assert.deepEqual({ ...conversation }, { category: "sales", subject: "Become a reseller: Kalinga Computers" }, "filed in Mail under Sales");
+    const again = await callJson("/api/contact", { ...json({ ...application, emailCode: "123456" }), headers: { "CF-Connecting-IP": "203.0.113.92" } });
+    assert.equal(again.res.status, 409, "one application per address");
+    assert.doesNotMatch(await (await call("/hardware")).text(), /Kalinga Computers/, "not listed while it waits");
+
+    const decide = (decision: string) => callJson("/api/super/resellers/decide", { ...json({ id: row.id, decision }), cookie: superSessionCookie });
+    assert.equal((await call("/api/super/resellers/decide", { ...json({ id: row.id, decision: "approve" }), cookie: orgSessionCookie })).status, 403);
+    const approved = await decide("approve");
+    assert.equal(approved.res.status, 200);
+    assert.equal(approved.data.emailed, true);
+    assert.match(lastMailTo(application.email).text, /now listed as a Lab Kiosk reseller/);
+    assert.equal((await decide("approve")).res.status, 409);
+
+    const page = await (await call("/hardware")).text();
+    assert.match(page, /Where to buy/);
+    assert.match(page, /<h3 class="hw-state">Odisha<\/h3>/);
+    assert.match(page, /Kalinga Computers/);
+    assert.match(page, /href="tel:\+919876543210"/);
+    assert.doesNotMatch(page, /Asha Rao/, "the contact person's name stays private");
+
+    assert.equal((await decide("reject")).res.status, 200, "taken off the directory");
+    assert.doesNotMatch(await (await call("/hardware")).text(), /Where to buy/);
+  });
 });
 
 /**

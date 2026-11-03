@@ -712,6 +712,37 @@ CREATE TABLE IF NOT EXISTS exam_events (
 
 CREATE INDEX IF NOT EXISTS idx_exam_sessions_tenant ON exam_sessions(tenant_id, starts_at);
 CREATE INDEX IF NOT EXISTS idx_exam_events_exam ON exam_events(exam_id, client_id, at);
+
+CREATE TABLE IF NOT EXISTS certified_hardware (
+  vendor_key TEXT NOT NULL,
+  model_key TEXT NOT NULL,
+  vendor TEXT NOT NULL,
+  model TEXT NOT NULL,
+  note TEXT,
+  certified_at INTEGER NOT NULL,
+  certified_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  PRIMARY KEY (vendor_key, model_key)
+);
+
+CREATE TABLE IF NOT EXISTS resellers (
+  id TEXT PRIMARY KEY,
+  company TEXT NOT NULL,
+  contact_name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  state TEXT NOT NULL,
+  city TEXT NOT NULL,
+  website TEXT,
+  stocks TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER,
+  decided_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_resellers_status ON resellers(status, state, city);
+CREATE INDEX IF NOT EXISTS idx_resellers_email ON resellers(email);
 `;
 
 /**
@@ -936,7 +967,10 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT summary_dismissed_month FROM tenants LIMIT 1",
   // 0056: exam mode.
   "SELECT id, group_name, allowed_hosts, starts_at, ends_at, ended_at, finalized_at FROM exam_sessions LIMIT 1",
-  "SELECT exam_id, client_id, event, at FROM exam_events LIMIT 1"
+  "SELECT exam_id, client_id, event, at FROM exam_events LIMIT 1",
+  // 0057: certified hardware and resellers.
+  "SELECT vendor_key, model_key, note, certified_at FROM certified_hardware LIMIT 1",
+  "SELECT id, company, phone, state, city, stocks, status, conversation_id FROM resellers LIMIT 1"
 ];
 
 /**

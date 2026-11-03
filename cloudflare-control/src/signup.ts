@@ -9,6 +9,7 @@
  * email sent from the console (src/inbox.ts).
  */
 
+import { ResellerApplication, createReseller, openResellerFor, parseResellerApplication } from "./partners";
 import { LEGAL_DOCUMENTS, recordLegalAcceptances } from "./legal";
 import { Env, Session, Tenant } from "./types";
 import { jsonError } from "./guard";
@@ -572,7 +573,19 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
     console.error("[Contact]", problem);
     return jsonError("The contact form is temporarily unavailable. Please write to us by email instead.", 503, jsonHeaders);
   }
-  let body: { name?: unknown; organization?: unknown; email?: unknown; emailCode?: unknown; reason?: unknown; message?: unknown };
+  let body: {
+    name?: unknown;
+    organization?: unknown;
+    email?: unknown;
+    emailCode?: unknown;
+    reason?: unknown;
+    message?: unknown;
+    phone?: unknown;
+    state?: unknown;
+    city?: unknown;
+    website?: unknown;
+    stocks?: unknown;
+  };
   try {
     body = await ctx.request.json<typeof body>();
   } catch {
@@ -588,6 +601,23 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   if (!isPlausibleEmail(email)) return jsonError("Please enter a valid email address", 400, jsonHeaders);
   if (!reason) return jsonError("Please choose what your message is about", 400, jsonHeaders);
   if (!emailCode) return jsonError("Enter the code we emailed you. Use Send code if you do not have one.", 400, jsonHeaders);
+  // "Become a reseller" carries the listing's details too (src/partners.ts).
+  let reseller: ResellerApplication | null = null;
+  if (reason.value === "reseller") {
+    const parsed = parseResellerApplication(organization, body);
+    if (!parsed.ok) return jsonError(parsed.error, 400, jsonHeaders);
+    reseller = parsed.value;
+    const existing = await openResellerFor(db, email);
+    if (existing) {
+      return jsonError(
+        existing.status === "approved"
+          ? "This address is already listed as a reseller. Write to us to change the listing."
+          : "An application from this address is already waiting for review. We will reply by email.",
+        409,
+        jsonHeaders
+      );
+    }
+  }
 
   const key = `contact:${clientIp}`;
   const wait = await rateLimitWait(db, key, CONTACT_RATE_LIMIT.limit, CONTACT_RATE_LIMIT.windowSeconds);
@@ -605,12 +635,17 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
     contactEmail: email,
     contactName: name,
     mailbox: supportMailbox(env),
-    category: reason.value
+    category: reason.category
   });
+  const listing = reseller
+    ? `\n\nReseller listing:\nCompany: ${reseller.company}\nPhone: ${reseller.phone}\nState: ${reseller.state}\nCity: ${reseller.city}\n` +
+      `Website: ${reseller.website ?? "-"}\nStocks: ${reseller.stocks ?? "-"}\nApprove or reject it in Super Admin -> System -> Hardware.`
+    : "";
+  if (reseller) await createReseller(db, reseller, { name, email }, conversation.id, Math.floor(Date.now() / 1000));
   await addConversationMessage(db, {
     conversationId: conversation.id,
     direction: "inbound",
-    body: `${message}\n\n-- Sent with the contact form${organization ? ` on behalf of ${organization}` : ""}. The sender proved this address with an emailed code.`,
+    body: `${message}${listing}\n\n-- Sent with the contact form${organization ? ` on behalf of ${organization}` : ""}. The sender proved this address with an emailed code.`,
     fromAddress: email,
     subject: conversation.subject
   });
@@ -634,7 +669,7 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   await notifyPlatformOwner(
     env,
     subjectWithReference(conversation.reference, `Contact form: ${conversation.subject}`),
-    `From: ${name} <${email}> (address verified)\nOrganization: ${organization || "-"}\nAbout: ${reason.label}\n\n${message}\n\nReply from Mail in the Super Admin console.`
+    `From: ${name} <${email}> (address verified)\nOrganization: ${organization || "-"}\nAbout: ${reason.label}\n\n${message}${listing}\n\nReply from Mail in the Super Admin console.`
   );
   return json({ status: "ok", reference: conversation.reference }, jsonHeaders);
 }

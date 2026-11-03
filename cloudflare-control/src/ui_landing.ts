@@ -17,6 +17,7 @@
  *   - Escapes all server-rendered values via escapeHtml / escapeJson / safeHttpUrl
  */
 
+import { CertifiedModel, PublicReseller, certifiedLookup } from "./partners";
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { fnv1a } from "./ui_layout";
 import { GEO_DATA_PATH } from "./geo";
@@ -837,6 +838,13 @@ ${FONT_LINKS}
       const wantedReason = new URLSearchParams(window.location.search).get('reason');
       const reasonSelect = document.getElementById('contact-reason');
       if (wantedReason && Array.from(reasonSelect.options).some((o) => o.value === wantedReason)) reasonSelect.value = wantedReason;
+      // Become a reseller asks for the listing's details as well.
+      const resellerFields = document.getElementById('contact-reseller');
+      function resellerShow() {
+        resellerFields.hidden = reasonSelect.value !== 'reseller';
+      }
+      reasonSelect.addEventListener('change', resellerShow);
+      resellerShow();
       // "Report this page" on an organization's hosted page arrives with that page's address.
       const reported = new URLSearchParams(window.location.search).get('report');
       if (reported && /^https?:\\/\\/\\S{1,500}$/.test(reported) && !contactMessage.value) {
@@ -891,6 +899,15 @@ ${FONT_LINKS}
           reason: reasonSelect.value,
           message: contactMessage.value.trim()
         };
+        if (reasonSelect.value === 'reseller') {
+          for (const field of ['phone', 'state', 'city', 'website', 'stocks']) {
+            payload[field] = document.getElementById('contact-' + field).value.trim();
+          }
+          if (!payload.organization || !payload.phone || !payload.state || !payload.city) {
+            contactError('A reseller listing needs your company name (under Organization), a phone number, the state and the city.');
+            return;
+          }
+        }
         if (!payload.name || !payload.email || !payload.message) {
           contactError('Your name, email address and a message are required.');
           return;
@@ -2625,7 +2642,67 @@ function specsMainHtml(): string {
     </section>`;
 }
 
-function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): string {
+function hardwareMainHtml(
+  models: HardwareModel[],
+  computedAt: number | null,
+  certified: CertifiedModel[],
+  resellers: PublicReseller[]
+): string {
+  const isCertified = certifiedLookup(certified);
+  const day = (seconds: number) => new Date(seconds * 1000).toISOString().slice(0, 10);
+  const certifiedRows = certified
+    .map(
+      (c) => `
+            <tr>
+              <td><strong>${escapeHtml(c.vendor)}</strong></td>
+              <td>${escapeHtml(c.model)}</td>
+              <td>${escapeHtml(day(c.certifiedAt))}</td>
+              <td>${c.note ? escapeHtml(c.note) : "\u2014"}</td>
+            </tr>`
+    )
+    .join("");
+  const certifiedHtml = certified.length
+    ? `
+      <h2 class="hw-state" id="certified">Certified models</h2>
+      <p class="docs-source">We tested these ourselves: each starts, plays video with hardware decoding and stays on the network on the current release.</p>
+      <div class="specs-table-container">
+        <table class="specs-table">
+          <thead><tr><th>Manufacturer</th><th>Model</th><th>Certified on</th><th>Notes</th></tr></thead>
+          <tbody>${certifiedRows}
+          </tbody>
+        </table>
+      </div>
+      <h2 class="hw-state">In use</h2>`
+    : "";
+  const states = new Map<string, PublicReseller[]>();
+  for (const r of resellers) states.set(r.state, [...(states.get(r.state) ?? []), r]);
+  const resellersHtml = resellers.length
+    ? `
+    <section class="section-wrap" style="padding-top: 0;" id="resellers">
+      <h2 class="section-title">Where to buy</h2>
+      <p class="docs-source">Resellers who sell and set up computers for Lab Kiosk. They are independent businesses; we list them, we do not take a share.</p>
+      ${[...states.entries()]
+        .map(
+          ([state, list]) => `
+      <h3 class="hw-state">${escapeHtml(state)}</h3>
+      <div class="hw-resellers">${list
+        .map((r) => {
+          const site = r.website ? safeHttpUrl(r.website) : null;
+          return `
+        <article class="hw-reseller">
+          <h3>${escapeHtml(r.company)}</h3>
+          <p>${escapeHtml(r.city)}</p>
+          ${r.stocks ? `<p>Stocks: ${escapeHtml(r.stocks)}</p>` : ""}
+          <p><a href="tel:${escapeAttr(r.phone.replace(/[^0-9+]/g, ""))}">${escapeHtml(r.phone)}</a> · <a href="mailto:${escapeAttr(r.email)}">${escapeHtml(r.email)}</a></p>
+          ${site ? `<p><a href="${escapeAttr(site)}" target="_blank" rel="noopener noreferrer nofollow">${escapeHtml(new URL(site).hostname)}</a></p>` : ""}
+        </article>`;
+        })
+        .join("")}
+      </div>`
+        )
+        .join("")}
+    </section>`
+    : "";
   const percent = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "\u2014");
   const memory = (mb: number | null) => (mb === null ? "\u2014" : mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${mb} MB`);
   const rows = models
@@ -2633,7 +2710,7 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
       (m) => `
             <tr>
               <td><strong>${escapeHtml(m.vendor)}</strong></td>
-              <td>${escapeHtml(m.model)}</td>
+              <td>${escapeHtml(m.model)}${isCertified(m.vendor, m.model) ? ` <span class="hw-certified">Certified</span>` : ""}</td>
               <td>${m.organizations}</td>
               <td>${m.workstations}</td>
               <td>${percent(m.uefi, m.workstations)}</td>
@@ -2651,7 +2728,7 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
       </p>
     </section>
 
-    <section class="section-wrap" style="padding-top: 0;">
+    <section class="section-wrap" style="padding-top: 0;">${certifiedHtml}
       <div class="specs-table-container">
         <table class="specs-table">
           <thead>
@@ -2674,6 +2751,9 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
         </table>
       </div>
       <p class="docs-source">${updated ? `Counted on ${escapeHtml(updated)}, from each workstation's latest start. ` : ""}The minimum and recommended hardware are on the <a href="/specs">specifications page</a>.</p>
+    </section>${resellersHtml}
+    <section class="section-wrap" style="padding-top: 0;">
+      <p class="docs-source">Do you sell or service computers? <a href="/contact?reason=reseller">Become a reseller</a> and be listed here once we approve you.</p>
     </section>`;
 }
 
@@ -2689,12 +2769,18 @@ export function renderPlatformStatusHtml(data: LandingOptions, components: Compo
 }
 
 /** /hardware: the models enough organizations run, from their workstations' own reports (src/hardware.ts). */
-export function renderHardwareHtml(data: LandingOptions, models: HardwareModel[], computedAt: number | null): string {
+export function renderHardwareHtml(
+  data: LandingOptions,
+  models: HardwareModel[],
+  computedAt: number | null,
+  certified: CertifiedModel[] = [],
+  resellers: PublicReseller[] = []
+): string {
   return renderPublicShell(data, {
     title: "Lab Kiosk OS - Hardware Organizations Run It On",
     description: `The computer models at least ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run Lab Kiosk on, counted from their workstations' own reports.`,
     activeNav: "specs",
-    mainHtml: hardwareMainHtml(models, computedAt)
+    mainHtml: hardwareMainHtml(models, computedAt, certified, resellers)
   });
 }
 
@@ -3235,6 +3321,34 @@ function contactMainHtml(data: LandingOptions): string {
               ).join("")}
               </select>
             </div>
+            <fieldset class="contact-reseller" id="contact-reseller" hidden>
+              <legend class="form-label">Your listing on the hardware page</legend>
+              <div class="input-hint">Enter your company's name under Organization. Once we approve it, your company appears on the <a href="/hardware">hardware page</a> with these details and your email address.</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="contact-phone">Phone for customers</label>
+                  <input type="tel" class="form-input" id="contact-phone" maxlength="40" placeholder="+91 98765 43210" autocomplete="tel">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="contact-website">Website <span class="form-optional">(optional)</span></label>
+                  <input type="url" class="form-input" id="contact-website" maxlength="300" placeholder="https://example.com" autocomplete="url">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="contact-state">State</label>
+                  <input type="text" class="form-input" id="contact-state" maxlength="80" placeholder="Odisha" autocomplete="address-level1">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="contact-city">City</label>
+                  <input type="text" class="form-input" id="contact-city" maxlength="80" placeholder="Bhubaneswar" autocomplete="address-level2">
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="contact-stocks">Models you stock <span class="form-optional">(optional)</span></label>
+                <input type="text" class="form-input" id="contact-stocks" maxlength="500" placeholder="Lenovo ThinkCentre M70q, Dell OptiPlex 3000">
+              </div>
+            </fieldset>
             <div class="form-group">
               <label class="form-label" for="contact-email">Your email address</label>
               <div class="code-row">
@@ -4470,6 +4584,16 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     }
     .docs-callout strong { color: var(--text-main); }
     /* The contact page. */
+    .contact-reseller { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 2px; margin: 0 0 18px; min-width: 0; }
+    .contact-reseller[hidden] { display: none; }
+    .contact-reseller legend { padding: 0 6px; }
+    .contact-reseller > .input-hint { margin: 0 0 12px; }
+    .hw-certified { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--success-soft); color: var(--success-text); vertical-align: middle; }
+    .hw-resellers { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
+    .hw-reseller { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 16px; overflow-wrap: anywhere; }
+    .hw-reseller h3 { font-size: 1rem; margin: 0 0 4px; }
+    .hw-reseller p { margin: 4px 0; color: var(--text-muted); font-size: 0.875rem; }
+    .hw-state { margin: 28px 0 0; font-size: 1.0625rem; }
     .contact-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 32px; align-items: start; max-width: 1040px; margin: 0 auto; }
     .contact-form-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg, 14px); padding: 28px; text-align: left; }
     .contact-form-card .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
