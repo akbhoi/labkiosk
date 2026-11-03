@@ -57,6 +57,7 @@ import {
   classifyRelease,
   findRelease,
   isReleaseVersion,
+  compareVersions,
   isUpdateChannel,
   listReleases,
   offeredRelease,
@@ -2149,6 +2150,39 @@ export default {
         console.error("[Worker] Tenant status change failed:", err);
         return jsonError("Could not change this organization's status", 400, jsonHeaders);
       }
+    }
+
+    // POST /api/super/tenants/remove-rejected { tenantId }: delete a registration that
+    // was rejected, so its email address and console address can be used again. Its
+    // owner account goes with it, and the organization, its profile and its
+    // registration task with that (ON DELETE CASCADE). The record of the legal
+    // documents it accepted stays: legal_acceptances has no foreign keys on purpose.
+    if (path === "/api/super/tenants/remove-rejected" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown };
+      try {
+        body = await request.json<{ tenantId?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      if (isDemoTenant(target, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+      if (target.status !== "rejected") return jsonError("Only a rejected registration can be removed", 409, jsonHeaders);
+      const owner = await findUserById(db, target.user_id);
+      // The audit entry names the organization in its details: its tenant row is about to go.
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: "tenant.remove_rejected",
+        details: `tenant=${target.id} subdomain=${target.subdomain} name=${target.name} owner=${owner?.email || "none"}`
+      });
+      if (owner && owner.role === "org_admin") {
+        await db.prepare("DELETE FROM users WHERE id = ?").bind(owner.id).run();
+      }
+      await db.prepare("DELETE FROM tenants WHERE id = ?").bind(target.id).run();
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/workstation-limit: how many workstations an organization
@@ -4328,10 +4362,15 @@ export default {
       const devices = await listClientDevices(db, tenantId);
       const pending = securityReleasesPending(releases, devices);
       const notices = await organizationReleaseNotices(db, tenantId, releases, devices);
+      const offer = newestOffered(releases);
       return new Response(
         JSON.stringify({
           channel,
-          offer: newestOffered(releases),
+          offer,
+          // Enrolled workstations whose system image is older than the offer (the banner on Workstations).
+          behind: offer
+            ? devices.filter((d) => d.image_version && isReleaseVersion(d.image_version) && compareVersions(d.image_version, offer.version) < 0).length
+            : 0,
           lanSharing,
           pending,
           support: notices.support,

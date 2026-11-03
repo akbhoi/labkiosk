@@ -1424,6 +1424,39 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(login.data.error, /not approved/);
   });
 
+  test("A super admin can remove a rejected registration, and only a rejected one", async () => {
+    const { data } = await submitSignup({ name: "Removed Org", email: "removed@example.org", subdomain: "removed-org" });
+    const admin = await superCookie();
+    const task = await taskByReference(admin, data.reference);
+    const db = getDatabase(mockEnv);
+    const tenant = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'removed-org'").first<{ id: string }>();
+    assert.ok(tenant);
+    const remove = (cookie?: string, tenantId: unknown = tenant!.id) =>
+      call("/api/super/tenants/remove-rejected", { ...json({ tenantId }), ...(cookie ? { cookie } : {}) });
+
+    assert.equal((await remove()).status, 401, "anonymous");
+    assert.equal((await remove(orgSessionCookie)).status, 403, "an organization admin");
+    assert.equal((await remove(admin, "nope")).status, 404);
+    assert.equal((await remove(admin)).status, 409, "a pending registration is not removed");
+    const greenwood = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>();
+    assert.equal((await remove(admin, greenwood!.id)).status, 409, "an approved organization is not removed");
+
+    const rejected = await call(`/api/super/inbox/${task.id}/reject`, { ...json({ message: "Not a school." }), cookie: admin });
+    assert.equal(rejected.status, 200);
+    const removed = await remove(admin);
+    assert.equal(removed.status, 200);
+    assert.equal(await db.prepare("SELECT id FROM tenants WHERE id = ?").bind(tenant!.id).first(), null);
+    assert.equal(await db.prepare("SELECT id FROM users WHERE email = 'removed@example.org'").first(), null);
+    assert.equal(await db.prepare("SELECT id FROM conversations WHERE tenant_id = ?").bind(tenant!.id).first(), null, "its registration task goes too");
+    const audit = await db.prepare("SELECT tenant_id, details FROM audit_logs WHERE action = 'tenant.remove_rejected'").first<any>();
+    assert.equal(audit.tenant_id, null);
+    assert.match(audit.details, /removed-org/);
+
+    // The email address and the console address can be registered again.
+    const again = await submitSignup({ name: "Removed Org", email: "removed@example.org", subdomain: "removed-org" });
+    assert.equal(again.res.status, 200);
+  });
+
   // ------------------------------------------------------------ support inbox
 
   test("The contact form files a message only for an address proved with an emailed code", async () => {
@@ -8628,6 +8661,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const switched = await callJson("/api/settings/updates?tenant=greenwood", { ...json({ channel: "beta" }), cookie: orgSessionCookie });
     assert.equal(switched.res.status, 200);
     assert.equal(switched.data.offer.version, "2.9.0", "a beta organization is offered the newest of beta and stable");
+    // The Workstations banner counts the workstations whose system image is older than the offer.
+    const db = getDatabase(mockEnv);
+    const reported = await db.prepare("SELECT tenant_id, image_version FROM client_devices WHERE client_id = 'PC-BUG'").first<any>();
+    assert.equal(reported.image_version, "2.5.1", "an earlier test has PC-BUG report its version");
+    const older = await db
+      .prepare("SELECT COUNT(*) AS n FROM client_devices WHERE tenant_id = ? AND image_version IS NOT NULL")
+      .bind(reported.tenant_id)
+      .first<{ n: number }>();
+    const behind = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(behind.data.behind, older!.n);
+    await db.prepare("UPDATE client_devices SET image_version = '2.9.0' WHERE client_id = 'PC-BUG'").run();
+    const current = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(current.data.behind, older!.n - 1, "a workstation on the offered version is not behind");
+    await db.prepare("UPDATE client_devices SET image_version = '2.5.1' WHERE client_id = 'PC-BUG'").run();
 
     const offered = await (await callWith(releasesEnv, "/api/devices/update", { bearer: token })).json<any>();
     assert.deepEqual(offered.release, {

@@ -41,6 +41,21 @@ function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGrou
         <p class="page-desc">Live screens, status and remote commands for every enrolled workstation.</p>
       </div>
     </div>
+${
+  canUpdate
+    ? `
+    <div class="callout" id="update-offer" role="status" hidden>
+      <div style="flex: 1;">
+        <strong id="update-offer-title"></strong>
+        <div id="update-offer-text"></div>
+      </div>
+      <div style="display: flex; gap: 8px; flex-shrink: 0; align-self: center;">
+        <button type="button" class="btn btn-primary btn-sm" id="update-offer-accept"></button>
+        <button type="button" class="btn btn-ghost btn-sm" id="update-offer-dismiss">Dismiss</button>
+      </div>
+    </div>`
+    : ""
+}
 
     <div class="controls-bar">
       <div class="filter-chips" id="workstation-filter-chips" role="group" aria-label="Workstation telemetry filters">
@@ -299,6 +314,7 @@ function renderWorkstationsScripts(
   return `
     <script nonce="${escapeAttr(nonce)}">
       const CAN_UPDATE = ${escapeJson(canUpdate)};
+      const TENANT_SLUG = ${escapeJson(tenant?.subdomain || "")};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -1292,6 +1308,79 @@ function renderWorkstationsScripts(
             lkToast(err.message, "error");
           }
         });
+
+        // A new release for this organization: accept it here, or dismiss the notice.
+        // A major release waits for an administrator to confirm it, as under Settings ->
+        // Updates. A minor release or a security fix installs at the next restart in any
+        // case; accepting starts the download now, and dismissing only hides the notice
+        // (for this version, in this browser), never the update itself.
+        (async function showUpdateOffer() {
+          const box = document.getElementById("update-offer");
+          if (!box) return;
+          let data;
+          try {
+            const res = await fetch(labkioskApi("/api/settings/updates"));
+            if (!res.ok) return;
+            data = await res.json();
+          } catch (err) {
+            console.warn("Could not read the update offer:", err);
+            return;
+          }
+          const major = Array.isArray(data.majors) ? data.majors.find((m) => m && m.access === "available") : null;
+          const offer = data.offer && typeof data.offer.version === "string" ? data.offer : null;
+          const version = major ? String(major.newest) : offer && data.behind > 0 ? offer.version : null;
+          if (!version) return;
+          const key = "lk-update-dismissed:" + (TENANT_SLUG || "") + ":" + version;
+          try {
+            if (localStorage.getItem(key)) return;
+          } catch (err) {
+            // Storage blocked: the notice shows every time, which is the safe side.
+          }
+          const accept = document.getElementById("update-offer-accept");
+          document.getElementById("update-offer-title").textContent = "Lab Kiosk " + version + " is available";
+          if (major) {
+            document.getElementById("update-offer-text").textContent =
+              "A new major version. Accept it and your workstations install it at their next restart; a workstation it does not start on goes back to its old version by itself.";
+            accept.textContent = "Accept " + version;
+          } else {
+            document.getElementById("update-offer-text").textContent =
+              data.behind + " workstation(s) run an older version. It installs at their next restart whatever you choose; download it now so the restart is quick.";
+            accept.textContent = "Download now";
+          }
+          box.hidden = false;
+          accept.addEventListener("click", async () => {
+            accept.disabled = true;
+            try {
+              if (major) {
+                const res = await fetch(labkioskApi("/api/settings/updates/confirm-major"), {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ major: major.major })
+                });
+                const result = await res.json();
+                if (!res.ok) throw new Error(result.error || "The release could not be accepted");
+                lkToast("Lab Kiosk " + version + " accepted. Workstations install it at their next restart.", "success");
+              } else {
+                const ids = getVisibleClientIds();
+                if (!ids.length) throw new Error("No workstations are shown.");
+                const result = await postUpdate("/api/clients/check-update", ids);
+                lkToast("Downloading on " + result.sent.length + " workstation(s).", "success");
+              }
+              box.hidden = true;
+            } catch (err) {
+              lkToast(err.message, "error");
+              accept.disabled = false;
+            }
+          });
+          document.getElementById("update-offer-dismiss").addEventListener("click", () => {
+            try {
+              localStorage.setItem(key, "1");
+            } catch (err) {
+              // Not remembered; it shows again next time.
+            }
+            box.hidden = true;
+          });
+        })();
 
         document.getElementById("btn-install-update").addEventListener("click", async () => {
           const targets = getSelectedOrAll(false);

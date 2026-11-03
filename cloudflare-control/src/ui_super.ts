@@ -291,7 +291,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
                 ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item menu-item-danger btn-suspend" role="menuitem" data-tenant="${escapeAttr(t.id)}">Suspend Organization</button>`
                 : t.status === "suspended"
                   ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item btn-reactivate" role="menuitem" data-tenant="${escapeAttr(t.id)}">Reactivate Organization</button>`
-                  : ""
+                  : t.status === "rejected"
+                    ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item menu-item-danger btn-remove-rejected" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-name="${escapeAttr(t.name)}">Remove Rejected Registration</button>`
+                    : ""
             }
           </div>
         </div>
@@ -1174,6 +1176,34 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
               window.location.reload();
             } else {
               lkToast(data.error || "Failed to suspend organization", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      document.querySelectorAll(".btn-remove-rejected").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const tenantId = btn.dataset.tenant;
+          const agreed = await lkConfirm({
+            title: "Remove " + (btn.dataset.name || "this registration") + "?",
+            message: "The rejected registration, its account and its registration task are deleted, and its email address and console address can be registered again. The record of the legal documents it accepted is kept. This cannot be undone here.",
+            confirmLabel: "Remove registration",
+            tone: "danger"
+          });
+          if (!agreed) return;
+          try {
+            const res = await fetch("/api/super/tenants/remove-rejected", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantId })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Failed to remove the registration", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
