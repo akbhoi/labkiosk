@@ -11,13 +11,11 @@
 
 import { LEGAL_DOCUMENTS, recordLegalAcceptances } from "./legal";
 import { Env, Session, Tenant } from "./types";
-import { jsonError, isReservedSlug } from "./guard";
-import { cleanSubdomain } from "./escape";
+import { jsonError } from "./guard";
 import { breachedPasswordProblem, isPlausibleEmail, passwordPepper, validatePasswordStrength } from "./auth";
 import {
   createTenant,
   createUser,
-  findTenantBySubdomain,
   findUserByEmail,
   findUserById,
   rateLimitWait,
@@ -44,6 +42,7 @@ import {
 import { mailConfigProblem, MailTemplate, sendMail, supportAddress, supportMailbox } from "./mail";
 import { turnstileRefusal } from "./turnstile";
 import { firebaseConfig, firebaseConfigProblem, phoneTokenMessage, verifyPhoneToken } from "./phone_verify";
+import { generateSubdomain } from "./addresses";
 import { STATES, cleanPostalCode, cleanTaxId, findCountry, findState, needsPostalCode, postalCodeProblem, taxIdProblem } from "./geo";
 
 /** What every handler in this module is given by the router. */
@@ -274,7 +273,6 @@ interface SignupBody {
   /** The Firebase ID token from the texted code, when phone verification is on (src/phone_verify.ts). */
   phoneToken?: unknown;
   password?: unknown;
-  subdomain?: unknown;
   addressLine1?: unknown;
   addressLine2?: unknown;
   city?: unknown;
@@ -289,13 +287,12 @@ interface SignupBody {
 }
 
 /** The request's fields, cleaned, or the first problem with them. */
-function readSignup(body: SignupBody): { problem: string } | { problem: null; value: ProfileInput & { name: string; password: string; subdomain: string; emailCode: string } } {
+function readSignup(body: SignupBody): { problem: string } | { problem: null; value: ProfileInput & { name: string; password: string; emailCode: string } } {
   const name = text(body.name, 120);
   const contactName = text(body.contactName, 120);
   const email = text(body.email, 254).toLowerCase();
   const phone = normalizePhone(body.phone);
   const password = String(body.password ?? "");
-  const subdomain = cleanSubdomain(body.subdomain);
   const addressLine1 = text(body.addressLine1, 200);
   const city = text(body.city, 100);
   const country = findCountry(body.country);
@@ -310,10 +307,6 @@ function readSignup(body: SignupBody): { problem: string } | { problem: null; va
   if (!phone) return { problem: "Enter the phone number with its country code, for example +91 98765 43210" };
   const passwordProblem = validatePasswordStrength(password);
   if (passwordProblem) return { problem: passwordProblem };
-  if (subdomain.length < 3 || subdomain.length > 63) {
-    return { problem: "Subdomain must be 3-63 characters (letters, numbers, hyphens)" };
-  }
-  if (isReservedSlug(subdomain)) return { problem: "That subdomain is reserved by the platform. Please pick another." };
   if (!country) return { problem: "Choose your country from the list" };
   if (!addressLine1 || !city) return { problem: "The street address and city are required" };
   if (!postalCode && needsPostalCode(country.code)) return { problem: "The postal code is required" };
@@ -342,7 +335,6 @@ function readSignup(body: SignupBody): { problem: string } | { problem: null; va
     value: {
       name,
       password,
-      subdomain,
       emailCode,
       legal_name: text(body.legalName, 160) || null,
       contact_name: contactName,
@@ -370,7 +362,7 @@ function signupSummary(p: ProfileInput, organizationName: string, subdomain: str
     `Organization: ${organizationName}`,
     p.legal_name ? `Legal / billing name: ${p.legal_name}` : null,
     p.organization_type ? `Type: ${p.organization_type}` : null,
-    `Requested address: ${subdomain}`,
+    `Console address: ${subdomain}`,
     `Technical contact: ${p.contact_name}`,
     `Email: ${p.contact_email} (verified by code)`,
     `Phone: ${p.contact_phone} (${phoneVerified ? "verified by text message code" : "not yet verified"})`,
@@ -438,9 +430,6 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   if (await findUserByEmail(db, signup.contact_email)) {
     return jsonError("Email already registered. Please sign in.", 409, jsonHeaders);
   }
-  if (await findTenantBySubdomain(db, signup.subdomain)) {
-    return jsonError("Subdomain already claimed. Please pick another.", 409, jsonHeaders);
-  }
 
   const user = await createUser(db, {
     email: signup.contact_email,
@@ -448,7 +437,9 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
     name: signup.contact_name,
     role: "org_admin"
   }, passwordPepper(ctx.env));
-  const tenant = await createTenant(db, { userId: user.id, name: signup.name, subdomain: signup.subdomain, status: "pending" });
+  // The address is generated; a chosen one is granted on request later (src/addresses.ts).
+  const subdomain = await generateSubdomain(db, signup.name);
+  const tenant = await createTenant(db, { userId: user.id, name: signup.name, subdomain, status: "pending", addressGenerated: true });
   const profile: ProfileInput = { ...signup, email_verified_at: Math.floor(Date.now() / 1000) };
   await createOrganizationProfile(db, tenant.id, profile, phoneVerifiedAt);
   await discardEmailCode(db, "signup", signup.contact_email);
@@ -471,7 +462,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
     contactEmail: signup.contact_email,
     contactName: signup.contact_name
   });
-  const summary = signupSummary(profile, signup.name, `${signup.subdomain}.${ctx.baseDomain}`, phoneVerifiedAt !== null);
+  const summary = signupSummary(profile, signup.name, `${subdomain}.${ctx.baseDomain}`, phoneVerifiedAt !== null);
   await addConversationMessage(db, {
     conversationId: conversation.id,
     direction: "event",
@@ -496,7 +487,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
         : `Your account will be activated once our team has reviewed it. We will confirm your phone number (${signup.contact_phone}) ` +
           `and may write to you about licensing first. `) +
       `You will receive an email as soon as the account is active, ` +
-      `with the address of your console: ${signup.subdomain}.${ctx.baseDomain}.\n\n` +
+      `with the address of your console: ${subdomain}.${ctx.baseDomain}.\n\n` +
       `Reply to this email if you have any questions.\n\nLab Kiosk`,
     {
       subject: "We received your registration",

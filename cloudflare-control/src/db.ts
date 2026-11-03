@@ -101,7 +101,11 @@ CREATE TABLE IF NOT EXISTS tenants (
   printing_enabled INTEGER NOT NULL DEFAULT 0
   CHECK (printing_enabled IN (0, 1)),
   home_reset INTEGER NOT NULL DEFAULT 1
-  CHECK (home_reset IN (0, 1))
+  CHECK (home_reset IN (0, 1)),
+  address_generated INTEGER NOT NULL DEFAULT 0
+  CHECK (address_generated IN (0, 1)),
+  chosen_subdomain TEXT,
+  feature_tip_dismissed_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -609,6 +613,7 @@ CREATE TABLE IF NOT EXISTS printers (
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_chosen_subdomain ON tenants(chosen_subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain_status ON tenants(custom_domain_status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
@@ -854,7 +859,9 @@ const SCHEMA_PROBES: readonly string[] = [
   // 0051: sessions stored by the hash of their token.
   "SELECT hashed FROM sessions LIMIT 1",
   // 0052: the emailed link that asks an organization to verify its phone by text message.
-  "SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles LIMIT 1"
+  "SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles LIMIT 1",
+  // 0053: generated console addresses, a chosen one on request, and the dashboard's feature tip.
+  "SELECT address_generated, chosen_subdomain, feature_tip_dismissed_at FROM tenants LIMIT 1"
 ];
 
 /**
@@ -1002,7 +1009,8 @@ export async function findTenantBySubdomain(
   subdomain: string
 ): Promise<Tenant | null> {
   return await db
-    .prepare("SELECT * FROM tenants WHERE subdomain = ?")
+    // A chosen address is served beside the one the organization enrolled with (0053).
+    .prepare("SELECT * FROM tenants WHERE subdomain = ?1 OR chosen_subdomain = ?1")
     .bind(subdomain.toLowerCase())
     .first<Tenant>();
 }
@@ -1050,6 +1058,8 @@ export async function createTenant(
     portalSubtitle?: string | null;
     portalDescription?: string | null;
     portalFooter?: string | null;
+    /** The address was generated at registration, not chosen (src/addresses.ts). */
+    addressGenerated?: boolean;
   }
 ): Promise<Tenant> {
   const id = crypto.randomUUID();
@@ -1063,8 +1073,8 @@ export async function createTenant(
 
   await db
     .prepare(
-      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at, address_generated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -1081,7 +1091,8 @@ export async function createTenant(
       data.portalDescription || null,
       data.portalFooter || null,
       now,
-      now
+      now,
+      data.addressGenerated ? 1 : 0
     )
     .run();
 
@@ -1105,7 +1116,9 @@ export async function createTenant(
     portal_description: data.portalDescription || null,
     portal_footer: data.portalFooter || null,
     created_at: now,
-    updated_at: now
+    updated_at: now,
+    address_generated: data.addressGenerated ? 1 : 0,
+    chosen_subdomain: null
   };
 }
 
@@ -1198,6 +1211,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "home_reset",
   "subdomain",
   "requested_subdomain",
+  "chosen_subdomain",
+  "feature_tip_dismissed_at",
   "status",
   "mode",
   "default_url",

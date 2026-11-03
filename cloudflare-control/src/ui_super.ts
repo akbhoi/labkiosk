@@ -152,7 +152,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         <span class="badge badge-yellow mono">
           ${
             t.requested_subdomain
-              ? `<b>${escapeHtml(t.requested_subdomain)}</b> (was ${escapeHtml(t.subdomain)})`
+              ? `<b>${escapeHtml(t.requested_subdomain)}</b> (keeps ${escapeHtml(t.subdomain)})`
               : `<b>${escapeHtml(t.subdomain)}</b>`
           }
         </span>
@@ -755,8 +755,8 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
           const tenantId = btn.dataset.tenant;
           const subdomain = btn.dataset.subdomain;
           const agreed = await lkConfirm({
-            title: "Move to '" + subdomain + "'?",
-            message: "The console and user portal for this organization move to that address straight away. Workstations enrolled against the old address need reconfiguring.",
+            title: "Grant '" + subdomain + "'?",
+            message: "The organization gets this address and its public homepage straight away. Its current address keeps working, so enrolled workstations are unaffected. A granted address is permanent.",
             confirmLabel: "Approve"
           });
           if (!agreed) return;
@@ -782,7 +782,7 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Decline this address change?",
+            title: "Decline this address?",
             message: "The organization keeps its current address. It can ask for a different one later.",
             confirmLabel: "Reject",
             tone: "danger"
@@ -868,8 +868,8 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const newSub = await lkPrompt({
-            title: "Assign a subdomain",
-            message: "The organization reaches its console and portal at this address. Changing it breaks the old one immediately.",
+            title: "Grant a chosen address",
+            message: "The organization reaches its console, portal and homepage at this address too. Its current address keeps working.",
             label: "Subdomain",
             placeholder: "greenwood",
             hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",

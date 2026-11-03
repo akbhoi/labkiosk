@@ -10,6 +10,7 @@
 
 import { LabConfig, Tenant, HomepageBlock } from "./types";
 import { parseHomepageBlocks } from "./db";
+import { consoleSubdomain, showsHomepage } from "./addresses";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts, WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
@@ -60,6 +61,10 @@ function renderSettingsPageHtml(
   canUpdate: boolean
 ): string {
   const currentSubdomain = tenant?.subdomain || "";
+  const chosenSubdomain = tenant?.chosen_subdomain || "";
+  const requestedSubdomain = tenant?.requested_subdomain || "";
+  const homepageLive = tenant ? showsHomepage(tenant) : true;
+  const shownSubdomain = tenant ? consoleSubdomain(tenant) : "";
   const customDomain = tenant?.custom_domain || "";
   const customDomainStatus = tenant?.custom_domain_status || "none";
   const homeRoute = tenant?.home_route || "/home";
@@ -191,22 +196,29 @@ ${renderRemoteControlCard(tenant)}
     <div class="tab-pane" id="pane-domains">
       <div class="grid-2col">
         <div class="stack-cards">
-          <!-- Card 2: Subdomain Customization -->
+          <!-- Card 2: Console address (src/addresses.ts) -->
           <div class="card" id="section-subdomain">
-            <h2 class="card-title">Organization Subdomain Customization</h2>
-            <p class="card-sub">Customize your organization's unique address on <code>${escapeHtml(baseDomain)}</code>.</p>
-
-            <form id="form-subdomain-settings">
+            <h2 class="card-title">Console Address</h2>
+            <p class="card-sub">Your console is at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}</code>${
+              chosenSubdomain ? ` and at your chosen address <code>${escapeHtml(chosenSubdomain)}.${escapeHtml(baseDomain)}</code>` : ""
+            }.</p>
+            ${
+              chosenSubdomain
+                ? `<p class="form-hint">Your chosen address and public homepage are on. Both addresses keep working. To change the chosen one, write to support.</p>`
+                : requestedSubdomain
+                  ? `<div class="callout" id="subdomain-pending" role="status"><div><strong>Address requested</strong><div>You asked for <code>${escapeHtml(requestedSubdomain)}.${escapeHtml(baseDomain)}</code>. We will add it once it is approved, together with your public homepage.</div></div></div>`
+                  : `<form id="form-subdomain-settings">
               <div class="form-group">
-                <label class="form-label" for="setting-subdomain">Subdomain Slug</label>
+                <label class="form-label" for="setting-subdomain">Ask for a chosen address</label>
                 <div class="form-row">
-                  <input type="text" class="form-input" id="setting-subdomain" value="${escapeAttr(currentSubdomain)}" required pattern="[a-zA-Z0-9-]{3,63}">
+                  <input type="text" class="form-input" id="setting-subdomain" placeholder="greenwood" required pattern="[a-zA-Z0-9-]{3,63}">
                   <span class="input-suffix">.${escapeHtml(baseDomain)}</span>
                 </div>
-                <div class="form-hint text-warning">Changing your subdomain takes effect immediately. Previously enrolled thin clients will need to be updated with the new address.</div>
+                <div class="form-hint">A short address people remember, with your organization's public homepage at its root. Your current address keeps working, so enrolled workstations need no change.</div>
               </div>
-              <button type="submit" class="btn btn-secondary">Update Subdomain</button>
-            </form>
+              <button type="submit" class="btn btn-secondary">Request Address</button>
+            </form>`
+            }
           </div>
         </div>
 
@@ -261,7 +273,8 @@ ${renderRemoteControlCard(tenant)}
         <div class="grid-2col">
           <div class="card" id="section-homepage">
             <h2 class="card-title">Homepage Identity &amp; Welcome</h2>
-            <p class="card-sub">The welcome page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>. What you publish here follows the <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>.</p>
+            <p class="card-sub">The welcome page at <code>${escapeHtml(shownSubdomain)}.${escapeHtml(baseDomain)}/</code>. What you publish here follows the <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>.</p>
+            ${homepageLive ? "" : `<p class="form-hint text-warning" id="homepage-not-live">The homepage goes live once your organization has a chosen address (Settings, Domains &amp; Network). Until then the address shows your User Portal. You can prepare it now.</p>`}
 
             <div class="form-group">
               <label class="form-label" for="homepage-headline">Headline</label>
@@ -614,16 +627,10 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         }
       });
 
-      document.getElementById("form-subdomain-settings").addEventListener("submit", async (e) => {
+      const subdomainForm = document.getElementById("form-subdomain-settings");
+      if (subdomainForm) subdomainForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const subdomain = document.getElementById("setting-subdomain").value.trim().toLowerCase();
-        const agreed = await lkConfirm({
-          title: "Move the organization to '" + subdomain + "'?",
-          message: "The current address stops working once this is approved, and every enrolled workstation needs its configuration updated to the new one.",
-          confirmLabel: "Request change"
-        });
-        if (!agreed) return;
-
         try {
           const res = await fetch(labkioskApi("/api/tenant/subdomain"), {
             method: "POST",
@@ -631,11 +638,11 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             body: JSON.stringify({ subdomain })
           });
           const data = await res.json();
-          if (data.status === "ok") {
-            lkToastAfterReload("Subdomain updated. This is the new console address.", "success");
-            window.location.href = data.redirectUrl || "/admin";
+          if (res.ok && data.status === "ok") {
+            lkToastAfterReload("Address requested. We will let you know here once it is approved.", "success");
+            window.location.reload();
           } else {
-            lkToast(data.error || "Failed to update subdomain", "error");
+            lkToast(data.error || "The request could not be sent", "error");
           }
         } catch (err) {
           lkToast("Network error: " + err.message, "error");

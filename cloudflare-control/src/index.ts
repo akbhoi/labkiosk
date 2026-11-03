@@ -53,6 +53,7 @@ const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home"
 import { renderStatusPageHtml } from "./ui_status";
 import { renderVerifyPhoneHtml } from "./ui_verify_phone";
 import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
+import { consoleSubdomain, featureTipFor, showsHomepage } from "./addresses";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -376,7 +377,7 @@ export class MailIntake extends WorkerEntrypoint<Env> {
   }
 }
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
-import { handleContactEmailCode, handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
+import { handleContactEmailCode, handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, notifyPlatformOwner, RouteContext } from "./signup";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
@@ -2985,8 +2986,11 @@ export default {
         if (!target) return jsonError("Organization not found", 404, jsonHeaders);
         // Activating a registration is a decision with its own checks and email:
         // it is made from Tasks, never as a side effect of assigning an address.
+        // The address is granted beside the one workstations enrolled with, which
+        // keeps working (src/addresses.ts); it also turns on the public homepage.
+        const chosen = cleanSub === target.subdomain ? null : cleanSub;
         await updateTenant(db, body.tenantId, {
-          subdomain: cleanSub,
+          ...(chosen ? { chosen_subdomain: chosen } : {}),
           requested_subdomain: null
         });
 
@@ -2994,11 +2998,21 @@ export default {
           tenantId: body.tenantId,
           userId: session!.user_id,
           action: "tenant.approve",
-          details: `subdomain=${cleanSub}`
+          details: `chosen_subdomain=${cleanSub} subdomain=${target.subdomain}`
         });
+        if (chosen && target.status === "active") {
+          const host = isDev ? `${url.origin}/admin?tenant=${chosen}` : `${chosen}.${baseDomain}`;
+          await createNotification(db, {
+            tenantId: target.id,
+            kind: "account",
+            title: "Your chosen address is ready",
+            body: `${target.name} is now also at ${host}, with its public homepage. ${target.subdomain}.${baseDomain} keeps working, so your workstations need no change.`,
+            createdBy: session!.user_id
+          });
+        }
         await notifyConfigChanged(env, body.tenantId);
 
-        return new Response(JSON.stringify({ status: "ok", subdomain: cleanSub }), { headers: jsonHeaders });
+        return new Response(JSON.stringify({ status: "ok", subdomain: target.subdomain, chosenSubdomain: chosen ?? target.chosen_subdomain ?? null }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Tenant approval failed:", err);
         return jsonError("Could not approve this subdomain", 400, jsonHeaders);
@@ -3307,40 +3321,6 @@ export default {
       } catch (err: any) {
         console.error("[Worker] Deleting broadcast preset failed:", err);
         return jsonError("Could not remove this preset", 400, jsonHeaders);
-      }
-    }
-
-    // POST /api/settings/subdomain: Organization requests new subdomain
-    if (path === "/api/settings/subdomain" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
-      if (denied) return denied;
-      try {
-        if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
-        const body = await request.json<{ requestedSubdomain: string }>();
-        const cleanSub = cleanSubdomain(body.requestedSubdomain);
-        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH || isReservedSlug(cleanSub)) {
-          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens) and not a reserved name`, 400, jsonHeaders);
-        }
-
-        const existing = await findTenantBySubdomain(db, cleanSub);
-        if (existing && existing.id !== currentTenant!.id) {
-          return jsonError("Subdomain already claimed", 400, jsonHeaders);
-        }
-
-        await updateTenant(db, currentTenant!.id, { requested_subdomain: cleanSub });
-        await writeAuditLog(db, {
-          tenantId: currentTenant!.id,
-          userId: session!.user_id,
-          action: "tenant.request_subdomain",
-          details: cleanSub
-        });
-
-        return new Response(JSON.stringify({ status: "ok", requestedSubdomain: cleanSub }), {
-          headers: jsonHeaders
-        });
-      } catch (err: any) {
-        console.error("[Worker] Subdomain request failed:", err);
-        return jsonError("Could not submit this request", 400, jsonHeaders);
       }
     }
 
@@ -3854,45 +3834,56 @@ export default {
     }
 
     // POST /api/tenant/subdomain: update organization subdomain
-    if (path === "/api/tenant/subdomain" && method === "POST") {
+    // POST /api/tenant/subdomain { subdomain }: ask for a chosen address (and with
+    // it the public homepage). A super admin approves it; it is then served beside
+    // the current address, which keeps working (src/addresses.ts). One chosen
+    // address per organization: once granted it is permanent, because
+    // workstations may enrol with it.
+    if ((path === "/api/tenant/subdomain" || path === "/api/settings/subdomain") && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
+      if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+      let body: { subdomain?: unknown; requestedSubdomain?: unknown };
       try {
-        if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
-        const body = await request.json<{ subdomain: string }>();
-        const cleanSub = cleanSubdomain(body.subdomain);
-        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
-          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters`, 400, jsonHeaders);
-        }
-        if (isReservedSlug(cleanSub)) {
-          return jsonError("That subdomain is reserved by the platform", 400, jsonHeaders);
-        }
-
-        const existing = await findTenantBySubdomain(db, cleanSub);
-        if (existing && existing.id !== currentTenant!.id) {
-          return jsonError("That subdomain is already claimed by another organization", 400, jsonHeaders);
-        }
-
-        await updateTenant(db, currentTenant!.id, { subdomain: cleanSub });
-        currentTenant!.subdomain = cleanSub;
-
-        await writeAuditLog(db, {
-          tenantId: currentTenant!.id,
-          userId: session!.user_id,
-          action: "tenant.update_subdomain",
-          details: `subdomain=${cleanSub}`
-        });
-        await notifyConfigChanged(env, currentTenant!.id);
-
-        const redirectUrl = isDev
-          ? `/admin?tenant=${encodeURIComponent(cleanSub)}`
-          : `https://${cleanSub}.${baseDomain}/admin`;
-
-        return new Response(JSON.stringify({ status: "ok", subdomain: cleanSub, redirectUrl }), { headers: jsonHeaders });
-      } catch (err: any) {
-        console.error("[Worker] Subdomain update failed:", err);
-        return jsonError("Could not update subdomain", 400, jsonHeaders);
+        body = await request.json<{ subdomain?: unknown; requestedSubdomain?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
+      const cleanSub = cleanSubdomain(body.subdomain ?? body.requestedSubdomain);
+      if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
+        return jsonError(`The address must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens)`, 400, jsonHeaders);
+      }
+      if (isReservedSlug(cleanSub)) return jsonError("That address is reserved by the platform", 400, jsonHeaders);
+      if (currentTenant!.chosen_subdomain) {
+        return jsonError("Your organization already has its chosen address. Write to support to change it.", 409, jsonHeaders);
+      }
+      if (cleanSub === currentTenant!.subdomain) return jsonError("That is already your address", 400, jsonHeaders);
+      const existing = await findTenantBySubdomain(db, cleanSub);
+      if (existing && existing.id !== currentTenant!.id) {
+        return jsonError("That address is already taken by another organization", 409, jsonHeaders);
+      }
+      // A super admin decides it from the Super Admin console, where pending addresses are listed.
+      await updateTenant(db, currentTenant!.id, { requested_subdomain: cleanSub });
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "tenant.request_subdomain",
+        details: `requested=${cleanSub}`
+      });
+      await notifyPlatformOwner(
+        env,
+        `Address request: ${currentTenant!.name}`,
+        `${currentTenant!.name} (${currentTenant!.subdomain}.${baseDomain}) asked for ${cleanSub}.${baseDomain}.\n\nApprove or reject it in the Super Admin console.`
+      );
+      return new Response(JSON.stringify({ status: "ok", pending: true, requestedSubdomain: cleanSub }), { headers: jsonHeaders });
+    }
+
+    // POST /api/tenant/feature-tip/dismiss: hide the console's feature tip for 30 days.
+    if (path === "/api/tenant/feature-tip/dismiss" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      await updateTenant(db, currentTenant!.id, { feature_tip_dismissed_at: Math.floor(Date.now() / 1000) });
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
     }
 
     // POST /api/tenant/settings: update Settings (mode, home_route, profile)
@@ -5595,8 +5586,10 @@ export default {
       // Anyone can report a hosted page: the platform's contact form, preset to legal.
       const reportHref = `${isDev ? url.origin : `https://${baseDomain}`}/contact?reason=legal&report=${encodeURIComponent(`${url.origin}${url.pathname}${namedTenant ? `?tenant=${currentTenant.subdomain}` : ""}`)}`;
 
-      // The root is the organization's own page; the grid lives at /home.
-      if (wantsOrganizationHome) {
+      // The root is the organization's own page; the grid lives at /home. An
+      // organization on a generated address has no public homepage until it is
+      // granted a chosen one (src/addresses.ts): its root is the portal.
+      if (wantsOrganizationHome && showsHomepage(currentTenant)) {
         const portalPath = namedTenant
           ? `/home?tenant=${encodeURIComponent(currentTenant.subdomain)}`
           : "/home";

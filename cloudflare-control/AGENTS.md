@@ -37,6 +37,7 @@ cloudflare-control/
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── phone_verify.ts                 # Optional Firebase SMS code at registration: the Worker verifies Firebase's ID token (RS256, crypto.subtle)
 │   ├── phone_link.ts                   # Emailed one-time link that verifies an existing organization's phone by SMS (/verify-phone)
+│   ├── addresses.ts                    # Generated console addresses; a chosen one (and the homepage) on request, kept beside it; the feature tip
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback

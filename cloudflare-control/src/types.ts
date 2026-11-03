@@ -96,6 +96,12 @@ export interface Tenant {
   printing_enabled?: number;
   /** 1 when Home in the kiosk bar asks "Start over?" and signs everyone out; on by default (0048). */
   home_reset?: number;
+  /** 1 when the console address was generated at registration rather than chosen (0053, src/addresses.ts). */
+  address_generated?: number;
+  /** A chosen address granted on request, served beside `subdomain` (0053). */
+  chosen_subdomain?: string | null;
+  /** When the console's feature tip was last dismissed (0053). */
+  feature_tip_dismissed_at?: number | null;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */

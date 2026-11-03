@@ -385,14 +385,6 @@ ${FONT_LINKS}
               <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
             </div>
           </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-subdomain">Console address</label>
-            <div class="code-row">
-              <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
-              <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
-            </div>
-            <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
-          </div>
 
           <div class="form-legend">Technical contact</div>
           <div class="form-split">
@@ -1652,7 +1644,6 @@ ${FONT_LINKS}
         legalName: value('reg-legal-name'),
         organizationType: value('reg-type'),
         workstationEstimate: Number.isFinite(workstations) ? workstations : null,
-        subdomain: value('reg-subdomain').toLowerCase(),
         contactName: value('reg-contact-name'),
         phone: '+' + dialCountry[2] + phoneDigits,
         phoneToken: FIREBASE ? phoneToken : undefined,
@@ -2125,8 +2116,8 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
           </div>
-          <h3 class="feature-title">Custom Organization Subdomains</h3>
-          <p class="feature-desc">Every organization gets its own custom subdomain (e.g. <code>greenwood.${escapeHtml(baseDomain)}</code>). Thin clients connect separately and remain 100% isolated to your organization's private dashboard.</p>
+          <h3 class="feature-title">Your Own Console Address</h3>
+          <p class="feature-desc">Every organization gets its own console address. Ask for one you choose (e.g. <code>greenwood.${escapeHtml(baseDomain)}</code>) with a public homepage, or bring your own domain. Thin clients stay isolated to your organization's private dashboard.</p>
         </div>
 
         <div class="feature-card">
@@ -2299,7 +2290,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Register on this website and we review the request. Once it is approved you receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
+            Register on this website and we review the request. Once it is approved you receive your console address and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
           </div>
         </div>
       </div>
@@ -2731,7 +2722,7 @@ function pricingMainHtml(): string {
             </li>
             <li>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Dedicated organization subdomain</span>
+              <span>Dedicated console address</span>
             </li>
           </ul>
           <a class="btn btn-primary btn-block" href="/register">Apply for Education Grant</a>

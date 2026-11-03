@@ -294,6 +294,15 @@ async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = 
   assert.ok(code, "the code is in the subject");
   const res = await worker.fetch(request("/api/auth/register", { ...json({ ...body, emailCode: code }), headers: from }), env);
   const data = (await res.json()) as any;
+  // Registration generates the console address (src/addresses.ts). The fixtures
+  // name theirs, as organizations registered before that did: give it to them,
+  // unless the test asks for the generated one.
+  if (res.status === 200 && body.subdomain && !body.keepGeneratedAddress) {
+    await getDatabase(env)
+      .prepare("UPDATE tenants SET subdomain = ?, address_generated = 0 WHERE user_id = (SELECT id FROM users WHERE email = ?)")
+      .bind(String(body.subdomain), String(body.email).toLowerCase())
+      .run();
+  }
   return { res, data };
 }
 
@@ -5531,27 +5540,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------ registration rules
 
-  test("Rejects reserved subdomains and implausible emails at registration", async () => {
-    for (const subdomain of ["admin", "www", "super", "api", "releases", "updates", "login", "support", "mta-sts"]) {
-      const { res, data } = await callJson(
-        "/api/auth/register",
-        json(signupBody({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain }))
-      );
-      assert.equal(res.status, 400, `${subdomain} must be refused`);
-      assert.match(data.error, /reserved/);
-    }
+  test("Registration generates the console address, and refuses implausible emails", async () => {
+    // A requested address is ignored: the address is generated from the name (src/addresses.ts).
+    const { res, data } = await submitSignup({ name: "Admin & Co. Learning Centre", email: "generated@example.com", subdomain: "admin", keepGeneratedAddress: true });
+    assert.equal(res.status, 200, JSON.stringify(data));
+    const tenant = await getDatabase(mockEnv)
+      .prepare("SELECT subdomain, address_generated, chosen_subdomain FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'generated@example.com')")
+      .first<any>();
+    assert.match(tenant.subdomain, /^admin-co-learning-ce-[a-z2-9]{4}$/);
+    assert.equal(tenant.address_generated, 1);
+    assert.equal(tenant.chosen_subdomain, null);
+    assert.ok(lastMailTo("generated@example.com").text.includes(`${tenant.subdomain}.labkiosk.org`), "the receipt names the generated address");
+
     const badEmail = await callJson(
       "/api/auth/register",
-      json(signupBody({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!", subdomain: "bademail" }))
+      json(signupBody({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!" }))
     );
     assert.equal(badEmail.res.status, 400);
     assert.match(badEmail.data.error, /valid email/);
-
-    const tooLong = await callJson(
-      "/api/auth/register",
-      json(signupBody({ name: "Long", email: "long@example.com", password: "LongSlugPass123!", subdomain: "a".repeat(64) }))
-    );
-    assert.equal(tooLong.res.status, 400);
   });
 
   test("Accepts a scheme-less host:port as a valid URL", async () => {
@@ -6985,11 +6991,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
+    // Registration no longer takes an address, so a demo name cannot be registered.
+    const squatter = await submitSignup({ name: "Web Demo", email: "squatter@example.com", subdomain: "web-demo", keepGeneratedAddress: true });
+    assert.equal(squatter.res.status, 200);
+    const squatted = await getDatabase(mockEnv)
+      .prepare("SELECT subdomain FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'squatter@example.com')")
+      .first<{ subdomain: string }>();
+    assert.match(squatted!.subdomain, /^web-demo-[a-z2-9]{4}$/);
     for (const subdomain of ["demo", ...DEMO_SLUGS]) {
-      const res = await call("/api/auth/register", json(signupBody({
-        name: "Squatter", email: `squatter-${subdomain}@example.com`, password: "SquatterPassword123!", subdomain
-      })));
-      assert.equal(res.status, 400, `${subdomain} is reserved`);
       const rename = await call("/api/tenant/subdomain?tenant=greenwood", {
         ...json({ subdomain }), cookie: orgSessionCookie
       });
@@ -7402,45 +7411,86 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loc, "https://labkiosk.org/?login=1&tenant=greenwood");
   });
 
-  test("Allows organization admin to update subdomain and enforces slug validation", async () => {
-    // 1. Reject invalid subdomain
-    const { res: badRes, data: badData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "ab" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(badRes.status, 400);
-    assert.match(badData.error, /3-63 characters/);
+  test("An organization asks for a chosen address; once granted it is served beside the old one", async () => {
+    const db = getDatabase(mockEnv);
+    const ask = (subdomain: string, cookie = orgSessionCookie) => callJson("/api/tenant/subdomain?tenant=greenwood", { ...json({ subdomain }), cookie });
+    assert.match((await ask("ab")).data.error, /3-63 characters/);
+    assert.match((await ask("admin")).data.error, /reserved/);
+    const taken = await ask("riverside");
+    assert.equal(taken.res.status, 409);
+    assert.match(taken.data.error, /already taken/);
+    assert.equal((await ask("greenwood")).res.status, 400, "the current address is not a request");
 
-    // 2. Reject reserved slug
-    const { res: resvRes, data: resvData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "admin" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(resvRes.status, 400);
-    assert.match(resvData.error, /reserved/);
+    const asked = await ask("greenwood-high");
+    assert.equal(asked.res.status, 200);
+    assert.equal(asked.data.pending, true);
+    let row = await db.prepare("SELECT subdomain, requested_subdomain, chosen_subdomain FROM tenants WHERE subdomain = 'greenwood'").first<any>();
+    assert.deepEqual({ ...row }, { subdomain: "greenwood", requested_subdomain: "greenwood-high", chosen_subdomain: null }, "nothing changes until it is approved");
+    assert.equal((await call("/admin?tenant=greenwood-high", { cookie: orgSessionCookie })).status === 200, false, "not served yet");
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(settings.includes('id="subdomain-pending"'));
 
-    // 3. Reject duplicate subdomain (already claimed by riverside)
-    const { res: dupRes, data: dupData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "riverside" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(dupRes.status, 400);
-    assert.match(dupData.error, /already claimed/);
+    const admin = await superCookie();
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    const granted = await callJson("/api/super/tenants/approve", { ...json({ tenantId, subdomain: "greenwood-high" }), cookie: admin });
+    assert.equal(granted.res.status, 200);
+    assert.equal(granted.data.subdomain, "greenwood", "the enrolled address stays");
+    assert.equal(granted.data.chosenSubdomain, "greenwood-high");
+    row = await db.prepare("SELECT subdomain, requested_subdomain, chosen_subdomain FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.deepEqual({ ...row }, { subdomain: "greenwood", requested_subdomain: null, chosen_subdomain: "greenwood-high" });
 
-    // 4. Successfully update subdomain to greenwood-high
-    const { res: okRes, data: okData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "greenwood-high" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(okRes.status, 200);
-    assert.equal(okData.status, "ok");
-    assert.equal(okData.subdomain, "greenwood-high");
+    // Both addresses reach the same organization.
+    for (const host of ["greenwood", "greenwood-high"]) {
+      const page = await call(`/home?tenant=${host}`);
+      assert.equal(page.status, 200, host);
+    }
+    const notice = await db.prepare("SELECT title FROM notifications WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1").bind(tenantId).first<{ title: string }>();
+    assert.equal(notice!.title, "Your chosen address is ready");
+    // No other organization can take it, and a second one needs support.
+    const riversideTaken = await callJson("/api/tenant/subdomain?tenant=riverside", { ...json({ subdomain: "greenwood-high" }), cookie: rivalSessionCookie });
+    assert.equal(riversideTaken.res.status, 409);
+    assert.equal((await ask("greenwood-two")).res.status, 409);
 
-    // Restore subdomain back to greenwood for subsequent tests
-    await callJson("/api/tenant/subdomain?tenant=greenwood-high", {
-      ...json({ subdomain: "greenwood" }),
-      cookie: orgSessionCookie
-    });
+    await db.prepare("UPDATE tenants SET chosen_subdomain = NULL WHERE id = ?").bind(tenantId).run();
+  });
+
+  test("A generated address has no public homepage until a chosen one is granted, and the console says so", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    const before = await db.prepare("SELECT remote_control_status, feature_tip_dismissed_at FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    await db.prepare("UPDATE tenants SET address_generated = 1, remote_control_status = 'none', feature_tip_dismissed_at = NULL WHERE id = ?").bind(tenantId).run();
+    try {
+      const root = await (await call("/?tenant=greenwood")).text();
+      assert.doesNotMatch(root, /Open User Portal/, "no homepage");
+      assert.match(root, /class="portal-title"/, "the root is the portal");
+      const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.ok(settings.includes('id="homepage-not-live"'));
+
+      // The console tells the organization about both features, never by email.
+      const outboxBefore = localOutbox().length;
+      const grid = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.ok(grid.includes('id="feature-tip"'));
+      assert.match(grid, /Remote Control<\/strong>/);
+      assert.match(grid, /Your own address<\/strong>/);
+      assert.equal(localOutbox().length, outboxBefore);
+      const dismiss = await call("/api/tenant/feature-tip/dismiss?tenant=greenwood", { method: "POST", cookie: orgSessionCookie });
+      assert.equal(dismiss.status, 200);
+      const later = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.ok(!later.includes('id="feature-tip"'), "dismissed for 30 days");
+      await db.prepare("UPDATE tenants SET feature_tip_dismissed_at = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000) - 31 * 24 * 3600, tenantId).run();
+      assert.ok((await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text()).includes('id="feature-tip"'), "back after 30 days");
+
+      // Granted: the homepage is on, and the tip no longer offers an address.
+      await db.prepare("UPDATE tenants SET chosen_subdomain = 'greenwood-hq' WHERE id = ?").bind(tenantId).run();
+      assert.match(await (await call("/?tenant=greenwood")).text(), /Open User Portal/);
+      const after = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.doesNotMatch(after, /Your own address<\/strong>/);
+    } finally {
+      await db
+        .prepare("UPDATE tenants SET address_generated = 0, chosen_subdomain = NULL, remote_control_status = ?, feature_tip_dismissed_at = ? WHERE id = ?")
+        .bind(before.remote_control_status, before.feature_tip_dismissed_at, tenantId)
+        .run();
+    }
   });
 
   test("Updates Settings including custom home route", async () => {

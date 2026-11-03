@@ -9,19 +9,56 @@ import { LabConfig, Tenant, PortalSite, BroadcastPreset, WorkstationGroup } from
 import { escapeHtml, escapeAttr, escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 import { SECURITY_WAIT_WARN_DAYS } from "./releases";
+import { featureTipFor, TipFeature } from "./addresses";
 
 export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
   const canUpdate = options.canUpdate === true;
   return {
     title: "Workstation Grid & Control",
-    contentHtml: renderWorkstationsPageHtml(tenantParam, groups, canUpdate),
+    contentHtml: renderWorkstationsPageHtml(
+      tenantParam,
+      groups,
+      canUpdate,
+      renderFeatureTipHtml(tenantParam, options.canSettings === true && tenant ? featureTipFor(tenant, Math.floor(Date.now() / 1000)) : [])
+    ),
     modalsHtml: renderWorkstationsModalsHtml(tenant, presets, groups),
     scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups, canUpdate, options.canRemoteControl === true)
   };
 }
 
-function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[], canUpdate: boolean): string {
+/**
+ * The tip that tells an organization about Remote Control and a chosen address
+ * while it has neither (src/addresses.ts). Shown in the console only, never
+ * emailed; dismissing it hides it for 30 days.
+ */
+function renderFeatureTipHtml(tenantParam: string, features: TipFeature[]): string {
+  if (!features.length) return "";
+  const settings = (tab: string) => `/admin/settings${tenantParam ? `${tenantParam}&` : "?"}tab=${tab}`;
+  const items: string[] = [];
+  if (features.includes("remote_control")) {
+    items.push(
+      `<li><strong>Remote Control</strong>: see and use a workstation's screen from the console to help someone without walking over. <a href="${escapeAttr(settings("general"))}">Request it</a></li>`
+    );
+  }
+  if (features.includes("address")) {
+    items.push(
+      `<li><strong>Your own address</strong>: a short console address you choose, with a public homepage for your organization. <a href="${escapeAttr(settings("domains"))}">Ask for one</a></li>`
+    );
+  }
+  return `
+    <div class="callout" id="feature-tip" role="note" style="margin-bottom: 16px;">
+      <div style="flex: 1;">
+        <strong>Available for your organization</strong>
+        <ul style="margin: 6px 0 0; padding-left: 18px;">${items.join("")}</ul>
+      </div>
+      <div style="flex-shrink: 0; align-self: flex-start;">
+        <button type="button" class="btn btn-ghost btn-sm" id="feature-tip-dismiss">Not now</button>
+      </div>
+    </div>`;
+}
+
+function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[], canUpdate: boolean, featureTipHtml = ""): string {
   const groupChipsHtml = groups
     .map(
       (g) => `
@@ -41,6 +78,7 @@ function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGrou
         <p class="page-desc">Live screens, status and remote commands for every enrolled workstation.</p>
       </div>
     </div>
+${featureTipHtml}
 ${
   canUpdate
     ? `
@@ -314,6 +352,22 @@ function renderWorkstationsScripts(
   return `
     <script nonce="${escapeAttr(nonce)}">
       const CAN_UPDATE = ${escapeJson(canUpdate)};
+      // The feature tip: "Not now" hides it for 30 days, for the whole organization.
+      (function () {
+        const tipDismiss = document.getElementById("feature-tip-dismiss");
+        if (!tipDismiss) return;
+        tipDismiss.addEventListener("click", async () => {
+          tipDismiss.disabled = true;
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/feature-tip/dismiss"), { method: "POST" });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            document.getElementById("feature-tip").remove();
+          } catch (err) {
+            tipDismiss.disabled = false;
+            lkToast("Could not hide the tip: " + err.message, "error");
+          }
+        });
+      })();
       const TENANT_SLUG = ${escapeJson(tenant?.subdomain || "")};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
