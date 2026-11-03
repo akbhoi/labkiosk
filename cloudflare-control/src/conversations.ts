@@ -11,7 +11,7 @@
  * email codes that verify an address before an account exists.
  */
 
-import { sha256Hex } from "./auth";
+import { oneTimeCodeHash, timingSafeEqual } from "./auth";
 
 export type ConversationKind = "signup" | "remote_control" | "support";
 export type ConversationStatus = "open" | "approved" | "rejected" | "closed";
@@ -87,12 +87,14 @@ export function categoryForTopic(topic: string): ConversationCategory {
  * What the contact page lets a person write about. Each is a type of mail, so
  * a message arrives in the Super Admin console already sorted.
  */
-export const CONTACT_REASONS: readonly { value: ConversationCategory; label: string }[] = [
-  { value: "sales", label: "Sales and licensing" },
-  { value: "support", label: "Technical support" },
-  { value: "billing", label: "Billing and invoices" },
-  { value: "legal", label: "Privacy, security or legal" },
-  { value: "general", label: "Something else" }
+/** The contact form's reasons: `value` is what the form sends, `category` what Mail files it under. */
+export const CONTACT_REASONS: readonly { value: string; category: ConversationCategory; label: string }[] = [
+  { value: "sales", category: "sales", label: "Sales and licensing" },
+  { value: "reseller", category: "sales", label: "Become a reseller" },
+  { value: "support", category: "support", label: "Technical support" },
+  { value: "billing", category: "billing", label: "Billing and invoices" },
+  { value: "legal", category: "legal", label: "Privacy, security or legal" },
+  { value: "general", category: "general", label: "Something else" }
 ];
 
 /** The kinds the Tasks tab shows; Support shows the rest. */
@@ -169,6 +171,9 @@ export interface OrganizationProfile {
   notes: string | null;
   created_at: number;
   updated_at: number;
+  /** The emailed phone verification link (src/phone_link.ts): the SHA-256 of its token, and when it stops working. */
+  phone_link_hash?: string | null;
+  phone_link_expires_at?: number | null;
 }
 
 /** Longest message body stored or sent, in characters. */
@@ -561,14 +566,20 @@ export type ProfileInput = Omit<
   "tenant_id" | "phone_verified_at" | "phone_verified_by" | "created_at" | "updated_at"
 >;
 
-export async function createOrganizationProfile(db: D1Database, tenantId: string, profile: ProfileInput): Promise<void> {
+/** `phoneVerifiedAt` is set when the registration proved the phone by a texted code (src/phone_verify.ts). */
+export async function createOrganizationProfile(
+  db: D1Database,
+  tenantId: string,
+  profile: ProfileInput,
+  phoneVerifiedAt: number | null = null
+): Promise<void> {
   const ts = now();
   await db
     .prepare(
       `INSERT INTO organization_profiles (tenant_id, legal_name, contact_name, contact_email, contact_phone, email_verified_at,
-         address_line1, address_line2, city, region, postal_code, country, tax_id, billing_email, workstation_estimate,
-         organization_type, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         phone_verified_at, address_line1, address_line2, city, region, postal_code, country, tax_id, billing_email,
+         workstation_estimate, organization_type, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       tenantId,
@@ -577,6 +588,7 @@ export async function createOrganizationProfile(db: D1Database, tenantId: string
       profile.contact_email.toLowerCase(),
       profile.contact_phone,
       profile.email_verified_at,
+      phoneVerifiedAt,
       profile.address_line1,
       profile.address_line2,
       profile.city,
@@ -619,8 +631,8 @@ function codeId(purpose: EmailCodePurpose, email: string): string {
   return `${purpose}:${email.toLowerCase()}`;
 }
 
-async function codeHash(purpose: EmailCodePurpose, email: string, code: string): Promise<string> {
-  return sha256Hex(`${codeId(purpose, email)}:${code}`);
+async function codeHash(pepper: string, purpose: EmailCodePurpose, email: string, code: string): Promise<string> {
+  return oneTimeCodeHash(pepper, `${codeId(purpose, email)}:${code}`);
 }
 
 /** Seconds until a new code may be sent to this address (0 when it may). */
@@ -644,7 +656,7 @@ export function uniformBelow(limit: number): number {
 }
 
 /** A fresh six-digit code for this address, replacing any earlier one. */
-export async function issueEmailCode(db: D1Database, purpose: EmailCodePurpose, email: string): Promise<string> {
+export async function issueEmailCode(db: D1Database, pepper: string, purpose: EmailCodePurpose, email: string): Promise<string> {
   const code = String(uniformBelow(1_000_000)).padStart(6, "0");
   const ts = now();
   await db
@@ -654,7 +666,7 @@ export async function issueEmailCode(db: D1Database, purpose: EmailCodePurpose, 
        ON CONFLICT(id) DO UPDATE SET code_hash = excluded.code_hash, attempts = 0,
          expires_at = excluded.expires_at, sent_at = excluded.sent_at`
     )
-    .bind(codeId(purpose, email), purpose, email.toLowerCase(), await codeHash(purpose, email, code), ts + EMAIL_CODE_TTL_SECONDS, ts)
+    .bind(codeId(purpose, email), purpose, email.toLowerCase(), await codeHash(pepper, purpose, email, code), ts + EMAIL_CODE_TTL_SECONDS, ts)
     .run();
   return code;
 }
@@ -670,6 +682,7 @@ export async function discardEmailCode(db: D1Database, purpose: EmailCodePurpose
  */
 export async function checkEmailCode(
   db: D1Database,
+  pepper: string,
   purpose: EmailCodePurpose,
   email: string,
   code: string
@@ -680,8 +693,8 @@ export async function checkEmailCode(
     .bind(id)
     .first<{ code_hash: string; attempts: number; expires_at: number }>();
   if (!row || row.expires_at <= now() || row.attempts >= EMAIL_CODE_MAX_ATTEMPTS) return "expired";
-  const supplied = await codeHash(purpose, email, String(code).trim());
-  if (supplied === row.code_hash) return "ok";
+  const supplied = await codeHash(pepper, purpose, email, String(code).trim());
+  if (timingSafeEqual(supplied, row.code_hash)) return "ok";
   if (row.attempts + 1 >= EMAIL_CODE_MAX_ATTEMPTS) {
     await discardEmailCode(db, purpose, email);
   } else {

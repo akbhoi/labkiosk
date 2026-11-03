@@ -16,11 +16,13 @@ export interface StatusPageOptions {
   /** Already-escaped markup: the caller escapes every organization-supplied value. */
   messageHtml: string;
   homeHref: string;
+  /** The button's words; "Back to Homepage" unless given. */
+  homeLabel?: string;
   tone?: "neutral" | "warning";
 }
 
 export function renderStatusPageHtml(options: StatusPageOptions): string {
-  const { title, heading, messageHtml, homeHref, tone = "neutral" } = options;
+  const { title, heading, messageHtml, homeHref, homeLabel = "Back to Homepage", tone = "neutral" } = options;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -94,7 +96,7 @@ ${rootTokensCss()}
     </div>
     <h1>${escapeHtml(heading)}</h1>
     <p>${messageHtml}</p>
-    <a href="${escapeAttr(homeHref)}">Back to Homepage</a>
+    <a href="${escapeAttr(homeHref)}">${escapeHtml(homeLabel)}</a>
   </main>
 </body>
 </html>`;

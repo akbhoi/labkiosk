@@ -11,6 +11,7 @@
  * fourth.
  */
 
+import { PRICING } from "./plans";
 import { escapeHtml, escapeAttr } from "./escape";
 import { BUG_REPORT_TERMS_VERSION } from "./bug_reports";
 import { FONT_LINKS, rootTokensCss, LEGACY_LEGAL_ALIASES } from "./ui_tokens";
@@ -21,7 +22,8 @@ const LEGAL_PAGES: ReadonlyArray<{ path: string; label: string }> = [
   { path: "/terms", label: "Terms of Service" },
   { path: "/content-policy", label: "Content Policy" },
   { path: "/privacy", label: "Privacy Policy" },
-  { path: "/dpa", label: "Data Processing Agreement" }
+  { path: "/dpa", label: "Data Processing Agreement" },
+  { path: "/refunds", label: "Refund & Cancellation" }
 ];
 
 /** The chrome every legal page sits inside. */
@@ -183,7 +185,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
-      <div class="updated-date">Last updated: October 20, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: November 3, 2026 • Effective immediately</div>
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
@@ -250,6 +252,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Other providers are involved:</p>
       <ul>
         <li><strong>GitHub, Inc.:</strong> only for organizations that turned on Automatic Bug Reports, the masked reports are published as GitHub issues under GitHub's own terms and privacy statement.</li>
+        <li><strong>Google Firebase Authentication:</strong> when we turn it on, sends the text message code that proves the phone number given at registration. Google receives that phone number, the registrant's IP address and browser details, and runs Google reCAPTCHA on the registration page to stop automated requests; it tells us only that the code was entered correctly for that number. Google handles this under the <a href="https://firebase.google.com/terms/data-processing-terms">Firebase Data Processing and Security Terms</a>.</li>
         <li><strong>Google Fonts:</strong> the consoles and public pages load the Inter and JetBrains Mono typefaces from Google, which receives the visitor's IP address and browser details when the fonts are requested.</li>
         <li><strong>Google Analytics:</strong> only on the public website pages described in section 8, and only after the visitor consents.</li>
       </ul>
@@ -605,6 +608,65 @@ export function renderContentPolicyHtml(options: LegalPageOptions = {}): string 
 
       <h2>7. Changes to This Policy</h2>
       <p>When we change this policy, we publish a new version with a new date at the top, and each organization's console asks an administrator to accept it, as section 18 of the <a href="/terms">Terms of Service</a> describes.</p>
+    </div>
+  </main>
+`
+  });
+}
+
+/**
+ * The refund and cancellation policy for paid plans (src/plans.ts,
+ * src/billing.ts). Informational, like the pricing page: it is not one of the
+ * documents an organization accepts, so changing it asks nobody to accept again.
+ */
+export function renderRefundPolicyHtml(options: LegalPageOptions = {}): string {
+  const p = PRICING;
+  return renderLegalShell({
+    title: "Refund & Cancellation Policy - Lab Kiosk OS",
+    description: "Payments for Lab Kiosk subscriptions are not refundable. How paid plans are delivered, how they end, and the cases where we do refund.",
+    canonicalUrl: options.canonicalUrl,
+    current: "/refunds",
+    mainHtml: `
+  <main>
+    <div class="legal-card">
+      <h1>Refund &amp; Cancellation Policy</h1>
+      <div class="updated-date">Last updated: November 3, 2026</div>
+
+      <div class="highlight-box">
+        <strong>In short: payments are not refundable</strong>
+        Try Lab Kiosk before you pay: the Free plan covers ${p.freeWorkstations} workstations with no end date, and every organization can try the full subscription free for ${p.trialDays} days. Once you pay for a period, we do not refund it.
+      </div>
+
+      <h2>1. What You Pay For</h2>
+      <p>A subscription is paid in advance for one month or one year, at the prices on our <a href="/pricing">pricing page</a> plus GST, for the number of workstations you choose. Payments are taken by Razorpay, which sends the receipt. The Free plan, the trial and the Education plan cost nothing.</p>
+
+      <h2>2. No Refunds</h2>
+      <p>Every payment is final. We do not refund, in whole or in part:</p>
+      <ul>
+        <li>a month or a year that has started, including time you do not use;</li>
+        <li>workstations you paid for and did not enrol, or removed;</li>
+        <li>a plan you stop using before its end date, or an organization you close;</li>
+        <li>a renewal paid before the current period ended, which adds to that period;</li>
+        <li>a plan suspended or ended because the <a href="/terms">Terms of Service</a> or the <a href="/content-policy">Content Policy</a> were broken.</li>
+      </ul>
+
+      <h2>3. When We Do Refund</h2>
+      <p>We refund the full amount, to the card, account or UPI it was paid from, when:</p>
+      <ul>
+        <li>you were charged twice for the same payment;</li>
+        <li>you were charged but your plan was not extended, and we cannot extend it;</li>
+        <li>the law requires a refund.</li>
+      </ul>
+      <p>Write to <a href="mailto:support@labkiosk.org">support@labkiosk.org</a> within 30 days of the payment with your organization's address and the Razorpay payment reference. Once we confirm it, the refund is issued within 7 working days; your bank may take a few more days to show it.</p>
+
+      <h2>4. Cancellation</h2>
+      <p>Nothing renews by itself and we never charge you without your action, so there is nothing to cancel: a paid plan simply ends on its end date unless you pay for another period. The console reminds administrators before that date. When it ends, the organization moves to the Free plan: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, and none of your settings or data are deleted.</p>
+
+      <h2>5. Delivery</h2>
+      <p>Lab Kiosk is an online service; nothing is shipped. A paid plan is applied to your organization as soon as Razorpay confirms the payment, usually within a minute, and shows under Plan in your console. If it has not appeared within an hour, write to <a href="mailto:support@labkiosk.org">support@labkiosk.org</a> with the payment reference.</p>
+
+      <h2>6. Changes to This Policy</h2>
+      <p>We may change this policy by publishing a new version here with a new date. A payment is governed by the version in force when it was made.</p>
     </div>
   </main>
 `

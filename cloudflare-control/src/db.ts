@@ -101,7 +101,13 @@ CREATE TABLE IF NOT EXISTS tenants (
   printing_enabled INTEGER NOT NULL DEFAULT 0
   CHECK (printing_enabled IN (0, 1)),
   home_reset INTEGER NOT NULL DEFAULT 1
-  CHECK (home_reset IN (0, 1))
+  CHECK (home_reset IN (0, 1)),
+  address_generated INTEGER NOT NULL DEFAULT 0
+  CHECK (address_generated IN (0, 1)),
+  chosen_subdomain TEXT,
+  feature_tip_dismissed_at INTEGER,
+  summary_dismissed_month TEXT,
+  trial_started_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -109,7 +115,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  hashed INTEGER NOT NULL DEFAULT 0
+  CHECK (hashed IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS portal_sites (
@@ -401,7 +409,9 @@ CREATE TABLE IF NOT EXISTS organization_profiles (
   organization_type TEXT,
   notes TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  phone_link_hash TEXT,
+  phone_link_expires_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS email_codes (
@@ -605,6 +615,7 @@ CREATE TABLE IF NOT EXISTS printers (
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_chosen_subdomain ON tenants(chosen_subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain_status ON tenants(custom_domain_status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
@@ -638,6 +649,157 @@ CREATE INDEX IF NOT EXISTS idx_sso_states_expires ON sso_states(expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_states_handoff ON sso_states(handoff_hash);
 CREATE INDEX IF NOT EXISTS idx_power_schedules_tenant ON power_schedules(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_printers_tenant ON printers(tenant_id, position);
+
+CREATE TABLE IF NOT EXISTS status_latest (
+  component TEXT PRIMARY KEY,
+  ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
+  detail TEXT,
+  checked_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS status_daily (
+  component TEXT NOT NULL,
+  day TEXT NOT NULL,
+  checks INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (component, day)
+);
+
+CREATE TABLE IF NOT EXISTS status_incidents (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  impact TEXT NOT NULL CHECK (impact IN ('minor', 'major')),
+  status TEXT NOT NULL CHECK (status IN ('investigating', 'identified', 'monitoring', 'resolved')),
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS status_incident_updates (
+  id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES status_incidents(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('investigating', 'identified', 'monitoring', 'resolved')),
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_incidents_created ON status_incidents(created_at);
+CREATE INDEX IF NOT EXISTS idx_status_incident_updates_incident ON status_incident_updates(incident_id, created_at);
+
+CREATE TABLE IF NOT EXISTS exam_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  group_name TEXT,
+  exam_url TEXT NOT NULL,
+  allowed_hosts TEXT NOT NULL,
+  starts_at INTEGER NOT NULL,
+  ends_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  finalized_at INTEGER,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  ended_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  CHECK (ends_at > starts_at)
+);
+
+CREATE TABLE IF NOT EXISTS exam_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id TEXT NOT NULL REFERENCES exam_sessions(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  event TEXT NOT NULL CHECK (event IN ('start-online', 'start-offline', 'connect', 'disconnect')),
+  at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_exam_sessions_tenant ON exam_sessions(tenant_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_exam_events_exam ON exam_events(exam_id, client_id, at);
+
+CREATE TABLE IF NOT EXISTS certified_hardware (
+  vendor_key TEXT NOT NULL,
+  model_key TEXT NOT NULL,
+  vendor TEXT NOT NULL,
+  model TEXT NOT NULL,
+  note TEXT,
+  certified_at INTEGER NOT NULL,
+  certified_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  PRIMARY KEY (vendor_key, model_key)
+);
+
+CREATE TABLE IF NOT EXISTS resellers (
+  id TEXT PRIMARY KEY,
+  company TEXT NOT NULL,
+  contact_name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  state TEXT NOT NULL,
+  city TEXT NOT NULL,
+  website TEXT,
+  stocks TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER,
+  decided_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_resellers_status ON resellers(status, state, city);
+CREATE INDEX IF NOT EXISTS idx_resellers_email ON resellers(email);
+
+CREATE TABLE IF NOT EXISTS unlicensed_workstations (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  since INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, client_id)
+);
+
+CREATE TABLE IF NOT EXISTS education_applications (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  institution TEXT NOT NULL,
+  board TEXT NOT NULL,
+  affiliation_number TEXT NOT NULL,
+  website TEXT NOT NULL,
+  email TEXT NOT NULL,
+  code_hash TEXT,
+  code_expires_at INTEGER,
+  code_attempts INTEGER NOT NULL DEFAULT 0,
+  email_verified_at INTEGER,
+  certificate_key TEXT,
+  certificate_name TEXT NOT NULL,
+  certificate_type TEXT NOT NULL,
+  certificate_size INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'verifying'
+  CHECK (status IN ('verifying', 'pending', 'approved', 'rejected')),
+  decision_reason TEXT,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  submitted_at INTEGER,
+  decided_at INTEGER,
+  decided_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_education_applications_tenant ON education_applications(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_education_applications_status ON education_applications(status, submitted_at);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  link_id TEXT UNIQUE,
+  short_url TEXT,
+  period TEXT NOT NULL CHECK (period IN ('month', 'year')),
+  extra_workstations INTEGER NOT NULL CHECK (extra_workstations >= 0),
+  subtotal_paise INTEGER NOT NULL,
+  gst_paise INTEGER NOT NULL,
+  total_paise INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paid')),
+  razorpay_payment_id TEXT,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  paid_at INTEGER,
+  period_ends_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_tenant ON payments(tenant_id, created_at);
 `;
 
 /**
@@ -846,7 +1008,31 @@ const SCHEMA_PROBES: readonly string[] = [
   // 0049: the architectures a release is built for.
   "SELECT architectures FROM releases LIMIT 1",
   // 0050: a release's arm64 ISO, for /download.
-  "SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1"
+  "SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1",
+  // 0051: sessions stored by the hash of their token.
+  "SELECT hashed FROM sessions LIMIT 1",
+  // 0052: the emailed link that asks an organization to verify its phone by text message.
+  "SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles LIMIT 1",
+  // 0053: generated console addresses, a chosen one on request, and the dashboard's feature tip.
+  "SELECT address_generated, chosen_subdomain, feature_tip_dismissed_at FROM tenants LIMIT 1",
+  // 0054: the public status page.
+  "SELECT component, ok, checked_at FROM status_latest LIMIT 1",
+  "SELECT component, day, checks, failures FROM status_daily LIMIT 1",
+  "SELECT id, impact, status, resolved_at FROM status_incidents LIMIT 1",
+  "SELECT incident_id, body FROM status_incident_updates LIMIT 1",
+  // 0055: the monthly summary on Workstations.
+  "SELECT summary_dismissed_month FROM tenants LIMIT 1",
+  // 0056: exam mode.
+  "SELECT id, group_name, allowed_hosts, starts_at, ends_at, ended_at, finalized_at FROM exam_sessions LIMIT 1",
+  "SELECT exam_id, client_id, event, at FROM exam_events LIMIT 1",
+  // 0057: certified hardware and resellers.
+  "SELECT vendor_key, model_key, note, certified_at FROM certified_hardware LIMIT 1",
+  "SELECT id, company, phone, state, city, stocks, status, conversation_id FROM resellers LIMIT 1",
+  // 0058: plans, education applications and payments.
+  "SELECT trial_started_at FROM tenants LIMIT 1",
+  "SELECT tenant_id, client_id, since FROM unlicensed_workstations LIMIT 1",
+  "SELECT id, board, affiliation_number, code_hash, certificate_key, status, decision_reason FROM education_applications LIMIT 1",
+  "SELECT id, link_id, period, extra_workstations, total_paise, status, period_ends_at FROM payments LIMIT 1"
 ];
 
 /**
@@ -994,7 +1180,8 @@ export async function findTenantBySubdomain(
   subdomain: string
 ): Promise<Tenant | null> {
   return await db
-    .prepare("SELECT * FROM tenants WHERE subdomain = ?")
+    // A chosen address is served beside the one the organization enrolled with (0053).
+    .prepare("SELECT * FROM tenants WHERE subdomain = ?1 OR chosen_subdomain = ?1")
     .bind(subdomain.toLowerCase())
     .first<Tenant>();
 }
@@ -1042,6 +1229,8 @@ export async function createTenant(
     portalSubtitle?: string | null;
     portalDescription?: string | null;
     portalFooter?: string | null;
+    /** The address was generated at registration, not chosen (src/addresses.ts). */
+    addressGenerated?: boolean;
   }
 ): Promise<Tenant> {
   const id = crypto.randomUUID();
@@ -1055,8 +1244,8 @@ export async function createTenant(
 
   await db
     .prepare(
-      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at, address_generated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -1073,7 +1262,8 @@ export async function createTenant(
       data.portalDescription || null,
       data.portalFooter || null,
       now,
-      now
+      now,
+      data.addressGenerated ? 1 : 0
     )
     .run();
 
@@ -1097,7 +1287,9 @@ export async function createTenant(
     portal_description: data.portalDescription || null,
     portal_footer: data.portalFooter || null,
     created_at: now,
-    updated_at: now
+    updated_at: now,
+    address_generated: data.addressGenerated ? 1 : 0,
+    chosen_subdomain: null
   };
 }
 
@@ -1190,6 +1382,9 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "home_reset",
   "subdomain",
   "requested_subdomain",
+  "chosen_subdomain",
+  "feature_tip_dismissed_at",
+  "summary_dismissed_month",
   "status",
   "mode",
   "default_url",
@@ -1218,7 +1413,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_takedown_reason",
   "license_plan",
   "license_expires_at",
-  "remote_control_revoked_at"
+  "remote_control_revoked_at",
+  "trial_started_at"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */
@@ -1585,12 +1781,25 @@ export async function listAllTenants(
   return res.results || [];
 }
 
+/**
+ * The key a session is stored under: the SHA-256 of the browser's token, so a
+ * copy of the database holds no token a browser could present. Rows written
+ * before 0051 still hold the token itself (`hashed = 0`) until the hourly job
+ * or their next use rewrites them.
+ */
+export async function sessionKey(token: string): Promise<string> {
+  return sha256Hex(`session:${token}`);
+}
+
+/** Matches the row of one token, hashed or not yet. Binds the key, then the token. */
+const SESSION_MATCH = "((token = ? AND hashed = 1) OR (token = ? AND hashed = 0))";
+
 export async function createSession(db: D1Database, session: Session): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO sessions (token, user_id, tenant_id, role, expires_at, hashed) VALUES (?, ?, ?, ?, ?, 1)"
     )
-    .bind(session.token, session.user_id, session.tenant_id || null, session.role, session.expires_at)
+    .bind(await sessionKey(session.token), session.user_id, session.tenant_id || null, session.role, session.expires_at)
     .run();
 }
 
@@ -1633,26 +1842,50 @@ export async function pepperLegacyPasswordHashes(db: D1Database, pepper: string)
 export async function deleteSessionsForUser(db: D1Database, userId: string, keepToken?: string): Promise<void> {
   if (keepToken) {
     await db
-      .prepare("DELETE FROM sessions WHERE user_id = ? AND token != ?")
-      .bind(userId, keepToken)
+      .prepare(`DELETE FROM sessions WHERE user_id = ? AND NOT ${SESSION_MATCH}`)
+      .bind(userId, await sessionKey(keepToken), keepToken)
       .run();
     return;
   }
   await db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
 }
 
+/** The live session for a browser's token. `token` in the result is the token itself, never the stored key. */
 export async function getSession(db: D1Database, token: string): Promise<Session | null> {
   const now = Math.floor(Date.now() / 1000);
-  const session = await db
-    .prepare("SELECT * FROM sessions WHERE token = ? AND expires_at > ?")
-    .bind(token, now)
-    .first<Session>();
-
-  return session;
+  const key = await sessionKey(token);
+  const row = await db
+    .prepare(`SELECT token, user_id, tenant_id, role, expires_at, hashed FROM sessions WHERE ${SESSION_MATCH} AND expires_at > ?`)
+    .bind(key, token, now)
+    .first<Session & { hashed: number }>();
+  if (!row) return null;
+  if (!row.hashed) {
+    await db.prepare("UPDATE sessions SET token = ?, hashed = 1 WHERE token = ? AND hashed = 0").bind(key, token).run();
+  }
+  return { token, user_id: row.user_id, tenant_id: row.tenant_id, role: row.role, expires_at: row.expires_at };
 }
 
 export async function deleteSession(db: D1Database, token: string): Promise<void> {
-  await db.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
+  await db.prepare(`DELETE FROM sessions WHERE ${SESSION_MATCH}`).bind(await sessionKey(token), token).run();
+}
+
+/**
+ * Rewrite sessions stored before 0051 under the hash of their token. Hourly, a
+ * few hundred at a time; returns how many it rewrote.
+ */
+export async function hashLegacySessions(db: D1Database, limit = 500): Promise<number> {
+  const { results } = await db
+    .prepare("SELECT token FROM sessions WHERE hashed = 0 LIMIT ?")
+    .bind(limit)
+    .all<{ token: string }>();
+  if (!results.length) return 0;
+  const updates = await Promise.all(
+    results.map(async (r) =>
+      db.prepare("UPDATE sessions SET token = ?, hashed = 1 WHERE token = ? AND hashed = 0").bind(await sessionKey(r.token), r.token)
+    )
+  );
+  await db.batch(updates);
+  return results.length;
 }
 
 export async function listPortalSites(db: D1Database, tenantId: string): Promise<PortalSite[]> {
@@ -2023,12 +2256,12 @@ export async function countEnrolledWorkstations(db: D1Database, tenantId: string
  * workstation limit. A workstation that still holds a valid token is always
  * let back in, so lowering the limit never strands one already enrolled.
  * The limit check and the insert are one statement: two workstations enrolling
- * at once cannot both take the last place. `existingOnly` (an expired license)
- * lets only such a workstation back in.
+ * at once cannot both take the last place. `limit` is what the plan allows
+ * now (src/plans.ts entitlement), not necessarily tenants.workstation_limit.
  */
 export async function createDeviceToken(
   db: D1Database,
-  data: { tenantId: string; clientId: string; existingOnly?: boolean }
+  data: { tenantId: string; clientId: string; limit: number }
 ): Promise<{ token: string; device: DeviceToken } | null> {
   const token = generateDeviceToken();
   const tokenHash = await sha256Hex(token);
@@ -2040,8 +2273,7 @@ export async function createDeviceToken(
       `INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked)
        SELECT ?, ?, ?, ?, ?, ?, 0
        WHERE EXISTS (SELECT 1 FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0)
-          OR (? = 0 AND (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0)
-             < (SELECT workstation_limit FROM tenants WHERE id = ?))`
+          OR (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0) < ?`
     )
     .bind(
       id,
@@ -2052,9 +2284,8 @@ export async function createDeviceToken(
       now,
       data.tenantId,
       data.clientId,
-      data.existingOnly ? 1 : 0,
       data.tenantId,
-      data.tenantId
+      data.limit
     )
     .run();
   if (Number(inserted.meta?.changes ?? 0) === 0) return null;

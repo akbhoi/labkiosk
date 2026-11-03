@@ -12,12 +12,15 @@ import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
 import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
 import { LICENSE_PLANS, licenseDate, licensePlanLabel, licenseState } from "./license";
+import { PRICING } from "./plans";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { CUSTOM_HOSTNAMES_INCLUDED, CUSTOM_HOSTNAMES_MAX, CUSTOM_HOSTNAME_MONTHLY_USD, customHostnameBudget } from "./custom_hostnames";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
-import { renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
+import { renderStatusPaneHtml, renderStatusPaneScript } from "./ui_super_status";
+import { renderEducationPaneHtml, renderEducationScript } from "./ui_super_education";
+import { renderPartnersScript, renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
@@ -50,6 +53,8 @@ export interface SuperAdminOptions {
   activeTab?: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system";
   /** Open tasks and mail, and unread and deleted mail, for the badges (src/conversations.ts). */
   inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
+  /** Education applications waiting for a decision (src/education.ts). */
+  pendingEducation?: number;
   nonce: string;
 }
 
@@ -152,7 +157,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         <span class="badge badge-yellow mono">
           ${
             t.requested_subdomain
-              ? `<b>${escapeHtml(t.requested_subdomain)}</b> (was ${escapeHtml(t.subdomain)})`
+              ? `<b>${escapeHtml(t.requested_subdomain)}</b> (keeps ${escapeHtml(t.subdomain)})`
               : `<b>${escapeHtml(t.subdomain)}</b>`
           }
         </span>
@@ -291,7 +296,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
                 ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item menu-item-danger btn-suspend" role="menuitem" data-tenant="${escapeAttr(t.id)}">Suspend Organization</button>`
                 : t.status === "suspended"
                   ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item btn-reactivate" role="menuitem" data-tenant="${escapeAttr(t.id)}">Reactivate Organization</button>`
-                  : ""
+                  : t.status === "rejected"
+                    ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item menu-item-danger btn-remove-rejected" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-name="${escapeAttr(t.name)}">Remove Rejected Registration</button>`
+                    : ""
             }
           </div>
         </div>
@@ -365,6 +372,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     tasks: [
       { id: "requests", label: "Requests", count: inbox.openTasks, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>` },
       { id: "subdomains", label: "Subdomain changes", count: pendingList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>` },
+      { id: "education", label: "Education", count: data.pendingEducation ?? 0, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/></svg>` },
       { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
     ],
     support: [],
@@ -379,6 +387,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       { id: "system-hardware", label: "Hardware", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/></svg>` },
       { id: "system-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` },
       { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` },
+      { id: "system-status", label: "Status & incidents", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>` },
       { id: "system-notifications", label: "Notifications", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>` },
       { id: "system-legal", label: "Legal", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/></svg>` }
     ]
@@ -617,6 +626,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="tab-pane" id="pane-subdomains">
         ${subdomainRequestsCardHtml}
       </div>
+      <div class="tab-pane" id="pane-education">
+        ${renderEducationPaneHtml()}
+      </div>
       <div class="tab-pane" id="pane-custom-domains">
         ${customDomainsCardHtml}
       </div>
@@ -646,6 +658,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
       <div class="tab-pane" id="pane-system-two-factor">
         ${renderTwoFactorPaneHtml()}
+      </div>
+      <div class="tab-pane" id="pane-system-status">
+        ${renderStatusPaneHtml()}
       </div>
       <div class="tab-pane" id="pane-system-notifications">
         ${renderNotificationsPaneHtml(
@@ -726,7 +741,8 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
-${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderPlatformUsageScript(nonce) : ""}
+${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
+${activeTab === "tasks" ? renderEducationScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.
@@ -753,8 +769,8 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
           const tenantId = btn.dataset.tenant;
           const subdomain = btn.dataset.subdomain;
           const agreed = await lkConfirm({
-            title: "Move to '" + subdomain + "'?",
-            message: "The console and user portal for this organization move to that address straight away. Workstations enrolled against the old address need reconfiguring.",
+            title: "Grant '" + subdomain + "'?",
+            message: "The organization gets this address and its public homepage straight away. Its current address keeps working, so enrolled workstations are unaffected. A granted address is permanent.",
             confirmLabel: "Approve"
           });
           if (!agreed) return;
@@ -780,7 +796,7 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Decline this address change?",
+            title: "Decline this address?",
             message: "The organization keeps its current address. It can ask for a different one later.",
             confirmLabel: "Reject",
             tone: "danger"
@@ -866,8 +882,8 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const newSub = await lkPrompt({
-            title: "Assign a subdomain",
-            message: "The organization reaches its console and portal at this address. Changing it breaks the old one immediately.",
+            title: "Grant a chosen address",
+            message: "The organization reaches its console, portal and homepage at this address too. Its current address keeps working.",
             label: "Subdomain",
             placeholder: "greenwood",
             hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",
@@ -1015,33 +1031,38 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
       document.querySelectorAll(".btn-license").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const organization = btn.closest("tr").querySelector(".cell-title").textContent;
+          const WORDS = { free: "free", trial: "evaluation", subscription: "subscriber", education: "education", custom: "commercial" };
+          const NAMES = { evaluation: "trial", subscriber: "subscription", education: "education", commercial: "custom" };
           const plan = await lkPrompt({
-            title: "License of " + organization,
-            message: "Which grant of the license this organization runs under.",
+            title: "Plan of " + organization,
+            message: "Free covers ${PRICING.freeWorkstations} workstations. Trial, subscription, education and custom use the workstation limit until their end date, then the organization drops to Free. Custom is for contracts and complimentary licences.",
             label: "Plan",
-            value: btn.dataset.plan,
-            hint: "education, evaluation, subscriber or commercial.",
+            value: NAMES[btn.dataset.plan] || "free",
+            hint: "free, trial, subscription, education or custom.",
             confirmLabel: "Next"
           });
           if (!plan) return;
-          const planId = plan.toLowerCase();
-          if (!${JSON.stringify(LICENSE_PLANS.map((p) => p.id))}.includes(planId)) {
-            lkToast("The plan must be education, evaluation, subscriber or commercial.", "error");
+          const planId = WORDS[plan.trim().toLowerCase()] || plan.trim().toLowerCase();
+          if (!${JSON.stringify(["free", ...LICENSE_PLANS.map((p) => p.id)])}.includes(planId)) {
+            lkToast("The plan must be free, trial, subscription, education or custom.", "error");
             return;
           }
-          const ends = await lkPrompt({
-            title: "License of " + organization,
-            message: "Once this date has passed the organization enrols no new workstation and opens no Remote Control session. Enrolled workstations keep working.",
-            label: "End date",
-            value: btn.dataset.expires || "never",
-            hint: "A date as YYYY-MM-DD (00:00 UTC), or never.",
-            confirmLabel: "Save"
-          });
-          if (!ends) return;
-          const expiresOn = ends.toLowerCase() === "never" ? null : ends;
-          if (expiresOn !== null && !/^\\d{4}-\\d{2}-\\d{2}$/.test(expiresOn)) {
-            lkToast("Enter a date as YYYY-MM-DD, or never.", "error");
-            return;
+          let expiresOn = null;
+          if (planId !== "free") {
+            const ends = await lkPrompt({
+              title: "Plan of " + organization,
+              message: "After this date the organization is on Free: workstations beyond ${PRICING.freeWorkstations} show a licence notice and Remote Control stops. Set the workstation limit separately.",
+              label: "End date",
+              value: btn.dataset.expires || "never",
+              hint: "A date as YYYY-MM-DD (00:00 UTC), or never.",
+              confirmLabel: "Save"
+            });
+            if (!ends) return;
+            expiresOn = ends.toLowerCase() === "never" ? null : ends;
+            if (expiresOn !== null && !/^\\d{4}-\\d{2}-\\d{2}$/.test(expiresOn)) {
+              lkToast("Enter a date as YYYY-MM-DD, or never.", "error");
+              return;
+            }
           }
           try {
             const res = await fetch("/api/super/tenants/license", {
@@ -1065,7 +1086,7 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         btn.addEventListener("click", async () => {
           const value = await lkPrompt({
             title: "Workstation limit for " + btn.closest("tr").querySelector(".cell-title").textContent,
-            message: btn.dataset.enrolled + " workstations are enrolled now. A lower limit stops new enrolments only; nothing enrolled is cut off.",
+            message: btn.dataset.enrolled + " workstations are enrolled now. Those beyond a lower limit stay enrolled but show a licence notice, the ones seen least recently first.",
             label: "Workstations",
             value: btn.dataset.limit,
             hint: "A whole number from 1 to ${MAX_WORKSTATION_LIMIT}.",
@@ -1174,6 +1195,34 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
               window.location.reload();
             } else {
               lkToast(data.error || "Failed to suspend organization", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      document.querySelectorAll(".btn-remove-rejected").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const tenantId = btn.dataset.tenant;
+          const agreed = await lkConfirm({
+            title: "Remove " + (btn.dataset.name || "this registration") + "?",
+            message: "The rejected registration, its account and its registration task are deleted, and its email address and console address can be registered again. The record of the legal documents it accepted is kept. This cannot be undone here.",
+            confirmLabel: "Remove registration",
+            tone: "danger"
+          });
+          if (!agreed) return;
+          try {
+            const res = await fetch("/api/super/tenants/remove-rejected", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantId })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Failed to remove the registration", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");

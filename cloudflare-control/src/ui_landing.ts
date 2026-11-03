@@ -17,6 +17,8 @@
  *   - Escapes all server-rendered values via escapeHtml / escapeJson / safeHttpUrl
  */
 
+import { CertifiedModel, PublicReseller, certifiedLookup } from "./partners";
+import { PRICING } from "./plans";
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { fnv1a } from "./ui_layout";
 import { GEO_DATA_PATH } from "./geo";
@@ -27,6 +29,9 @@ import { SupportStatus } from "./releases";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
+import { FIREBASE_SDK_ORIGIN, FIREBASE_SDK_VERSION, FirebaseConfig } from "./phone_verify";
+import { ComponentStatus, Incident } from "./status";
+import { statusMainHtml } from "./ui_status_public";
 import { CONTACT_REASONS } from "./conversations";
 import { HardwareModel, PUBLIC_MODEL_MIN_ORGANIZATIONS } from "./hardware";
 
@@ -110,6 +115,8 @@ export interface LandingOptions {
   turnstileSiteKey?: string | null;
   /** False on an organization's own domain, where the sign-in form carries no check (the router says why). */
   loginTurnstile?: boolean;
+  /** Firebase's public web settings when registration proves the phone by a texted code (src/phone_verify.ts). */
+  firebase?: FirebaseConfig | null;
   /** On one organization's sign-in page: the single sign-on providers it offers (src/sso.ts). */
   sso?: { providers: ReadonlyArray<"google" | "microsoft">; tenantSlug: string };
 }
@@ -160,6 +167,26 @@ function renderPublicShell(
   const turnstileKey = data.turnstileSiteKey || null;
   const turnstileSlot = (id: string) => (turnstileKey ? `<div class="form-group turnstile-slot" id="${id}"></div>` : "");
   const loginTurnstileSlot = data.loginTurnstile === false ? "" : turnstileSlot("login-turnstile");
+  // Only the registration page texts a code, and only it is given Firebase's settings and their CSP.
+  const firebase = meta.authPage === "register" && data.firebase ? data.firebase : null;
+  const phoneHint = firebase
+    ? "Without the country code or a leading 0. We text a code to this number to confirm it."
+    : "Without the country code or a leading 0. We call or message this number to confirm it before approval.";
+  const smsHtml = firebase
+    ? `
+              <div class="code-row" style="margin-top: 8px;">
+                <button type="button" class="btn btn-ghost" id="reg-sms-send">Text me a code</button>
+              </div>
+              <div id="reg-sms-code-group" hidden style="margin-top: 8px;">
+                <label class="form-label" for="reg-sms-code">Six-digit code from the text message</label>
+                <div class="code-row">
+                  <input type="text" class="form-input" id="reg-sms-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+                  <button type="button" class="btn btn-ghost" id="reg-sms-verify">Verify</button>
+                </div>
+              </div>
+              <div class="input-hint" id="reg-sms-status" role="status" aria-live="polite"></div>
+              <div id="reg-sms-recaptcha"></div>`
+    : "";
   // Turnstile's script, and the challenge each widget runs, load only on a page whose form has a slot.
   const turnstileOnPage =
     Boolean(turnstileKey) && (meta.turnstile === true || meta.authPage === "register" || (meta.authPage === "login" && Boolean(loginTurnstileSlot)));
@@ -362,14 +389,6 @@ ${FONT_LINKS}
               <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
             </div>
           </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-subdomain">Console address</label>
-            <div class="code-row">
-              <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
-              <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
-            </div>
-            <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
-          </div>
 
           <div class="form-legend">Technical contact</div>
           <div class="form-split">
@@ -393,8 +412,8 @@ ${FONT_LINKS}
                 </div>
                 <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
               </div>
-              <div class="input-hint" id="reg-phone-hint">Without the country code or a leading 0. We call or message this number to confirm it before approval.</div>
-              <div class="field-error" id="reg-phone-error" role="alert"></div>
+              <div class="input-hint" id="reg-phone-hint">${phoneHint}</div>
+              <div class="field-error" id="reg-phone-error" role="alert"></div>${smsHtml}
             </div>
           </div>
           <div class="form-group">
@@ -551,6 +570,7 @@ ${FONT_LINKS}
           <li><a href="/docs">Documentation</a></li>
           <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
           <li><a href="/#faq">FAQ</a></li>
+          <li><a href="/status">System status</a></li>
         </ul>
       </div>
 
@@ -566,7 +586,7 @@ ${FONT_LINKS}
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Free only for accredited educational institutions and non-commercial evaluation up to 45 computers • Commercial or subscriber license for everyone else</div>
+      <div>&copy; 2026 Lab Kiosk OS • Free on ${PRICING.freeWorkstations} workstations • ${PRICING.trialDays}-day free trial • Free for verified education institutions • <a href="/pricing">Plans &amp; pricing</a></div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login">Sign In</a>
         <a href="/register">Register Organization</a>
@@ -574,6 +594,7 @@ ${FONT_LINKS}
         <a href="/terms">Terms of Service</a>
         <a href="/content-policy">Content Policy</a>
         <a href="/dpa">Data Processing Agreement</a>
+        <a href="/refunds">Refund &amp; Cancellation</a>
         <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
         <a href="/#security">Security</a>
       </div>
@@ -773,6 +794,9 @@ ${FONT_LINKS}
     // the registration code, one in front of the contact form's code and one in
     // front of sign-in. A token works once, so each widget is reset after every attempt.
     const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
+    // Firebase's public web settings, on the registration page when it texts a code to the phone.
+    const FIREBASE = ${escapeJson(firebase)};
+    const FIREBASE_SDK = ${escapeJson(`${FIREBASE_SDK_ORIGIN}/firebasejs/${FIREBASE_SDK_VERSION}`)};
     const turnstileWidgets = {};
     window.lkTurnstileReady = function () {
       const actions = { 'reg-turnstile': 'signup', 'contact-turnstile': 'contact', 'login-turnstile': 'login' };
@@ -816,6 +840,13 @@ ${FONT_LINKS}
       const wantedReason = new URLSearchParams(window.location.search).get('reason');
       const reasonSelect = document.getElementById('contact-reason');
       if (wantedReason && Array.from(reasonSelect.options).some((o) => o.value === wantedReason)) reasonSelect.value = wantedReason;
+      // Become a reseller asks for the listing's details as well.
+      const resellerFields = document.getElementById('contact-reseller');
+      function resellerShow() {
+        resellerFields.hidden = reasonSelect.value !== 'reseller';
+      }
+      reasonSelect.addEventListener('change', resellerShow);
+      resellerShow();
       // "Report this page" on an organization's hosted page arrives with that page's address.
       const reported = new URLSearchParams(window.location.search).get('report');
       if (reported && /^https?:\\/\\/\\S{1,500}$/.test(reported) && !contactMessage.value) {
@@ -870,6 +901,15 @@ ${FONT_LINKS}
           reason: reasonSelect.value,
           message: contactMessage.value.trim()
         };
+        if (reasonSelect.value === 'reseller') {
+          for (const field of ['phone', 'state', 'city', 'website', 'stocks']) {
+            payload[field] = document.getElementById('contact-' + field).value.trim();
+          }
+          if (!payload.organization || !payload.phone || !payload.state || !payload.city) {
+            contactError('A reseller listing needs your company name (under Organization), a phone number, the state and the city.');
+            return;
+          }
+        }
         if (!payload.name || !payload.email || !payload.message) {
           contactError('Your name, email address and a message are required.');
           return;
@@ -1347,7 +1387,7 @@ ${FONT_LINKS}
       dialButton.classList.remove('is-invalid');
       document.getElementById('reg-phone-hint').textContent =
         (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
-        'We call or message this number to confirm it before approval.';
+        (FIREBASE ? 'We text a code to this number to confirm it.' : 'We call or message this number to confirm it before approval.');
       checkPhone(true);
       if (!regCountry.value) {
         regCountry.value = row[0];
@@ -1508,6 +1548,102 @@ ${FONT_LINKS}
 
     loadGeo();
 
+    // ---- Registration: the phone is proved by a code Firebase texts to it
+    // (src/phone_verify.ts). Firebase hands back an ID token naming the number;
+    // the server checks it, so the token is all this page keeps. Changing the
+    // number or its country code discards it.
+    let phoneToken = '';
+    let phoneTokenFor = '';
+    let smsConfirmation = null;
+    let firebaseAuth = null;
+    let smsVerifier = null;
+    function smsStatus(message) {
+      document.getElementById('reg-sms-status').textContent = message;
+    }
+    function typedPhone() {
+      const digits = checkPhone(true);
+      return dialCountry && digits ? '+' + dialCountry[2] + digits : '';
+    }
+    async function firebaseModules() {
+      const appModule = await import(FIREBASE_SDK + '/firebase-app.js');
+      const authModule = await import(FIREBASE_SDK + '/firebase-auth.js');
+      if (!firebaseAuth) {
+        const app = appModule.initializeApp(FIREBASE);
+        // Nothing of the phone sign-in is kept in the browser: the token goes with the form.
+        firebaseAuth = authModule.initializeAuth(app, { persistence: authModule.inMemoryPersistence });
+      }
+      return authModule;
+    }
+    if (FIREBASE) {
+      const smsSend = document.getElementById('reg-sms-send');
+      const smsVerify = document.getElementById('reg-sms-verify');
+      const forget = () => {
+        if (phoneToken && typedPhone() !== phoneTokenFor) {
+          phoneToken = '';
+          phoneTokenFor = '';
+          smsStatus('The number changed. Text a code to the new number.');
+        }
+      };
+      regPhone.addEventListener('change', forget);
+      smsSend.addEventListener('click', async () => {
+        registerAlert.style.display = 'none';
+        const phone = typedPhone();
+        if (!phone) {
+          registerError('Choose the country code and enter your phone number first.');
+          regPhone.focus();
+          return;
+        }
+        if (!/^[0-9]{6}$/.test(document.getElementById('reg-code').value.trim())) {
+          registerError('Enter the six-digit code we emailed you first, then ask for the text message.');
+          document.getElementById('reg-code').focus();
+          return;
+        }
+        smsSend.disabled = true;
+        smsStatus('Sending a code to ' + phone + '...');
+        try {
+          const auth = await firebaseModules();
+          if (!smsVerifier) smsVerifier = new auth.RecaptchaVerifier(firebaseAuth, 'reg-sms-recaptcha', { size: 'invisible' });
+          smsConfirmation = await auth.signInWithPhoneNumber(firebaseAuth, phone, smsVerifier);
+          phoneTokenFor = phone;
+          document.getElementById('reg-sms-code-group').hidden = false;
+          document.getElementById('reg-sms-code').focus();
+          smsStatus('We texted a code to ' + phone + '. It can take a minute to arrive.');
+          setTimeout(() => { smsSend.disabled = false; smsSend.textContent = 'Text a new code'; }, 60000);
+          return;
+        } catch (err) {
+          const code = err && err.code ? String(err.code) : '';
+          smsStatus('');
+          registerError(
+            code === 'auth/invalid-phone-number' ? 'That phone number is not valid. Check the country code and the number.'
+            : code === 'auth/too-many-requests' ? 'Too many codes were asked for this number. Try again later, or write to us.'
+            : code === 'auth/operation-not-allowed' ? 'We cannot text numbers in this country yet. Please write to us to register.'
+            : 'The text message could not be sent. Try again in a moment.'
+          );
+          if (smsVerifier) { smsVerifier.clear(); smsVerifier = null; }
+        }
+        smsSend.disabled = false;
+      });
+      smsVerify.addEventListener('click', async () => {
+        registerAlert.style.display = 'none';
+        const code = document.getElementById('reg-sms-code').value.trim();
+        if (!smsConfirmation || !/^[0-9]{6}$/.test(code)) {
+          registerError('Enter the six-digit code from the text message.');
+          return;
+        }
+        smsVerify.disabled = true;
+        try {
+          const result = await smsConfirmation.confirm(code);
+          phoneToken = await result.user.getIdToken();
+          smsStatus('Phone number verified.');
+          document.getElementById('reg-sms-code-group').hidden = true;
+        } catch (err) {
+          const expired = err && err.code === 'auth/code-expired';
+          registerError(expired ? 'That code has expired. Text a new one.' : 'That code is not correct.');
+        }
+        smsVerify.disabled = false;
+      });
+    }
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       registerAlert.style.display = 'none';
@@ -1518,6 +1654,11 @@ ${FONT_LINKS}
         dialButton.focus();
         return;
       }
+      if (FIREBASE && (!phoneToken || phoneTokenFor !== '+' + dialCountry[2] + phoneDigits)) {
+        registerError('Verify your phone number: use Text me a code, then enter the code we text you.');
+        document.getElementById('reg-sms-send').focus();
+        return;
+      }
       const value = (id) => document.getElementById(id).value.trim();
       const workstations = parseInt(value('reg-workstations'), 10);
       const payload = {
@@ -1525,9 +1666,9 @@ ${FONT_LINKS}
         legalName: value('reg-legal-name'),
         organizationType: value('reg-type'),
         workstationEstimate: Number.isFinite(workstations) ? workstations : null,
-        subdomain: value('reg-subdomain').toLowerCase(),
         contactName: value('reg-contact-name'),
         phone: '+' + dialCountry[2] + phoneDigits,
+        phoneToken: FIREBASE ? phoneToken : undefined,
         email: value('reg-email'),
         emailCode: value('reg-code'),
         password: document.getElementById('reg-password').value,
@@ -1741,7 +1882,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="audience-info">
             <span class="badge badge-blue" style="margin-bottom: 12px;">Schools, Colleges &amp; Universities</span>
             <h3>Computer Labs and Secure Assessments</h3>
-            <p>Run school computer labs, coding practicals and invigilated assessments on the same locked-down image, across one room or hundreds of campus workstations. Free for accredited educational institutions up to 45 computers.</p>
+            <p>Run school computer labs, coding practicals and invigilated assessments on the same locked-down image, across one room or hundreds of campus workstations. Free for verified education institutions, on up to ${PRICING.educationWorkstations} computers.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
@@ -1813,7 +1954,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; font-weight: 700; color: var(--text-main);">Lab Kiosk</td>
-                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free for education &le; 45 PCs; commercial license otherwise</td>
+                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free on ${PRICING.freeWorkstations} PCs; &#8377;${PRICING.monthly.toLocaleString("en-IN")}/month for ${PRICING.includedWorkstations}</td>
               </tr>
             </table>
             <a class="btn btn-primary btn-block" href="/register">Register Your Organization</a>
@@ -1997,8 +2138,8 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
           </div>
-          <h3 class="feature-title">Custom Organization Subdomains</h3>
-          <p class="feature-desc">Every organization gets its own custom subdomain (e.g. <code>greenwood.${escapeHtml(baseDomain)}</code>). Thin clients connect separately and remain 100% isolated to your organization's private dashboard.</p>
+          <h3 class="feature-title">Your Own Console Address</h3>
+          <p class="feature-desc">Every organization gets its own console address. Ask for one you choose (e.g. <code>greenwood.${escapeHtml(baseDomain)}</code>) with a public homepage, or bring your own domain. Thin clients stay isolated to your organization's private dashboard.</p>
         </div>
 
         <div class="feature-card">
@@ -2161,7 +2302,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 13 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free for non-profit, accredited schools, colleges and universities, and for non-commercial evaluation and research, on up to 45 computers. Any deployment with more than 45 computers, or by a business, needs a commercial or subscriber license.
+            Yes, on up to ${PRICING.freeWorkstations} workstations, with no end date. For a whole site, try the subscription free for ${PRICING.trialDays} days, then it is &#8377;${PRICING.monthly.toLocaleString("en-IN")} a month or &#8377;${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. See <a href="/pricing">Plans &amp; pricing</a>. To host it yourself, the source is available under the LabKiosk Software License: free for accredited educational institutions and non-commercial evaluation on up to 45 computers, and a commercial license for everyone else.
           </div>
         </div>
 
@@ -2171,7 +2312,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Register on this website and we review the request. Once it is approved you receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
+            Register on this website and we review the request. Once it is approved you receive your console address and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
           </div>
         </div>
       </div>
@@ -2503,7 +2644,67 @@ function specsMainHtml(): string {
     </section>`;
 }
 
-function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): string {
+function hardwareMainHtml(
+  models: HardwareModel[],
+  computedAt: number | null,
+  certified: CertifiedModel[],
+  resellers: PublicReseller[]
+): string {
+  const isCertified = certifiedLookup(certified);
+  const day = (seconds: number) => new Date(seconds * 1000).toISOString().slice(0, 10);
+  const certifiedRows = certified
+    .map(
+      (c) => `
+            <tr>
+              <td><strong>${escapeHtml(c.vendor)}</strong></td>
+              <td>${escapeHtml(c.model)}</td>
+              <td>${escapeHtml(day(c.certifiedAt))}</td>
+              <td>${c.note ? escapeHtml(c.note) : "\u2014"}</td>
+            </tr>`
+    )
+    .join("");
+  const certifiedHtml = certified.length
+    ? `
+      <h2 class="hw-state" id="certified">Certified models</h2>
+      <p class="docs-source">We tested these ourselves: each starts, plays video with hardware decoding and stays on the network on the current release.</p>
+      <div class="specs-table-container">
+        <table class="specs-table">
+          <thead><tr><th>Manufacturer</th><th>Model</th><th>Certified on</th><th>Notes</th></tr></thead>
+          <tbody>${certifiedRows}
+          </tbody>
+        </table>
+      </div>
+      <h2 class="hw-state">In use</h2>`
+    : "";
+  const states = new Map<string, PublicReseller[]>();
+  for (const r of resellers) states.set(r.state, [...(states.get(r.state) ?? []), r]);
+  const resellersHtml = resellers.length
+    ? `
+    <section class="section-wrap" style="padding-top: 0;" id="resellers">
+      <h2 class="section-title">Where to buy</h2>
+      <p class="docs-source">Resellers who sell and set up computers for Lab Kiosk. They are independent businesses; we list them, we do not take a share.</p>
+      ${[...states.entries()]
+        .map(
+          ([state, list]) => `
+      <h3 class="hw-state">${escapeHtml(state)}</h3>
+      <div class="hw-resellers">${list
+        .map((r) => {
+          const site = r.website ? safeHttpUrl(r.website) : null;
+          return `
+        <article class="hw-reseller">
+          <h3>${escapeHtml(r.company)}</h3>
+          <p>${escapeHtml(r.city)}</p>
+          ${r.stocks ? `<p>Stocks: ${escapeHtml(r.stocks)}</p>` : ""}
+          <p><a href="tel:${escapeAttr(r.phone.replace(/[^0-9+]/g, ""))}">${escapeHtml(r.phone)}</a> · <a href="mailto:${escapeAttr(r.email)}">${escapeHtml(r.email)}</a></p>
+          ${site ? `<p><a href="${escapeAttr(site)}" target="_blank" rel="noopener noreferrer nofollow">${escapeHtml(new URL(site).hostname)}</a></p>` : ""}
+        </article>`;
+        })
+        .join("")}
+      </div>`
+        )
+        .join("")}
+    </section>`
+    : "";
   const percent = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "\u2014");
   const memory = (mb: number | null) => (mb === null ? "\u2014" : mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${mb} MB`);
   const rows = models
@@ -2511,7 +2712,7 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
       (m) => `
             <tr>
               <td><strong>${escapeHtml(m.vendor)}</strong></td>
-              <td>${escapeHtml(m.model)}</td>
+              <td>${escapeHtml(m.model)}${isCertified(m.vendor, m.model) ? ` <span class="hw-certified">Certified</span>` : ""}</td>
               <td>${m.organizations}</td>
               <td>${m.workstations}</td>
               <td>${percent(m.uefi, m.workstations)}</td>
@@ -2529,7 +2730,7 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
       </p>
     </section>
 
-    <section class="section-wrap" style="padding-top: 0;">
+    <section class="section-wrap" style="padding-top: 0;">${certifiedHtml}
       <div class="specs-table-container">
         <table class="specs-table">
           <thead>
@@ -2552,125 +2753,122 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
         </table>
       </div>
       <p class="docs-source">${updated ? `Counted on ${escapeHtml(updated)}, from each workstation's latest start. ` : ""}The minimum and recommended hardware are on the <a href="/specs">specifications page</a>.</p>
+    </section>${resellersHtml}
+    <section class="section-wrap" style="padding-top: 0;">
+      <p class="docs-source">Do you sell or service computers? <a href="/contact?reason=reseller">Become a reseller</a> and be listed here once we approve you.</p>
     </section>`;
 }
 
+/** /status: the platform's checks and incidents (src/status.ts). */
+export function renderPlatformStatusHtml(data: LandingOptions, components: ComponentStatus[], incidents: Incident[], nowSeconds: number): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk Status",
+    description: "Whether the Lab Kiosk console, workstation connections, email and updates are working, and the incidents of the last 90 days.",
+    // Not in the top navigation; naming a page keeps Home from being marked as the current one.
+    activeNav: "status",
+    mainHtml: statusMainHtml(components, incidents, nowSeconds)
+  });
+}
+
 /** /hardware: the models enough organizations run, from their workstations' own reports (src/hardware.ts). */
-export function renderHardwareHtml(data: LandingOptions, models: HardwareModel[], computedAt: number | null): string {
+export function renderHardwareHtml(
+  data: LandingOptions,
+  models: HardwareModel[],
+  computedAt: number | null,
+  certified: CertifiedModel[] = [],
+  resellers: PublicReseller[] = []
+): string {
   return renderPublicShell(data, {
     title: "Lab Kiosk OS - Hardware Organizations Run It On",
     description: `The computer models at least ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run Lab Kiosk on, counted from their workstations' own reports.`,
     activeNav: "specs",
-    mainHtml: hardwareMainHtml(models, computedAt)
+    mainHtml: hardwareMainHtml(models, computedAt, certified, resellers)
   });
 }
 
 function pricingMainHtml(): string {
+  const p = PRICING;
+  const tick = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
+  const list = (items: string[]) => `<ul class="pricing-features">${items.map((i) => `<li>${tick}<span>${i}</span></li>`).join("")}</ul>`;
+  const inr = (n: number) => `&#8377;${n.toLocaleString("en-IN")}`;
   return `
     <section class="page-hero">
       <div class="hero-badge-container">
-        <span class="badge badge-blue">Licensing &amp; Deployment</span>
-        <span class="badge badge-green">Accredited Education Grant</span>
+        <span class="badge badge-blue">Plans &amp; Pricing</span>
+        <span class="badge badge-green">${p.trialDays}-day free trial</span>
       </div>
-      <h1 class="page-hero-title">Transparent Licensing &amp; <span>Deployment Tiers</span></h1>
+      <h1 class="page-hero-title">Simple plans, <span>priced per site</span></h1>
       <p class="page-hero-desc">
-        Source-available software with grants for accredited education and transparent commercial terms for enterprise fleets.
+        Start free on ${p.freeWorkstations} workstations, try the full subscription for ${p.trialDays} days, and pay only when you are sure. Verified education institutions use it free.
       </p>
     </section>
 
     <section class="section-wrap" style="padding-top: 0;">
-      <div class="pricing-grid">
+      <div class="pricing-grid pricing-grid-4">
         <div class="pricing-card">
-          <h2 class="pricing-tier">Accredited Education Grant</h2>
-          <div class="pricing-sub">For accredited educational institutions and non-commercial evaluation.</div>
-          <div class="pricing-price">Grant / Free <small>up to 45 computers</small></div>
-          <ul class="pricing-features">
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Up to 45 managed workstations</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Accredited educational institutions &amp; non-commercial evaluation</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Tamper-proof OS &amp; managed Chromium</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Central web management console</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Dedicated organization subdomain</span>
-            </li>
-          </ul>
-          <a class="btn btn-primary btn-block" href="/register">Apply for Education Grant</a>
+          <h2 class="pricing-tier">Free</h2>
+          <div class="pricing-sub">For trying Lab Kiosk on a few computers, for as long as you like.</div>
+          <div class="pricing-price">${inr(0)} <small>forever</small></div>
+          ${list([
+            `Up to ${p.freeWorkstations} workstations`,
+            "Tamper-proof OS and managed Chromium",
+            "Central web console and User Portal",
+            "Your own console address"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/register">Create a free account</a>
         </div>
 
         <div class="pricing-card featured">
-          <div class="pricing-card-badge">Production Standard</div>
-          <h2 class="pricing-tier">Commercial &amp; Large Fleet</h2>
-          <div class="pricing-sub">For companies, public services, libraries, and deployments of 46+ computers.</div>
-          <div class="pricing-price">Commercial License <small>per workstation fleet</small></div>
-          <ul class="pricing-features">
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Unlimited workstations across multiple facilities</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Real-time thumbnail grid &amp; VNC remote control</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Granular staff delegation &amp; audit logging</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Custom domain support (e.g. kiosk.yourdomain.com)</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Priority onboarding &amp; dedicated support SLA</span>
-            </li>
-          </ul>
-          <a class="btn btn-primary btn-block" href="/contact">Contact Sales &amp; Licensing</a>
+          <div class="pricing-card-badge">${p.trialDays} days free</div>
+          <h2 class="pricing-tier">Subscription</h2>
+          <div class="pricing-sub">For a site of up to ${p.includedWorkstations} computers, and more when you need them.</div>
+          <div class="pricing-price">${inr(p.monthly)} <small>a month</small></div>
+          <p class="pricing-sub" style="min-height: 0; margin-top: -16px;">or ${inr(p.yearly)} a year, two months free. Plus ${p.gstPercent}% GST.</p>
+          ${list([
+            `${p.includedWorkstations} workstations included`,
+            `${inr(p.extraMonthly)} a month (${inr(p.extraYearly)} a year) for each one more, up to ${p.salesAbove}`,
+            "Live screens, exam mode and Remote Control",
+            "Staff roles, audit log and custom domain",
+            `Try it all free for ${p.trialDays} days, no card needed`
+          ])}
+          <a class="btn btn-primary btn-block" href="/register">Start the free trial</a>
         </div>
 
         <div class="pricing-card">
-          <h2 class="pricing-tier">Self-Hosted Infrastructure</h2>
-          <div class="pricing-sub">For air-gapped facilities or internal infrastructure mandates.</div>
-          <div class="pricing-price">Source-Available <small>self-deployed</small></div>
-          <ul class="pricing-features">
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Deploy control plane on your Cloudflare account</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Build customized Debian 13 ISOs via Docker, for your own platform</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Full control over D1 data and telemetry retention</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Commercial or subscriber license required for commercial use</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Technical architecture documentation &amp; guides</span>
-            </li>
-          </ul>
-          <a href="/docs" class="btn btn-ghost btn-block">Read Self-Host Docs</a>
+          <h2 class="pricing-tier">Education</h2>
+          <div class="pricing-sub">For institutions recognised by an education board, university or regulator.</div>
+          <div class="pricing-price">${inr(0)} <small>after verification</small></div>
+          ${list([
+            `${p.educationWorkstations} workstations, everything in the subscription`,
+            "Apply from Plan in your console with your affiliation certificate",
+            "An official email on your institution's own domain",
+            "Checked by hand, renewed every year"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/register">Register, then apply</a>
+        </div>
+
+        <div class="pricing-card">
+          <h2 class="pricing-tier">Large deployments</h2>
+          <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
+          <div class="pricing-price">Custom <small>quote</small></div>
+          ${list([
+            "Any number of workstations and sites",
+            "Volume pricing and annual invoicing",
+            "Priority onboarding and support",
+            "Help with certified hardware and resellers"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/contact?reason=sales">Contact sales</a>
         </div>
       </div>
 
       <div class="docs-callout" style="margin-top: 48px; border-left-color: var(--accent);">
-        <strong>Licensing Notice:</strong> Free only for accredited educational institutions and non-commercial evaluation up to 45 computers; commercial or subscriber license for everyone else. Any deployment with 46 or more computers, or utilized by commercial entities, requires a commercial or subscriber license.
+        <strong>Payments:</strong> prepaid by the month or the year through Razorpay, never renewed without you, and not refundable; see the <a href="/refunds">Refund &amp; Cancellation Policy</a>. Try the Free plan and the ${p.trialDays}-day trial first.
+      </div>
+      <div class="docs-callout" style="margin-top: 16px;">
+        <strong>How the limit works:</strong> each plan covers a number of workstations. If a plan ends, the organization is back on Free: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, and nothing is deleted.
+      </div>
+      <div class="docs-callout" style="margin-top: 16px;">
+        <strong>Self-hosting:</strong> the source is available to run the control plane on your own Cloudflare account. Self-hosted use is free only for accredited educational institutions and non-commercial evaluation on up to 45 computers, under the <a href="/terms">LabKiosk Software License</a>; everyone else needs a commercial license. <a href="/docs">Read the self-host docs</a>.
       </div>
     </section>`;
 }
@@ -3060,8 +3258,8 @@ export function renderSpecsHtml(data: LandingOptions): string {
 
 export function renderPricingHtml(data: LandingOptions): string {
   return renderPublicShell(data, {
-    title: "Lab Kiosk OS - Transparent Licensing & Deployment Tiers",
-    description: "Transparent licensing: grants for accredited educational institutions and non-commercial evaluation up to 45 computers; commercial and subscriber licensing for organizations.",
+    title: "Lab Kiosk OS - Plans & Pricing",
+    description: `Free on ${PRICING.freeWorkstations} workstations, a ${PRICING.trialDays}-day free trial, and a subscription of ₹${PRICING.monthly.toLocaleString("en-IN")} a month or ₹${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Free for verified education institutions.`,
     activeNav: "pricing",
     mainHtml: pricingMainHtml()
   });
@@ -3102,6 +3300,34 @@ function contactMainHtml(data: LandingOptions): string {
               ).join("")}
               </select>
             </div>
+            <fieldset class="contact-reseller" id="contact-reseller" hidden>
+              <legend class="form-label">Your listing on the hardware page</legend>
+              <div class="input-hint">Enter your company's name under Organization. Once we approve it, your company appears on the <a href="/hardware">hardware page</a> with these details and your email address.</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="contact-phone">Phone for customers</label>
+                  <input type="tel" class="form-input" id="contact-phone" maxlength="40" placeholder="+91 98765 43210" autocomplete="tel">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="contact-website">Website <span class="form-optional">(optional)</span></label>
+                  <input type="url" class="form-input" id="contact-website" maxlength="300" placeholder="https://example.com" autocomplete="url">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="contact-state">State</label>
+                  <input type="text" class="form-input" id="contact-state" maxlength="80" placeholder="Odisha" autocomplete="address-level1">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="contact-city">City</label>
+                  <input type="text" class="form-input" id="contact-city" maxlength="80" placeholder="Bhubaneswar" autocomplete="address-level2">
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="contact-stocks">Models you stock <span class="form-optional">(optional)</span></label>
+                <input type="text" class="form-input" id="contact-stocks" maxlength="500" placeholder="Lenovo ThinkCentre M70q, Dell OptiPlex 3000">
+              </div>
+            </fieldset>
             <div class="form-group">
               <label class="form-label" for="contact-email">Your email address</label>
               <div class="code-row">
@@ -4145,6 +4371,8 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       align-items: stretch;
       margin-top: 36px;
     }
+    .pricing-grid-4 { grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 20px; }
+    .pricing-grid-4 .pricing-card { padding: 32px 22px; }
     .pricing-card {
       background: var(--bg-surface);
       border: 1px solid var(--border);
@@ -4337,6 +4565,16 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     }
     .docs-callout strong { color: var(--text-main); }
     /* The contact page. */
+    .contact-reseller { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 2px; margin: 0 0 18px; min-width: 0; }
+    .contact-reseller[hidden] { display: none; }
+    .contact-reseller legend { padding: 0 6px; }
+    .contact-reseller > .input-hint { margin: 0 0 12px; }
+    .hw-certified { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--success-soft); color: var(--success-text); vertical-align: middle; }
+    .hw-resellers { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
+    .hw-reseller { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 16px; overflow-wrap: anywhere; }
+    .hw-reseller h3 { font-size: 1rem; margin: 0 0 4px; }
+    .hw-reseller p { margin: 4px 0; color: var(--text-muted); font-size: 0.875rem; }
+    .hw-state { margin: 28px 0 0; font-size: 1.0625rem; }
     .contact-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 32px; align-items: start; max-width: 1040px; margin: 0 auto; }
     .contact-form-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg, 14px); padding: 28px; text-align: left; }
     .contact-form-card .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }

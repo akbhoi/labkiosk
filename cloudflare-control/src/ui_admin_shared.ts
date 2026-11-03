@@ -3,6 +3,7 @@
  * and the header counters.
  */
 
+import type { MonthlySummary } from "./monthly_summary";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { escapeAttr, escapeJson } from "./escape";
 
@@ -24,6 +25,10 @@ export interface AdminPageInput {
   accountOnly?: boolean;
   /** The account holds the `updates` permission: check for and install system updates. */
   canUpdate?: boolean;
+  /** The account holds the `settings` permission: it can ask for Remote Control or a chosen address. */
+  canSettings?: boolean;
+  /** Last month's summary, for Workstations (src/monthly_summary.ts). */
+  monthlySummary?: MonthlySummary | null;
   /** The account is an administrator of the organization (its owner or an `org_admin`): Remote Control. */
   canRemoteControl?: boolean;
   nonce: string;

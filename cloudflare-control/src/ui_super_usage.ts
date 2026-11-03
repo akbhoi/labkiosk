@@ -61,11 +61,220 @@ export function renderPlatformHardwarePaneHtml(): string {
           <p class="form-hint" id="platform-hardware-at"></p>
           <div class="table-container table-scrollable">
             <table>
-              <thead><tr><th>Maker</th><th>Model</th><th>Organizations</th><th>Workstations</th><th>UEFI</th><th>Touchscreen</th><th>Least memory</th><th>Public</th></tr></thead>
-              <tbody id="platform-hardware-rows"><tr><td colspan="8" class="table-empty">Loading…</td></tr></tbody>
+              <thead><tr><th>Maker</th><th>Model</th><th>Organizations</th><th>Workstations</th><th>UEFI</th><th>Touchscreen</th><th>Least memory</th><th>Public</th><th class="th-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+              <tbody id="platform-hardware-rows"><tr><td colspan="9" class="table-empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card mt-lg" id="platform-certified">
+          <h2 class="card-title">Certified models</h2>
+          <p class="card-sub">Shown first on <a href="/hardware">/hardware</a> with the date, whether or not ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run them. Certify a model once it starts, plays video with hardware decoding and stays on the network on the current release. Use Certify in the table above, or type the maker and model as workstations report them.</p>
+          <div class="table-container table-scrollable">
+            <table>
+              <thead><tr><th>Maker</th><th>Model</th><th>Certified on</th><th>Note</th><th class="th-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+              <tbody id="platform-certified-rows"><tr><td colspan="5" class="table-empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <form id="form-certify" class="mt-lg" novalidate>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="certify-vendor">Maker</label>
+                <input type="text" class="form-input" id="certify-vendor" maxlength="120" required>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="certify-model">Model</label>
+                <input type="text" class="form-input" id="certify-model" maxlength="160" required>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="certify-note">Note (optional, public)</label>
+              <input type="text" class="form-input" id="certify-note" maxlength="300" placeholder="Needs BIOS 1.20 or later for UEFI boot">
+            </div>
+            <div class="form-actions"><button type="submit" class="btn btn-primary">Certify model</button></div>
+          </form>
+        </div>
+
+        <div class="card mt-lg" id="platform-resellers">
+          <h2 class="card-title">Resellers</h2>
+          <p class="card-sub">Companies apply with the contact form ("Become a reseller"); the message is in Mail under Sales. Approved resellers are listed on <a href="/hardware#resellers">/hardware</a> by state and city, and the directory appears there with the first one. Approving emails them.</p>
+          <div class="table-container table-scrollable">
+            <table>
+              <thead><tr><th>Company</th><th>Place</th><th>Contact</th><th>Stocks</th><th>Status</th><th class="th-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+              <tbody id="platform-reseller-rows"><tr><td colspan="6" class="table-empty">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>`;
+}
+
+/** Super Admin -> System -> Hardware: certified models and reseller applications (src/partners.ts). */
+export function renderPartnersScript(nonce: string): string {
+  return `
+    <script nonce="${escapeAttr(nonce)}">
+${WHEN_PANE_SHOWN_JS}
+      (function () {
+        const card = document.getElementById("platform-certified");
+        if (!card) return;
+        const certifiedRows = document.getElementById("platform-certified-rows");
+        const resellerRows = document.getElementById("platform-reseller-rows");
+        const form = document.getElementById("form-certify");
+        const vendor = document.getElementById("certify-vendor");
+        const model = document.getElementById("certify-model");
+        const note = document.getElementById("certify-note");
+        const STATUS = { pending: ["Waiting", "badge-yellow"], approved: ["Listed", "badge-green"], rejected: ["Not listed", "badge-neutral"] };
+
+        function cell(text, className) {
+          const td = document.createElement("td");
+          td.textContent = text;
+          if (className) td.className = className;
+          return td;
+        }
+        function empty(body, columns, text) {
+          const row = document.createElement("tr");
+          const td = cell(text, "table-empty");
+          td.colSpan = columns;
+          row.appendChild(td);
+          body.replaceChildren(row);
+        }
+        function button(label, className, onClick) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn btn-sm " + className;
+          b.textContent = label;
+          b.addEventListener("click", onClick);
+          return b;
+        }
+        async function post(path, body) {
+          const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+          return data;
+        }
+
+        function renderCertified(list) {
+          if (!list.length) {
+            empty(certifiedRows, 5, "No model is certified yet.");
+            return;
+          }
+          certifiedRows.replaceChildren();
+          for (const c of list) {
+            const row = document.createElement("tr");
+            const actions = document.createElement("td");
+            actions.appendChild(button("Remove", "btn-ghost", async () => {
+              const ok = await lkConfirm({ title: "Remove the certification?", message: c.vendor + " " + c.model + " stops showing as certified on /hardware.", confirmLabel: "Remove", tone: "danger" });
+              if (!ok) return;
+              try {
+                await post("/api/super/hardware/uncertify", { vendor: c.vendor, model: c.model });
+                lkToast("Certification removed.", "success");
+                load();
+              } catch (err) {
+                lkToast("Could not remove it: " + err.message, "error");
+              }
+            }));
+            row.append(
+              cell(c.vendor, "cell-title"),
+              cell(c.model),
+              cell(new Date(c.certifiedAt * 1000).toLocaleDateString()),
+              cell(c.note || "\\u2014", c.note ? "" : "text-muted"),
+              actions
+            );
+            certifiedRows.appendChild(row);
+          }
+        }
+
+        function renderResellers(list) {
+          if (!list.length) {
+            empty(resellerRows, 6, "No reseller has applied yet.");
+            return;
+          }
+          resellerRows.replaceChildren();
+          for (const r of list) {
+            const row = document.createElement("tr");
+            const status = document.createElement("td");
+            const badge = document.createElement("span");
+            badge.className = "badge " + STATUS[r.status][1];
+            badge.textContent = STATUS[r.status][0];
+            status.appendChild(badge);
+            const actions = document.createElement("td");
+            const wrap = document.createElement("div");
+            wrap.className = "cell-actions";
+            const decide = (decision) => async () => {
+              const approve = decision === "approve";
+              const ok = await lkConfirm({
+                title: approve ? "List " + r.company + "?" : r.status === "approved" ? "Take " + r.company + " off the directory?" : "Reject " + r.company + "?",
+                message: approve
+                  ? "It appears on /hardware under " + r.city + ", " + r.state + ", and we email " + r.email + "."
+                  : "Nothing is emailed; reply from Mail if you want to explain.",
+                confirmLabel: approve ? "Approve" : r.status === "approved" ? "Take off" : "Reject",
+                tone: approve ? "primary" : "danger"
+              });
+              if (!ok) return;
+              try {
+                const result = await post("/api/super/resellers/decide", { id: r.id, decision });
+                if (approve && !result.emailed) lkToast("Listed. The email did not go out; reply from Mail.", "warning");
+                else lkToast(approve ? "Listed, and emailed." : "Done.", "success");
+                load();
+              } catch (err) {
+                lkToast("Could not save: " + err.message, "error");
+              }
+            };
+            if (r.status !== "approved") wrap.appendChild(button("Approve", "btn-primary", decide("approve")));
+            if (r.status !== "rejected") wrap.appendChild(button(r.status === "approved" ? "Take off" : "Reject", "btn-ghost", decide("reject")));
+            actions.appendChild(wrap);
+            row.append(
+              cell(r.company + (r.website ? " (" + r.website + ")" : ""), "cell-title"),
+              cell(r.city + ", " + r.state),
+              cell(r.contact_name + ", " + r.email + ", " + r.phone),
+              cell(r.stocks || "\\u2014", r.stocks ? "" : "text-muted"),
+              status,
+              actions
+            );
+            resellerRows.appendChild(row);
+          }
+        }
+
+        async function load() {
+          try {
+            const res = await fetch("/api/super/partners");
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+            renderCertified(data.certified);
+            renderResellers(data.resellers);
+          } catch (err) {
+            empty(certifiedRows, 5, "Could not load: " + err.message);
+            empty(resellerRows, 6, "Could not load: " + err.message);
+          }
+        }
+
+        document.addEventListener("lk-certify", (e) => {
+          vendor.value = e.detail.vendor;
+          model.value = e.detail.model;
+          note.focus();
+          form.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          if (!vendor.value.trim() || !model.value.trim()) {
+            lkToast("Name the maker and the model.", "error");
+            return;
+          }
+          try {
+            await post("/api/super/hardware/certify", { vendor: vendor.value, model: model.value, note: note.value });
+            lkToast("Model certified.", "success");
+            form.reset();
+            load();
+          } catch (err) {
+            lkToast("Could not certify: " + err.message, "error");
+          }
+        });
+        let loaded = false;
+        whenPaneShown(card, () => {
+          if (loaded) return;
+          loaded = true;
+          load();
+        });
+      })();
+    </script>`;
 }
 
 export function renderPlatformUsageScript(nonce: string): string {
@@ -124,16 +333,28 @@ ${WHEN_PANE_SHOWN_JS}
             fill("platform-usage-sites", 4, data.sites.map((s) => [s.domain, whole(s.organizations), hours(s.activeSeconds), whole(s.visits)]),
               "No site was visited by enough organizations in this period.");
             const models = data.hardware.models;
-            fill("platform-hardware-rows", 8, models.map((m) => [
+            fill("platform-hardware-rows", 9, models.map((m) => [
               m.vendor, m.model, whole(m.organizations), whole(m.workstations), percent(m.uefi, m.workstations),
               percent(m.touch, m.workstations), m.minMemoryMb === null ? "\\u2014" : Math.round(m.minMemoryMb / 1024 * 10) / 10 + " GB",
-              m.organizations >= ${PUBLIC_MODEL_MIN_ORGANIZATIONS} ? "Yes" : "No"
+              m.organizations >= ${PUBLIC_MODEL_MIN_ORGANIZATIONS} ? "Yes" : "No", ""
             ]), "No workstation has reported its hardware yet.");
+            // Certify: hands the model to the Certified models form (renderPartnersScript).
+            const hardwareRows = document.getElementById("platform-hardware-rows").children;
+            models.forEach((m, i) => {
+              const cell = hardwareRows[i] && hardwareRows[i].lastElementChild;
+              if (!cell) return;
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "btn btn-ghost btn-sm";
+              button.textContent = "Certify";
+              button.addEventListener("click", () => document.dispatchEvent(new CustomEvent("lk-certify", { detail: { vendor: m.vendor, model: m.model } })));
+              cell.appendChild(button);
+            });
             document.getElementById("platform-hardware-at").textContent = data.hardware.computedAt
               ? "Counted " + new Date(data.hardware.computedAt * 1000).toLocaleString() + "."
               : "Not counted yet: the hourly job builds it.";
           } catch (err) {
-            for (const [id, columns] of [["platform-usage-days", 6], ["platform-usage-sites", 4], ["platform-hardware-rows", 8]]) {
+            for (const [id, columns] of [["platform-usage-days", 6], ["platform-usage-sites", 4], ["platform-hardware-rows", 9]]) {
               fill(id, columns, [], "Could not load: " + err.message);
             }
           }

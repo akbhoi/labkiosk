@@ -96,6 +96,14 @@ export interface Tenant {
   printing_enabled?: number;
   /** 1 when Home in the kiosk bar asks "Start over?" and signs everyone out; on by default (0048). */
   home_reset?: number;
+  /** 1 when the console address was generated at registration rather than chosen (0053, src/addresses.ts). */
+  address_generated?: number;
+  /** A chosen address granted on request, served beside `subdomain` (0053). */
+  chosen_subdomain?: string | null;
+  /** When the console's feature tip was last dismissed (0053). */
+  feature_tip_dismissed_at?: number | null;
+  /** The month ("YYYY-MM") whose summary the organization dismissed (0055, src/monthly_summary.ts). */
+  summary_dismissed_month?: string | null;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */
@@ -109,6 +117,8 @@ export interface Tenant {
   license_plan?: LicensePlan | null;
   /** Unix seconds the license ends; NULL: no end date (0037). */
   license_expires_at?: number | null;
+  /** When the organization started its one free trial (0058, src/plans.ts). */
+  trial_started_at?: number | null;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
@@ -361,6 +371,8 @@ export interface Env {
   FLEET_METRICS?: AnalyticsEngineDataset;
   /** Coarse per-address throttle in front of sign-in, registration and enrolment. */
   AUTH_RATE_LIMITER?: RateLimit;
+  /** The same routes, limited per email address the request names (src/index.ts). */
+  ACCOUNT_RATE_LIMITER?: RateLimit;
   /** Provisions and removes Cloudflare for SaaS custom hostnames. */
   CUSTOM_HOSTNAMES?: Workflow<CustomHostnameParams>;
   /** API token with SSL and Certificates: Edit on the zone (Cloudflare for SaaS). */
@@ -444,6 +456,24 @@ export interface Env {
    */
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  /**
+   * Firebase Authentication, used only to text a code to the phone number a
+   * registration gives (src/phone_verify.ts). All three are the project's public
+   * web values; with all of them set every registration needs a verified phone,
+   * and with only some of them set registration refuses.
+   */
+  FIREBASE_PROJECT_ID?: string;
+  FIREBASE_API_KEY?: string;
+  FIREBASE_AUTH_DOMAIN?: string;
+  /**
+   * Razorpay, for paying for a subscription online (src/billing.ts). The key id
+   * and secret create Payment Links and check their redirect's signature; the
+   * webhook secret checks Razorpay's webhook. Without the key id and secret,
+   * subscribing asks sales instead.
+   */
+  RAZORPAY_KEY_ID?: string;
+  RAZORPAY_KEY_SECRET?: string;
+  RAZORPAY_WEBHOOK_SECRET?: string;
 }
 
 /** The one Workers AI method the Worker uses. */

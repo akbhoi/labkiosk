@@ -57,10 +57,12 @@ import { clearPendingMail, deleteRawMail, isMailId, listPendingMail, loadRawMail
 import { extractAttachment, parseEmail } from "./mime";
 import { consoleUrlFor, RouteContext, sendOnConversation } from "./signup";
 import { createNotification } from "./notifications";
+import { issuePhoneLink, maskPhone, PHONE_LINK_DAYS } from "./phone_link";
+import { firebaseConfig, firebaseConfigProblem } from "./phone_verify";
 
 const SUPPORT_KINDS: readonly ConversationKind[] = ["support"];
 const INBOX_PATH =
-  /^\/api\/super\/inbox(?:\/compose|\/([0-9a-f-]{36})(?:\/(reply|note|approve|reject|verify-phone|status|unread|trash|restore|delete)|\/attachment\/([0-9a-f-]{36})\/(original|\d{1,2}))?)?$/;
+  /^\/api\/super\/inbox(?:\/compose|\/([0-9a-f-]{36})(?:\/(reply|note|approve|reject|verify-phone|phone-link|status|unread|trash|restore|delete)|\/attachment\/([0-9a-f-]{36})\/(original|\d{1,2}))?)?$/;
 /** Email Routing's own limit: nothing larger reaches the Worker. */
 const MAX_INBOUND_BYTES = 25 * 1024 * 1024;
 /** Inbound messages larger than this are filed from their headers; the stored original is whole. */
@@ -337,8 +339,10 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
               createdAt: tenant.created_at
             }
           : null,
-        profile,
-        mailProblem: mailConfigProblem(env)
+        // The link's hash stays on the server; whether one is out, and until when, is enough here.
+        profile: profile ? { ...profile, phone_link_hash: undefined, phone_link_expires_at: profile.phone_link_expires_at ?? null } : null,
+        mailProblem: mailConfigProblem(env),
+        smsVerification: !firebaseConfigProblem(env) && firebaseConfig(env) !== null
       },
       jsonHeaders
     );
@@ -411,6 +415,39 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
       authorUserId: userId
     });
     await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.verify_phone" });
+    return json({ status: "ok" }, jsonHeaders);
+  }
+
+  // POST .../phone-link: email the owner a one-time link to verify the number by
+  // text message (src/phone_link.ts). For registrations made before numbers were
+  // checked that way, whether still pending or already approved.
+  if (action === "phone-link") {
+    if (conversation.kind !== "signup") return jsonError("Only a registration has a phone number to verify", 400, jsonHeaders);
+    if (!profile) return jsonError("This registration has no contact details", 404, jsonHeaders);
+    if (profile.phone_verified_at) return jsonError("This phone number is already verified", 409, jsonHeaders);
+    if (tenant.status === "rejected") return jsonError("This registration was rejected", 409, jsonHeaders);
+    const firebase = firebaseConfigProblem(env) ? null : firebaseConfig(env);
+    if (!firebase) return jsonError("Phone verification by text message is not set up on this platform (docs/DEPLOYMENT.md).", 503, jsonHeaders);
+    const mailProblem = mailConfigProblem(env);
+    if (mailProblem) return jsonError(mailProblem, 503, jsonHeaders);
+    const { token } = await issuePhoneLink(db, tenant.id);
+    const origin = ctx.isDev ? ctx.url.origin : `https://${ctx.baseDomain}`;
+    const link = `${origin}/verify-phone?t=${token}`;
+    const text = (url: string) =>
+      `Hello ${profile.contact_name},\n\n` +
+      `Lab Kiosk now confirms phone numbers by text message. Please verify the number on record for ${tenant.name}, ${maskPhone(profile.contact_phone)}: open this link and enter the code we text to it.\n\n` +
+      `${url}\n\n` +
+      `The link works once and expires in ${PHONE_LINK_DAYS} days. If the number is not right, reply to this email with the correct one.\n\nLab Kiosk`;
+    const sent = await sendOnConversation(env, db, conversation, text(link), {
+      subject: "Please verify your phone number",
+      authorUserId: userId,
+      ...(await threadingFor(db, conversation)),
+      template: { name: "notice", title: "Verify your phone number" },
+      // The conversation keeps the message without the link: only its hash is stored.
+      recordedBody: text("(one-time link)")
+    });
+    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.phone_link", details: `delivered=${sent}` });
+    if (!sent) return jsonError("The link could not be emailed. Try again later.", 502, jsonHeaders);
     return json({ status: "ok" }, jsonHeaders);
   }
 

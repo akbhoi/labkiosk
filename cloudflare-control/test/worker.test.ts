@@ -23,7 +23,10 @@ import {
   writeAuditLog,
   insertAuditEntries,
   archiveOldAuditLogs,
-  AUDIT_RETENTION_DAYS
+  AUDIT_RETENTION_DAYS,
+  getSession,
+  hashLegacySessions,
+  sessionKey
 } from "../src/db";
 import { DEMO_SLUGS } from "../src/demo";
 import { listHardwareModels, listPublicHardwareModels, rebuildHardwareModels } from "../src/hardware";
@@ -48,6 +51,14 @@ import {
   taxIdProblem
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
+import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhoneToken } from "../src/phone_verify";
+import { checkComponents, componentStatuses, recordStatusChecks } from "../src/status";
+import { monthlySummaryFor } from "../src/monthly_summary";
+import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
+import { PRICING, entitlement, quote, rebalanceLicences } from "../src/plans";
+import { periodEnd } from "../src/billing";
+import { emailMatchesWebsite } from "../src/education";
+import nodeCrypto from "node:crypto";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -119,7 +130,9 @@ import {
   hashPassword,
   isEnrollmentKey,
   passwordPepper,
+  oneTimeCodeHash,
   pepperLegacyHash,
+  sha256Hex,
   verifyPassword
 } from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
@@ -209,6 +222,29 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
 }
 
 /** Every field a registration needs, valid unless overridden. */
+/** An RSA key standing in for Google's: signs Firebase-shaped ID tokens and serves its JWKS. */
+async function firebaseSigner(kid = "test-kid") {
+  const pair = (await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"]
+  )) as CryptoKeyPair;
+  const jwk = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
+  const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+  return {
+    jwksResponse: () =>
+      new Response(JSON.stringify({ keys: [{ kty: "RSA", n: jwk.n, e: jwk.e, kid, alg: "RS256", use: "sig" }] }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=3600" }
+      }),
+    async sign(claims: Record<string, unknown>, header: Record<string, unknown> = {}) {
+      const head = b64(new TextEncoder().encode(JSON.stringify({ alg: "RS256", kid, typ: "JWT", ...header })));
+      const body = b64(new TextEncoder().encode(JSON.stringify(claims)));
+      const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(`${head}.${body}`));
+      return `${head}.${body}.${b64(new Uint8Array(sig))}`;
+    }
+  };
+}
+
 function signupBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     name: "Example Organization",
@@ -265,6 +301,15 @@ async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = 
   assert.ok(code, "the code is in the subject");
   const res = await worker.fetch(request("/api/auth/register", { ...json({ ...body, emailCode: code }), headers: from }), env);
   const data = (await res.json()) as any;
+  // Registration generates the console address (src/addresses.ts). The fixtures
+  // name theirs, as organizations registered before that did: give it to them,
+  // unless the test asks for the generated one.
+  if (res.status === 200 && body.subdomain && !body.keepGeneratedAddress) {
+    await getDatabase(env)
+      .prepare("UPDATE tenants SET subdomain = ?, address_generated = 0 WHERE user_id = (SELECT id FROM users WHERE email = ?)")
+      .bind(String(body.subdomain), String(body.email).toLowerCase())
+      .run();
+  }
   return { res, data };
 }
 
@@ -549,9 +594,23 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(specs, /class="specs-table-container"/);
 
     const pricing = await (await call("/pricing")).text();
-    assert.match(pricing, /Transparent Licensing/);
-    assert.match(pricing, /Accredited Education Grant/);
-    assert.match(pricing, /Commercial &amp; Large Fleet/);
+    assert.match(pricing, /Plans &amp; Pricing/);
+    assert.match(pricing, /<h2 class="pricing-tier">Free<\/h2>[\s\S]*Up to 5 workstations/);
+    assert.match(pricing, /&#8377;1,999 <small>a month<\/small>[\s\S]*&#8377;19,990 a year/);
+    assert.match(pricing, /&#8377;39 a month \(&#8377;390 a year\) for each one more, up to 200/);
+    assert.match(pricing, /15 days free/);
+    assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*after verification/);
+    assert.match(pricing, /href="\/contact\?reason=sales">Contact sales/);
+    assert.doesNotMatch(pricing, /Education Grant|50%/, "the old grant and the discount are gone");
+    assert.match(pricing, /href="\/refunds">Refund &amp; Cancellation Policy/);
+    const refunds = await call("/refunds");
+    assert.equal(refunds.status, 200);
+    const refundsHtml = await refunds.text();
+    assert.match(refundsHtml, /<h1>Refund &amp; Cancellation Policy<\/h1>/);
+    assert.match(refundsHtml, /Every payment is final/);
+    assert.match(refundsHtml, /charged twice/, "duplicate charges are still refunded");
+    assert.match(refundsHtml, /Nothing renews by itself/);
+    assert.equal((await call("/refunds?tenant=greenwood")).status, 200, "served on any address, like the other legal pages");
 
     const download = await (await call("/download")).text();
     assert.match(download, /Download/);
@@ -685,6 +744,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(again.res.status, 429, "the next one waits a minute");
   });
 
+  test("An emailed code is stored keyed by PASSWORD_PEPPER, so a copy of the database cannot be searched for it", async () => {
+    const email = "keyed-code@example.com";
+    assert.equal((await call("/api/auth/register/email-code", json({ email }))).status, 200);
+    const code = lastMailTo(email).subject.slice(0, 6);
+    const row = await getDatabase(mockEnv).prepare("SELECT code_hash FROM email_codes WHERE id = ?").bind(`signup:${email}`).first<{ code_hash: string }>();
+    assert.ok(row);
+    assert.notEqual(row!.code_hash, await sha256Hex(`signup:${email}:${code}`), "not the unkeyed hash a copy of D1 could brute-force");
+    assert.equal(row!.code_hash, await oneTimeCodeHash(passwordPepper(mockEnv), `signup:${email}:${code}`));
+    assert.notEqual(row!.code_hash, await oneTimeCodeHash("another-pepper-of-sufficient-length-0123456789", `signup:${email}:${code}`));
+  });
+
   test("Registers a new organization as pending, emails the customer, and signs nobody in", async () => {
     const { res, data } = await submitSignup({
       name: "Greenwood Holdings",
@@ -808,6 +878,204 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       password: "RiversidePass456!",
       subdomain: "riverside"
     });
+  });
+
+  test("A phone token is accepted only when Google signed it for this project, recently, for this number", async () => {
+    const config = { projectId: "labkiosk-test", apiKey: "AIzaSyTestKey000000000000000", authDomain: "labkiosk-test.firebaseapp.com" };
+    const signer = await firebaseSigner();
+    const stranger = await firebaseSigner("other-kid");
+    const now = 1_800_000_000;
+    const fetcher = (async () => signer.jwksResponse()) as unknown as typeof fetch;
+    const check = (token: unknown, phone = "+919876543210", fetch: typeof globalThis.fetch = fetcher) =>
+      verifyPhoneToken(config, token, phone, { fetcher: fetch, now });
+    const claims = (over: Record<string, unknown> = {}) => ({
+      iss: "https://securetoken.google.com/labkiosk-test",
+      aud: "labkiosk-test",
+      sub: "firebase-uid",
+      iat: now - 30,
+      exp: now + 3570,
+      auth_time: now - 30,
+      phone_number: "+919876543210",
+      firebase: { sign_in_provider: "phone", identities: { phone: ["+919876543210"] } },
+      ...over
+    });
+    resetFirebaseKeys();
+    assert.deepEqual(await check(await signer.sign(claims())), { ok: true, phone: "+919876543210" });
+    const reason = async (token: unknown, phone?: string) => ((await check(token, phone)) as { reason: string }).reason;
+    assert.equal(await reason(await stranger.sign(claims())), "signature", "a key Google never published");
+    assert.equal(await reason((await signer.sign(claims())).replace(/\.[^.]+$/, ".AAAA")), "signature", "a forged signature");
+    assert.equal(await reason(await signer.sign(claims({ aud: "someone-else" }))), "claims", "another project's token");
+    assert.equal(await reason(await signer.sign(claims({ iss: "https://securetoken.google.com/someone-else" }))), "claims");
+    assert.equal(await reason(await signer.sign(claims({ exp: now - 120 }))), "claims", "expired");
+    assert.equal(await reason(await signer.sign(claims({ firebase: { sign_in_provider: "password" } }))), "claims", "not a phone sign-in");
+    assert.equal(await reason(await signer.sign(claims({ auth_time: now - 16 * 60 }))), "stale", "a code entered long ago");
+    assert.equal(await reason(await signer.sign(claims()), "+919876500000"), "mismatch", "another number than the form's");
+    assert.equal(await reason(await signer.sign(claims(), { alg: "HS256" })), "malformed", "only RS256");
+    for (const junk of [undefined, "", "a.b", "x".repeat(5000), 42]) assert.equal(await reason(junk), "malformed");
+    // Google's keys out of reach: the token is not judged, and the caller says to try again.
+    resetFirebaseKeys();
+    const down = await check(await signer.sign(claims()), "+919876543210", (async () => new Response("", { status: 500 })) as unknown as typeof fetch);
+    assert.equal(down.ok, false);
+    assert.equal((down as { reason: string }).reason, "unavailable");
+    resetFirebaseKeys();
+  });
+
+  test("Firebase settings are all or nothing, and only Firebase's shapes are accepted", () => {
+    const base = { ...mockEnv } as Env;
+    assert.equal(firebaseConfigProblem(base), null, "off");
+    assert.match(firebaseConfigProblem({ ...base, FIREBASE_PROJECT_ID: "labkiosk-test" })!, /half configured/);
+    const full = { ...base, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
+    assert.equal(firebaseConfigProblem(full), null);
+    assert.match(firebaseConfigProblem({ ...full, FIREBASE_AUTH_DOMAIN: "evil.example/'; script-src *" })!, /FIREBASE_AUTH_DOMAIN/);
+    assert.match(firebaseConfigProblem({ ...full, FIREBASE_PROJECT_ID: "Bad Project" })!, /FIREBASE_PROJECT_ID/);
+  });
+
+  test("With Firebase configured, registration needs the texted code, and records the phone as verified", async () => {
+    const signer = await firebaseSigner();
+    const firebaseEnv: Env = { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
+    const realFetch = globalThis.fetch;
+    const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === FIREBASE_JWKS_URL ? signer.jwksResponse() : realFetch(input, init)
+    );
+    resetFirebaseKeys();
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const token = (phone: string) =>
+        signer.sign({
+          iss: "https://securetoken.google.com/labkiosk-test", aud: "labkiosk-test", sub: "uid-1",
+          iat: now, exp: now + 3600, auth_time: now, phone_number: phone, firebase: { sign_in_provider: "phone" }
+        });
+
+      // No token: refused, nothing is created.
+      const bare = await submitSignup({ email: "sms-none@example.com", subdomain: "sms-none" }, firebaseEnv);
+      assert.equal(bare.res.status, 400);
+      assert.match(bare.data.error, /Verify your phone number/);
+      assert.equal(await findTenantBySubdomain(getDatabase(mockEnv), "sms-none"), null);
+
+      // A token for another number: refused.
+      const other = await submitSignup({ email: "sms-other@example.com", subdomain: "sms-other", phoneToken: await token("+919999999999") }, firebaseEnv);
+      assert.equal(other.res.status, 400);
+      assert.match(other.data.error, /number was changed/);
+
+      // The right one: registered, and the phone is verified by SMS (no one marked it).
+      const good = await submitSignup({ email: "sms-good@example.com", subdomain: "sms-good", phoneToken: await token("+919876543210") }, firebaseEnv);
+      assert.equal(good.res.status, 200, JSON.stringify(good.data));
+      const tenant = await findTenantBySubdomain(getDatabase(mockEnv), "sms-good");
+      const profile = await getDatabase(mockEnv)
+        .prepare("SELECT phone_verified_at, phone_verified_by FROM organization_profiles WHERE tenant_id = ?")
+        .bind(tenant!.id)
+        .first<{ phone_verified_at: number | null; phone_verified_by: string | null }>();
+      assert.ok(profile!.phone_verified_at && Math.abs(profile!.phone_verified_at - now) < 60);
+      assert.equal(profile!.phone_verified_by, null);
+      assert.doesNotMatch(lastMailTo("sms-good@example.com").text, /We will confirm your phone number/);
+
+      // Half a configuration refuses rather than skip the check.
+      const half = await submitSignup({ email: "sms-half@example.com", subdomain: "sms-half" }, { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test" } as Env);
+      assert.equal(half.res.status, 503);
+
+      // The registration page carries the settings and its CSP lets Firebase and reCAPTCHA in; other pages do not.
+      const page = await worker.fetch(request("/register"), firebaseEnv);
+      const csp = page.headers.get("Content-Security-Policy") || "";
+      assert.match(csp, /script-src [^;]*https:\/\/www\.gstatic\.com\/firebasejs\//);
+      assert.match(csp, /frame-src [^;]*https:\/\/labkiosk-test\.firebaseapp\.com/);
+      assert.match(csp, /connect-src [^;]*https:\/\/identitytoolkit\.googleapis\.com/);
+      const html = await page.text();
+      assert.ok(html.includes('id="reg-sms-send"'));
+      assert.ok(html.includes('"projectId":"labkiosk-test"'));
+      const home = await worker.fetch(request("/"), firebaseEnv);
+      assert.doesNotMatch(home.headers.get("Content-Security-Policy") || "", /firebasejs|recaptcha/);
+      assert.ok(!(await home.text()).includes("labkiosk-test"));
+    } finally {
+      fetchMock.mock.restore();
+      resetFirebaseKeys();
+    }
+  });
+
+  test("A super admin emails a one-time link that verifies an organization's phone by text message", async () => {
+    const signer = await firebaseSigner();
+    const firebaseEnv: Env = { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
+    const fb = async (path: string, init: RequestInit & { cookie?: string } = {}) => {
+      const res = await worker.fetch(request(path, init), firebaseEnv);
+      return { res, data: res.headers.get("Content-Type")?.includes("json") ? ((await res.clone().json()) as any) : null };
+    };
+    const realFetch = globalThis.fetch;
+    const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === FIREBASE_JWKS_URL ? signer.jwksResponse() : realFetch(input, init)
+    );
+    resetFirebaseKeys();
+    try {
+      // Registered before phones were checked by text message: not verified.
+      const { data: signup } = await submitSignup({ name: "Linked Org", email: "linked@example.org", subdomain: "linked-org" });
+      const admin = await superCookie();
+      const task = await taskByReference(admin, signup.reference);
+      const db = getDatabase(mockEnv);
+      const tenant = await findTenantBySubdomain(db, "linked-org");
+
+      // Without Firebase the inbox offers no link, and the action refuses.
+      assert.equal((await callJson(`/api/super/inbox/${task.id}`, { cookie: admin })).data.smsVerification, false);
+      assert.equal((await call(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).status, 503);
+      assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: orgSessionCookie })).res.status, 403);
+
+      const detail = await fb(`/api/super/inbox/${task.id}`, { cookie: admin });
+      assert.equal(detail.data.smsVerification, true);
+      assert.equal(detail.data.profile.phone_link_hash, undefined, "the link's hash stays on the server");
+
+      const first = await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin });
+      assert.equal(first.res.status, 200, JSON.stringify(first.data));
+      const firstToken = lastMailTo("linked@example.org").text.match(/\/verify-phone\?t=([0-9a-f]{64})/)![1];
+      const sent = await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin });
+      assert.equal(sent.res.status, 200);
+      const mail = lastMailTo("linked@example.org");
+      assert.match(mail.subject, /Please verify your phone number/);
+      assert.match(mail.text, /\u2022+ 3210/, "the email names the number with most digits hidden");
+      const token = mail.text.match(/\/verify-phone\?t=([0-9a-f]{64})/)![1];
+      assert.notEqual(token, firstToken);
+      const stored = await db.prepare("SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles WHERE tenant_id = ?").bind(tenant!.id).first<any>();
+      assert.ok(stored.phone_link_hash && !stored.phone_link_hash.includes(token), "only a hash of the token is stored");
+      const recorded = await db.prepare("SELECT body FROM conversation_messages WHERE conversation_id = ? AND direction = 'outbound'").bind(task.id).all<{ body: string }>();
+      assert.ok(recorded.results.every((m) => !m.body.includes(token)), "the conversation keeps the email without the link");
+
+      // The page: the replaced link and a made-up one are dead; the current one shows the masked number.
+      assert.equal((await fb(`/verify-phone?t=${firstToken}`)).res.status, 410);
+      assert.equal((await fb("/verify-phone?t=nonsense")).res.status, 410);
+      assert.equal((await worker.fetch(request(`/verify-phone?t=${token}`), mockEnv)).status, 410, "without Firebase the page does not work");
+      const page = await fb(`/verify-phone?t=${token}`);
+      assert.equal(page.res.status, 200);
+      assert.match(page.res.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/www\.gstatic\.com\/firebasejs\//);
+      const html = await page.res.text();
+      assert.ok(html.includes("Linked Org") && html.includes("3210"));
+
+      const now = Math.floor(Date.now() / 1000);
+      const idToken = (phone: string) =>
+        signer.sign({
+          iss: "https://securetoken.google.com/labkiosk-test", aud: "labkiosk-test", sub: "uid-2",
+          iat: now, exp: now + 3600, auth_time: now, phone_number: phone, firebase: { sign_in_provider: "phone" }
+        });
+      const verify = (body: unknown) => fb("/api/verify-phone", { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.90" } });
+      assert.equal((await verify({ token: firstToken, phoneToken: await idToken("+919876543210") })).res.status, 410);
+      const wrong = await verify({ token, phoneToken: await idToken("+919999999999") });
+      assert.equal(wrong.res.status, 400, "a token for another number does not verify this one");
+      assert.equal((await verify({ token, phoneToken: "not.a.token" })).res.status, 400);
+      const done = await verify({ token, phoneToken: await idToken("+919876543210") });
+      assert.equal(done.res.status, 200, JSON.stringify(done.data));
+      const profile = await db.prepare("SELECT phone_verified_at, phone_verified_by, phone_link_hash FROM organization_profiles WHERE tenant_id = ?").bind(tenant!.id).first<any>();
+      assert.ok(profile.phone_verified_at);
+      assert.equal(profile.phone_verified_by, null, "verified by text message, not by a person");
+      assert.equal(profile.phone_link_hash, null, "the link is spent");
+      assert.equal((await verify({ token, phoneToken: await idToken("+919876543210") })).res.status, 410, "the link works once");
+      const events = await db.prepare("SELECT body FROM conversation_messages WHERE conversation_id = ? AND direction = 'event'").bind(task.id).all<{ body: string }>();
+      assert.ok(events.results.some((m) => /verified by text message/.test(m.body)));
+      assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409, "a verified number needs no link");
+
+      // A rejected registration is sent none.
+      const { data: declined } = await submitSignup({ name: "No Link Org", email: "nolink@example.org", subdomain: "nolink-org" });
+      const declinedTask = await taskByReference(admin, declined.reference);
+      await call(`/api/super/inbox/${declinedTask.id}/reject`, { ...json({ message: "No." }), cookie: admin });
+      assert.equal((await fb(`/api/super/inbox/${declinedTask.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409);
+    } finally {
+      fetchMock.mock.restore();
+      resetFirebaseKeys();
+    }
   });
 
   test("Turnstile guards the registration code, the contact code and sign-in once it is configured", async () => {
@@ -1271,6 +1539,39 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const login = await callJson("/api/auth/login", json({ email: "declined@example.org", password: "OrganizationPassword123!" }));
     assert.equal(login.res.status, 403);
     assert.match(login.data.error, /not approved/);
+  });
+
+  test("A super admin can remove a rejected registration, and only a rejected one", async () => {
+    const { data } = await submitSignup({ name: "Removed Org", email: "removed@example.org", subdomain: "removed-org" });
+    const admin = await superCookie();
+    const task = await taskByReference(admin, data.reference);
+    const db = getDatabase(mockEnv);
+    const tenant = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'removed-org'").first<{ id: string }>();
+    assert.ok(tenant);
+    const remove = (cookie?: string, tenantId: unknown = tenant!.id) =>
+      call("/api/super/tenants/remove-rejected", { ...json({ tenantId }), ...(cookie ? { cookie } : {}) });
+
+    assert.equal((await remove()).status, 401, "anonymous");
+    assert.equal((await remove(orgSessionCookie)).status, 403, "an organization admin");
+    assert.equal((await remove(admin, "nope")).status, 404);
+    assert.equal((await remove(admin)).status, 409, "a pending registration is not removed");
+    const greenwood = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>();
+    assert.equal((await remove(admin, greenwood!.id)).status, 409, "an approved organization is not removed");
+
+    const rejected = await call(`/api/super/inbox/${task.id}/reject`, { ...json({ message: "Not a school." }), cookie: admin });
+    assert.equal(rejected.status, 200);
+    const removed = await remove(admin);
+    assert.equal(removed.status, 200);
+    assert.equal(await db.prepare("SELECT id FROM tenants WHERE id = ?").bind(tenant!.id).first(), null);
+    assert.equal(await db.prepare("SELECT id FROM users WHERE email = 'removed@example.org'").first(), null);
+    assert.equal(await db.prepare("SELECT id FROM conversations WHERE tenant_id = ?").bind(tenant!.id).first(), null, "its registration task goes too");
+    const audit = await db.prepare("SELECT tenant_id, details FROM audit_logs WHERE action = 'tenant.remove_rejected'").first<any>();
+    assert.equal(audit.tenant_id, null);
+    assert.match(audit.details, /removed-org/);
+
+    // The email address and the console address can be registered again.
+    const again = await submitSignup({ name: "Removed Org", email: "removed@example.org", subdomain: "removed-org" });
+    assert.equal(again.res.status, 200);
   });
 
   // ------------------------------------------------------------ support inbox
@@ -2864,6 +3165,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/admin/plan?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
@@ -3035,7 +3337,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // The allowlist tab called /api/settings/whitelist, which never existed: add,
     // remove and every preset pack answered 404, and the markup tests were happy.
     const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
-    const router = fs.readFileSync(path.join(srcDir, "index.ts"), "utf8");
+    const router = ["index.ts", "plan_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
     const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
     const called = new Set<string>();
     for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
@@ -3406,7 +3708,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-OVER" }));
     assert.equal(refused.res.status, 403, "one more workstation is refused");
-    assert.match(refused.data.error, new RegExp(`all ${enrolled} workstations`));
+    assert.match(refused.data.error, new RegExp(`all ${enrolled} workstations? its`));
     assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
 
     const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-01" }));
@@ -5082,7 +5384,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(set, /Max-Age=43200/, "twelve hours, not seven days");
     assert.doesNotMatch(set, /Domain=/);
     const token = set.split(";")[0].split("=")[1];
-    const row = await getDatabase(mockEnv).prepare("SELECT expires_at FROM sessions WHERE token = ?").bind(token).first<{ expires_at: number }>();
+    const row = await getDatabase(mockEnv).prepare("SELECT expires_at FROM sessions WHERE token = ? AND hashed = 1").bind(await sessionKey(token)).first<{ expires_at: number }>();
     assert.ok(row && Math.abs(row.expires_at - (Math.floor(Date.now() / 1000) + 43200)) < 60);
 
     // The same token under the old parent-domain cookie name is ignored on HTTPS.
@@ -5094,6 +5396,32 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const cleared = out.headers.getSetCookie();
     assert.ok(cleared.some((c) => c.startsWith("__Host-labkiosk_session=;") && /Max-Age=0/.test(c)));
     assert.ok(cleared.some((c) => c.startsWith("labkiosk_session=;") && /Domain=\.labkiosk\.org/.test(c)));
+  });
+
+  test("Sessions are stored under the hash of their token, and rows from before 0051 are rewritten", async () => {
+    const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! });
+    const token = res.headers.getSetCookie().find((c) => c.startsWith("__Host-labkiosk_session="))!.split(";")[0].split("=")[1];
+    const db = getDatabase(mockEnv);
+    assert.equal(await db.prepare("SELECT 1 FROM sessions WHERE token = ?").bind(token).first(), null, "the token itself is never stored");
+    assert.ok(await db.prepare("SELECT 1 FROM sessions WHERE token = ? AND hashed = 1").bind(await sessionKey(token)).first());
+    // The stored key is not a token: presented as a cookie, it opens nothing.
+    assert.equal((await callJson("/api/auth/me", { cookie: `__Host-labkiosk_session=${await sessionKey(token)}` })).data.user, null);
+
+    // A row written before 0051 holds the token itself and still works; its first use rewrites it.
+    const owner = await db.prepare("SELECT user_id, role FROM sessions WHERE token = ?").bind(await sessionKey(token)).first<{ user_id: string; role: string }>();
+    const legacy = "a".repeat(64), other = "b".repeat(64), expires = Math.floor(Date.now() / 1000) + 3600;
+    for (const t of [legacy, other]) {
+      await db.prepare("INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES (?, ?, NULL, ?, ?)").bind(t, owner!.user_id, owner!.role, expires).run();
+    }
+    assert.equal((await getSession(db, legacy))?.token, legacy, "the caller gets the token back, not the key");
+    assert.ok(await db.prepare("SELECT 1 FROM sessions WHERE token = ? AND hashed = 1").bind(await sessionKey(legacy)).first());
+    assert.equal(await db.prepare("SELECT 1 FROM sessions WHERE token = ?").bind(legacy).first(), null);
+
+    // The hourly job rewrites the rest, and a rewritten session still signs in.
+    assert.equal(await hashLegacySessions(db), 1);
+    assert.equal(await hashLegacySessions(db), 0);
+    assert.ok((await callJson("/api/auth/me", { cookie: `__Host-labkiosk_session=${other}` })).data.user);
+    for (const t of [legacy, other]) await db.prepare("DELETE FROM sessions WHERE token = ?").bind(await sessionKey(t)).run();
   });
 
   test("Signs out only on POST, never on a GET link", async () => {
@@ -5234,27 +5562,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------ registration rules
 
-  test("Rejects reserved subdomains and implausible emails at registration", async () => {
-    for (const subdomain of ["admin", "www", "super", "api", "releases", "updates", "login", "support", "mta-sts"]) {
-      const { res, data } = await callJson(
-        "/api/auth/register",
-        json(signupBody({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain }))
-      );
-      assert.equal(res.status, 400, `${subdomain} must be refused`);
-      assert.match(data.error, /reserved/);
-    }
+  test("Registration generates the console address, and refuses implausible emails", async () => {
+    // A requested address is ignored: the address is generated from the name (src/addresses.ts).
+    const { res, data } = await submitSignup({ name: "Admin & Co. Learning Centre", email: "generated@example.com", subdomain: "admin", keepGeneratedAddress: true });
+    assert.equal(res.status, 200, JSON.stringify(data));
+    const tenant = await getDatabase(mockEnv)
+      .prepare("SELECT subdomain, address_generated, chosen_subdomain FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'generated@example.com')")
+      .first<any>();
+    assert.match(tenant.subdomain, /^admin-co-learning-ce-[a-z2-9]{4}$/);
+    assert.equal(tenant.address_generated, 1);
+    assert.equal(tenant.chosen_subdomain, null);
+    assert.ok(lastMailTo("generated@example.com").text.includes(`${tenant.subdomain}.labkiosk.org`), "the receipt names the generated address");
+
     const badEmail = await callJson(
       "/api/auth/register",
-      json(signupBody({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!", subdomain: "bademail" }))
+      json(signupBody({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!" }))
     );
     assert.equal(badEmail.res.status, 400);
     assert.match(badEmail.data.error, /valid email/);
-
-    const tooLong = await callJson(
-      "/api/auth/register",
-      json(signupBody({ name: "Long", email: "long@example.com", password: "LongSlugPass123!", subdomain: "a".repeat(64) }))
-    );
-    assert.equal(tooLong.res.status, 400);
   });
 
   test("Accepts a scheme-less host:port as a valid URL", async () => {
@@ -5705,6 +6030,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 401, "a broken limiter does not take sign-in down");
   });
 
+  test("Sign-in, registration and the contact form are limited per email address too", async () => {
+    const keys: string[] = [];
+    const perAccount = {
+      ...mockEnv,
+      ACCOUNT_RATE_LIMITER: { limit: async ({ key }: { key: string }) => { keys.push(key); return { success: !key.endsWith("|sprayed@example.org") }; } } as RateLimit
+    };
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/contact/email-code"]) {
+      const res = await worker.fetch(request(path, json({ email: " Sprayed@Example.org ", password: "x" })), perAccount as Env);
+      assert.equal(res.status, 429, `${path} is throttled for that account`);
+    }
+    assert.ok(keys.every((k) => k.endsWith("|sprayed@example.org")), "keyed by the address, trimmed and lower-cased");
+    // Another account goes on to the route, which still reads the body.
+    const other = await worker.fetch(request("/api/auth/login", json({ email: "nobody@example.org", password: "wrong" })), perAccount as Env);
+    assert.equal(other.status, 401);
+    // A body without an address, or a limiter that fails, leaves it to the route and the D1 lockouts.
+    assert.equal((await worker.fetch(request("/api/auth/login", json({})), perAccount as Env)).status, 400);
+    const broken = { ...mockEnv, ACCOUNT_RATE_LIMITER: { limit: async () => { throw new Error("internal error"); } } as RateLimit };
+    assert.equal((await worker.fetch(request("/api/auth/login", json({ email: "nobody@example.org", password: "wrong" })), broken as Env)).status, 401);
+  });
+
   test("Audit entries go through the queue, and a redelivered batch is written once", async () => {
     const sent: AuditEntryMessage[] = [];
     useAuditQueue({ send: async (m: AuditEntryMessage) => { sent.push(m); } } as unknown as Queue<AuditEntryMessage>);
@@ -6143,17 +6488,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
   });
 
-  test("An ended license stops new enrolments and Remote Control, and the consoles say so", async () => {
+  test("An ended plan drops to Free: workstations beyond it show a notice, Remote Control stops, and the consoles say so", async () => {
     const db = getDatabase(mockEnv);
     const tenantId = await greenwoodId();
     const admin = await superCookie();
     const license = (body: Record<string, unknown>, cookie?: string) => call("/api/super/tenants/license", { ...json(body), cookie });
     const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const before = await findTenantBySubdomain(db, "greenwood");
 
     assert.ok([401, 403].includes((await license({ tenantId, plan: "commercial", expiresOn: null })).status), "an anonymous caller is refused");
-    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: null }, orgSessionCookie)).status, 403, "an organization cannot set its own license");
+    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: null }, orgSessionCookie)).status, 403, "an organization cannot set its own plan");
     for (const body of [
-      { tenantId, plan: "free", expiresOn: null },
+      { tenantId, plan: "gold", expiresOn: null },
       { tenantId, plan: null, expiresOn: null },
       { tenantId, plan: "commercial", expiresOn: "2027-02-30" },
       { tenantId, plan: "commercial", expiresOn: "2027/01/01" },
@@ -6165,52 +6511,91 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/super/tenants/license", { ...json(null), cookie: admin })).status, 404, "a null body is an empty request");
     assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
 
-    const first = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
-    assert.equal(first.res.status, 200);
+    // Room for more workstations than Free covers; those from earlier tests count as seen long ago.
+    await updateTenant(db, tenantId, { workstation_limit: 200 });
+    await db.prepare("UPDATE client_devices SET last_seen = 0 WHERE tenant_id = ?").bind(tenantId).run();
+    const tokens = new Map<string, string>();
+    for (let i = 1; i <= PRICING.freeWorkstations + 2; i++) {
+      const clientId = `PC-PLAN-${i}`;
+      const enrolled = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
+      assert.equal(enrolled.res.status, 200, clientId);
+      tokens.set(clientId, enrolled.data.deviceToken);
+      // Seen in order: PC-PLAN-1 least recently.
+      await call("/api/telemetry?tenant=greenwood", { ...json({ clientId }), bearer: enrolled.data.deviceToken });
+      await db.prepare("UPDATE client_devices SET last_seen = ? WHERE tenant_id = ? AND client_id = ?").bind(1_000 + i, tenantId, clientId).run();
+    }
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    assert.ok(enrolled > PRICING.freeWorkstations);
+
     const ended = day(-1);
     assert.equal((await license({ tenantId, plan: "subscriber", expiresOn: ended }, admin)).status, 200);
-    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    const unlicensed = await db.prepare("SELECT client_id FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).all<{ client_id: string }>();
+    assert.equal(unlicensed.results.length, enrolled - PRICING.freeWorkstations, "Free covers five; the rest wait");
+    const waiting = new Set(unlicensed.results.map((r) => r.client_id));
+    assert.ok(!waiting.has(`PC-PLAN-${PRICING.freeWorkstations + 2}`), "the workstation seen most recently keeps its licence");
+
     const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
     assert.equal(refused.res.status, 403, "no new workstation");
-    assert.match(refused.data.error, new RegExp(`ended on ${ended}\\. Enrolled workstations keep working`));
-    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
-    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
+    assert.match(refused.data.error, /its Free plan allows/);
+    const paused = [...waiting].find((id) => tokens.has(id))!;
+    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: paused }));
     assert.equal(again.res.status, 200, "a workstation that is already enrolled can enrol again");
-    const telemetry = await call("/api/telemetry?tenant=greenwood", { ...json({ clientId: "PC-LICENSED" }), bearer: again.data.deviceToken });
-    assert.equal(telemetry.status, 200, "and keeps working");
+    const notice = await callJson("/api/telemetry?tenant=greenwood", { ...json({ clientId: paused }), bearer: again.data.deviceToken });
+    assert.equal(notice.res.status, 200);
+    assert.match(notice.data.targetUrl, /\/licence-needed\?tenant=greenwood$/, "a workstation beyond the plan shows the notice");
+    assert.equal(notice.data.broadcastUrl, notice.data.targetUrl);
+    assert.deepEqual(notice.data.whitelist, [new URL(notice.data.targetUrl).hostname], "and nothing else");
+    const page = await call(`/licence-needed?tenant=greenwood`);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /<strong>Greenwood Holdings<\/strong> has more workstations enrolled than its Lab Kiosk plan covers/);
 
     const viewer = await callJson("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie });
     assert.equal(viewer.res.status, 403, "no Remote Control session");
-    assert.match(viewer.data.error, /license of .* ended on/);
+    assert.match(viewer.data.error, /Subscription plan of .* ended on/);
     const opened = await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "WS-R" }), cookie: orgSessionCookie });
     assert.equal(opened.status, 403);
 
     const consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(consolePage, /id="license-notice"[\s\S]*License ended/);
+    assert.match(consolePage, /id="license-notice"[\s\S]*Plan ended/);
     const superPage = await (await call("/super/organizations", { cookie: admin })).text();
-    assert.match(superPage, new RegExp(`Subscriber, ended ${ended}`));
+    assert.match(superPage, new RegExp(`Subscription, ended ${ended}`));
     assert.match(superPage, /class="menu-item btn-license"/);
+
+    // The administrator chooses which workstations keep their licence.
+    const moved = await callJson("/api/plan/licence?tenant=greenwood", { ...json({ clientId: paused }), cookie: orgSessionCookie });
+    assert.equal(moved.res.status, 200, JSON.stringify(moved.data));
+    assert.equal(moved.data.displaced, "PC-PLAN-" + [...Array(PRICING.freeWorkstations + 2).keys()].map((i) => i + 1).find((i) => !waiting.has(`PC-PLAN-${i}`)));
+    const back = await callJson("/api/telemetry?tenant=greenwood", { ...json({ clientId: paused }), bearer: again.data.deviceToken });
+    assert.doesNotMatch(back.data.targetUrl, /licence-needed/, "the workstation given the licence leaves the notice");
+    assert.equal((await callJson("/api/plan/licence?tenant=greenwood", { ...json({ clientId: paused }), cookie: orgSessionCookie })).res.status, 409);
 
     const soon = day(10);
     assert.equal((await license({ tenantId, plan: "commercial", expiresOn: soon }, admin)).status, 200);
+    const left = await db.prepare("SELECT COUNT(*) AS n FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).first<{ n: number }>();
+    assert.equal(Number(left!.n), 0, "a plan in force licenses them all again");
     const reminded = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(reminded, new RegExp(`License ending soon[\\s\\S]*ends on ${soon}`));
+    assert.match(reminded, new RegExp(`Plan ending soon[\\s\\S]*ends on ${soon}`));
     const allowed = await call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
-    assert.equal(allowed.status, 200, "a license in force enrols as before");
-    for (const clientId of ["PC-LAPSED", "PC-LICENSED"]) {
-      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
-    }
+    assert.equal(allowed.status, 200, "a plan in force enrols as before");
 
     assert.equal((await license({ tenantId, plan: "education", expiresOn: null }, admin)).status, 200);
     const quiet = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.doesNotMatch(quiet, /id="license-notice"/, "no end date, no notice");
     assert.equal((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie })).status, 200);
 
+    assert.equal((await license({ tenantId, plan: "free", expiresOn: "2030-01-01" }, admin)).status, 200, "free takes no end date");
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null);
+
     const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
     const entries = logs.logs as any[];
-    assert.ok(entries.some((l) => l.action === "device.enroll_license" && /client=PC-LAPSED/.test(l.details)));
+    assert.ok(entries.some((l) => l.action === "device.enroll_limit" && /client=PC-LAPSED .*plan=free/.test(l.details)));
     assert.ok(entries.some((l) => l.action === "tenant.license" && /plan=subscriber expires=/.test(l.details)));
-    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null });
+    assert.ok(entries.some((l) => l.action === "plan.licence_move"));
+    for (const clientId of [...tokens.keys(), "PC-LAPSED"]) {
+      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    }
+    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null, workstation_limit: before!.workstation_limit });
+    await db.prepare("DELETE FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).run();
   });
 
   test("Only the organization's administrators use Remote Control, never other staff", async () => {
@@ -6314,6 +6699,152 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------------ housekeeping
 
+  test("Status checks: each component is checked, and a failure is a result, not an error", async () => {
+    const db = getDatabase(mockEnv);
+    const hub = (ok: boolean) =>
+      ({
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async (url: string) => (ok && url.endsWith("/ping") ? new Response("{}") : new Response("no", { status: 500 })) })
+      }) as unknown as DurableObjectNamespace;
+    const releases = (ok: boolean) =>
+      ({ list: async () => { if (!ok) throw new Error("bucket gone"); return { objects: [] }; } }) as unknown as R2Bucket;
+    const good = await checkComponents({ ...mockEnv, ORG_HUB: hub(true), RELEASES: releases(true) }, db);
+    assert.deepEqual(good.map((r) => [r.component, r.ok]), [["console", true], ["workstations", true], ["email", true], ["updates", true]]);
+    const bad = await checkComponents({ ...mockEnv, ORG_HUB: hub(false), RELEASES: releases(false) }, db);
+    assert.equal(bad.find((r) => r.component === "workstations")!.ok, false);
+    assert.match(bad.find((r) => r.component === "updates")!.detail!, /bucket gone/);
+    assert.equal((await checkComponents(mockEnv, db)).some((r) => r.component === "updates"), false, "no releases bucket, no Updates row");
+
+    // Counted per day: two rounds today, one of them failing.
+    const at = Math.floor(Date.now() / 1000);
+    await recordStatusChecks(db, good, at);
+    await recordStatusChecks(db, bad, at);
+    const env = { ...mockEnv, RELEASES: releases(true) };
+    const updates = (await componentStatuses(env, db, at)).find((c) => c.component === "updates")!;
+    assert.equal(updates.ok, false, "the latest round decides the state");
+    assert.equal(updates.days.length, 90);
+    assert.deepEqual(updates.days[89], { day: new Date(at * 1000).toISOString().slice(0, 10), checks: 2, failures: 1 });
+    assert.equal(updates.days[0], null);
+
+    // The 5-minute cron runs only the checks.
+    await worker.scheduled({ cron: "*/5 * * * *" } as ScheduledEvent, mockEnv);
+    const latest = await db.prepare("SELECT ok FROM status_latest WHERE component = 'console'").first<{ ok: number }>();
+    assert.equal(latest!.ok, 1);
+    const page = await call("/status", { headers: { Accept: "text/html" } });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Console and sign-in/);
+    assert.match(html, /No incidents in the last 90 days/);
+    assert.match(html, /href="\/status"/, "the footer links it");
+
+    const health = await call("/api/health");
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: "ok" });
+    assert.equal(health.headers.get("Cache-Control"), "no-store");
+  });
+
+  test("A super admin posts incidents; an open one shows on /status and in every console until resolved", async () => {
+    const admin = await superCookie();
+    const open = (body: unknown, cookie?: string) => call("/api/super/status/incidents", { ...json(body), ...(cookie ? { cookie } : {}) });
+    const incident = { title: "Workstations cannot connect", impact: "major", body: "We are looking into it." };
+    assert.equal((await open(incident)).status, 401);
+    assert.equal((await open(incident, orgSessionCookie)).status, 403);
+    assert.equal((await open({ ...incident, title: " " }, admin)).status, 400);
+    assert.equal((await open({ ...incident, impact: "total" }, admin)).status, 400);
+    assert.equal((await open({ ...incident, body: "" }, admin)).status, 400);
+    const created = await callJson("/api/super/status/incidents", { ...json(incident), cookie: admin });
+    assert.equal(created.res.status, 200);
+    const id = created.data.id as string;
+    assert.equal(created.data.incidents[0].status, "investigating");
+
+    const console1 = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(console1.includes('id="incident-banner"') && console1.includes("Workstations cannot connect"));
+    assert.ok(console1.includes("callout-danger"), "a major incident is red");
+    const page = await (await call("/status", { headers: { Accept: "text/html" } })).text();
+    assert.match(page, /A major incident is under way/);
+    assert.match(page, /We are looking into it\./);
+
+    const update = (body: unknown) => callJson(`/api/super/status/incidents/${id}`, { ...json(body), cookie: admin });
+    assert.equal((await update({ status: "fixed", body: "x" })).res.status, 400);
+    assert.equal((await update({ status: "identified", body: "" })).res.status, 400);
+    assert.equal((await callJson(`/api/super/status/incidents/${crypto.randomUUID()}`, { ...json({ status: "identified", body: "x" }), cookie: admin })).res.status, 404);
+    assert.equal((await update({ status: "identified", body: "A certificate expired." })).res.status, 200);
+    const resolved = await update({ status: "resolved", body: "Renewed; everything is back." });
+    assert.equal(resolved.res.status, 200);
+    assert.ok(resolved.data.incidents.find((i: any) => i.id === id).resolved_at);
+    assert.equal((await update({ status: "monitoring", body: "Late." })).res.status, 409, "a resolved incident takes no more updates");
+
+    const console2 = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(!console2.includes('id="incident-banner"'));
+    const after = await (await call("/status", { headers: { Accept: "text/html" } })).text();
+    assert.match(after, /Renewed; everything is back\./);
+    assert.doesNotMatch(after, /A major incident is under way/);
+    const listed = await callJson("/api/super/status", { cookie: admin });
+    assert.equal(listed.data.incidents[0].updates.length, 3);
+  });
+
+  test("Last month's summary shows on Workstations in the first half of the month, from recorded usage", async () => {
+    const db = getDatabase(mockEnv);
+    const tenant = (await db.prepare("SELECT * FROM tenants WHERE subdomain = 'greenwood'").first<any>())!;
+    // October 2026, and September for the comparison; nothing else of these months is recorded.
+    const rows: Array<[string, string, number, number]> = [
+      ["SUM-A", "2026-10-05", 7200, 3],
+      ["SUM-B", "2026-10-05", 3600, 2],
+      ["SUM-A", "2026-10-20", 1800, 1],
+      ["SUM-A", "2026-09-10", 9000, 4]
+    ];
+    for (const [client, day, active, sessions] of rows) {
+      await db
+        .prepare("INSERT INTO usage_daily (tenant_id, client_id, day, on_seconds, active_seconds, sessions) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(tenant.id, client, day, active, active, sessions)
+        .run();
+    }
+    // Earlier tests may have filed problems in October too: count those first.
+    const earlier = (await db
+      .prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN report_state = 'sent' THEN 1 ELSE 0 END) AS sent FROM workstation_issues WHERE tenant_id = ? AND occurred_at >= ? AND occurred_at < ?")
+      .bind(tenant.id, Date.UTC(2026, 9, 1) / 1000, Date.UTC(2026, 10, 1) / 1000)
+      .first<{ n: number; sent: number | null }>())!;
+    await db
+      .prepare("INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, occurred_at, created_at, report_state) VALUES (?, ?, 'SUM-A', 'error', 'boot', ?, ?, 'sent')")
+      .bind(crypto.randomUUID(), tenant.id, Date.UTC(2026, 9, 7) / 1000, Date.UTC(2026, 9, 7) / 1000)
+      .run();
+    try {
+      const nov3 = Date.UTC(2026, 10, 3, 9);
+      const summary = (await monthlySummaryFor(db, tenant, nov3))!;
+      assert.equal(summary.month, "2026-10");
+      assert.equal(summary.label, "October 2026");
+      assert.equal(summary.activeHours, 3.5);
+      assert.equal(summary.previousActiveHours, 2.5);
+      assert.equal(summary.sessions, 6);
+      assert.equal(summary.workstations, 2);
+      assert.deepEqual(summary.busiestDay, { day: "2026-10-05", activeHours: 3 });
+      assert.equal(summary.problems, Number(earlier.n) + 1);
+      assert.equal(summary.bugReports, Number(earlier.sent ?? 0) + 1);
+      assert.equal(await monthlySummaryFor(db, tenant, Date.UTC(2026, 10, 15)), null, "only in the first 14 days");
+      assert.equal(await monthlySummaryFor(db, { ...tenant, summary_dismissed_month: "2026-10" }, nov3), null);
+      assert.equal(await monthlySummaryFor(db, tenant, Date.UTC(2026, 7, 3)), null, "a month without usage has no summary");
+
+      mock.timers.enable({ apis: ["Date"], now: nov3 });
+      try {
+        const grid = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+        assert.ok(grid.includes('id="monthly-summary"'));
+        assert.match(grid, /October 2026 at a glance/);
+        assert.match(grid, /3\.5 hours<\/strong> of use on 2 workstations, up 40% on the month before/);
+        assert.match(grid, /Busiest day: <strong>Monday 5 October<\/strong>/);
+        assert.equal((await call("/api/tenant/monthly-summary/dismiss?tenant=greenwood", { ...json({ month: "2026-09" }), cookie: orgSessionCookie })).status, 400);
+        assert.equal((await call("/api/tenant/monthly-summary/dismiss?tenant=greenwood", { ...json({ month: "2026-10" }), cookie: orgSessionCookie })).status, 200);
+        const later = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+        assert.ok(!later.includes('id="monthly-summary"'), "dismissed until next month");
+      } finally {
+        mock.timers.reset();
+      }
+    } finally {
+      await db.prepare("DELETE FROM usage_daily WHERE tenant_id = ? AND client_id LIKE 'SUM-%'").bind(tenant.id).run();
+      await db.prepare("DELETE FROM workstation_issues WHERE tenant_id = ? AND client_id = 'SUM-A'").bind(tenant.id).run();
+      await db.prepare("UPDATE tenants SET summary_dismissed_month = NULL WHERE id = ?").bind(tenant.id).run();
+    }
+  });
+
   test("Runs the scheduled housekeeping handler", async () => {
     await worker.scheduled({} as ScheduledEvent, mockEnv);
     const me = await callJson("/api/auth/me", { cookie: orgSessionCookie });
@@ -6396,6 +6927,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       AUDIT_ARCHIVE: {} as R2Bucket,
       FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
       AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      ACCOUNT_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
       CUSTOM_HOSTNAMES: {} as Workflow,
       CF_API_TOKEN: "test-token",
       CF_ZONE_ID: "test-zone"
@@ -6450,7 +6982,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await assert.rejects(
       () => worker.fetch(request("/"), secrets as Env),
       (err: Error) =>
-        ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
+        ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "ACCOUNT_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
           .every((name) => err.message.includes(name))
     );
     const bindings = {
@@ -6462,6 +6994,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       AUDIT_ARCHIVE: {} as R2Bucket,
       FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
       AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      ACCOUNT_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
       CUSTOM_HOSTNAMES: {} as Workflow,
       CF_API_TOKEN: "test-token",
       CF_ZONE_ID: "test-zone"
@@ -6666,11 +7199,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
+    // Registration no longer takes an address, so a demo name cannot be registered.
+    const squatter = await submitSignup({ name: "Web Demo", email: "squatter@example.com", subdomain: "web-demo", keepGeneratedAddress: true });
+    assert.equal(squatter.res.status, 200);
+    const squatted = await getDatabase(mockEnv)
+      .prepare("SELECT subdomain FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'squatter@example.com')")
+      .first<{ subdomain: string }>();
+    assert.match(squatted!.subdomain, /^web-demo-[a-z2-9]{4}$/);
     for (const subdomain of ["demo", ...DEMO_SLUGS]) {
-      const res = await call("/api/auth/register", json(signupBody({
-        name: "Squatter", email: `squatter-${subdomain}@example.com`, password: "SquatterPassword123!", subdomain
-      })));
-      assert.equal(res.status, 400, `${subdomain} is reserved`);
       const rename = await call("/api/tenant/subdomain?tenant=greenwood", {
         ...json({ subdomain }), cookie: orgSessionCookie
       });
@@ -7083,45 +7619,86 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loc, "https://labkiosk.org/?login=1&tenant=greenwood");
   });
 
-  test("Allows organization admin to update subdomain and enforces slug validation", async () => {
-    // 1. Reject invalid subdomain
-    const { res: badRes, data: badData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "ab" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(badRes.status, 400);
-    assert.match(badData.error, /3-63 characters/);
+  test("An organization asks for a chosen address; once granted it is served beside the old one", async () => {
+    const db = getDatabase(mockEnv);
+    const ask = (subdomain: string, cookie = orgSessionCookie) => callJson("/api/tenant/subdomain?tenant=greenwood", { ...json({ subdomain }), cookie });
+    assert.match((await ask("ab")).data.error, /3-63 characters/);
+    assert.match((await ask("admin")).data.error, /reserved/);
+    const taken = await ask("riverside");
+    assert.equal(taken.res.status, 409);
+    assert.match(taken.data.error, /already taken/);
+    assert.equal((await ask("greenwood")).res.status, 400, "the current address is not a request");
 
-    // 2. Reject reserved slug
-    const { res: resvRes, data: resvData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "admin" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(resvRes.status, 400);
-    assert.match(resvData.error, /reserved/);
+    const asked = await ask("greenwood-high");
+    assert.equal(asked.res.status, 200);
+    assert.equal(asked.data.pending, true);
+    let row = await db.prepare("SELECT subdomain, requested_subdomain, chosen_subdomain FROM tenants WHERE subdomain = 'greenwood'").first<any>();
+    assert.deepEqual({ ...row }, { subdomain: "greenwood", requested_subdomain: "greenwood-high", chosen_subdomain: null }, "nothing changes until it is approved");
+    assert.equal((await call("/admin?tenant=greenwood-high", { cookie: orgSessionCookie })).status === 200, false, "not served yet");
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(settings.includes('id="subdomain-pending"'));
 
-    // 3. Reject duplicate subdomain (already claimed by riverside)
-    const { res: dupRes, data: dupData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "riverside" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(dupRes.status, 400);
-    assert.match(dupData.error, /already claimed/);
+    const admin = await superCookie();
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    const granted = await callJson("/api/super/tenants/approve", { ...json({ tenantId, subdomain: "greenwood-high" }), cookie: admin });
+    assert.equal(granted.res.status, 200);
+    assert.equal(granted.data.subdomain, "greenwood", "the enrolled address stays");
+    assert.equal(granted.data.chosenSubdomain, "greenwood-high");
+    row = await db.prepare("SELECT subdomain, requested_subdomain, chosen_subdomain FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.deepEqual({ ...row }, { subdomain: "greenwood", requested_subdomain: null, chosen_subdomain: "greenwood-high" });
 
-    // 4. Successfully update subdomain to greenwood-high
-    const { res: okRes, data: okData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
-      ...json({ subdomain: "greenwood-high" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(okRes.status, 200);
-    assert.equal(okData.status, "ok");
-    assert.equal(okData.subdomain, "greenwood-high");
+    // Both addresses reach the same organization.
+    for (const host of ["greenwood", "greenwood-high"]) {
+      const page = await call(`/home?tenant=${host}`);
+      assert.equal(page.status, 200, host);
+    }
+    const notice = await db.prepare("SELECT title FROM notifications WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1").bind(tenantId).first<{ title: string }>();
+    assert.equal(notice!.title, "Your chosen address is ready");
+    // No other organization can take it, and a second one needs support.
+    const riversideTaken = await callJson("/api/tenant/subdomain?tenant=riverside", { ...json({ subdomain: "greenwood-high" }), cookie: rivalSessionCookie });
+    assert.equal(riversideTaken.res.status, 409);
+    assert.equal((await ask("greenwood-two")).res.status, 409);
 
-    // Restore subdomain back to greenwood for subsequent tests
-    await callJson("/api/tenant/subdomain?tenant=greenwood-high", {
-      ...json({ subdomain: "greenwood" }),
-      cookie: orgSessionCookie
-    });
+    await db.prepare("UPDATE tenants SET chosen_subdomain = NULL WHERE id = ?").bind(tenantId).run();
+  });
+
+  test("A generated address has no public homepage until a chosen one is granted, and the console says so", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    const before = await db.prepare("SELECT remote_control_status, feature_tip_dismissed_at FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    await db.prepare("UPDATE tenants SET address_generated = 1, remote_control_status = 'none', feature_tip_dismissed_at = NULL WHERE id = ?").bind(tenantId).run();
+    try {
+      const root = await (await call("/?tenant=greenwood")).text();
+      assert.doesNotMatch(root, /Open User Portal/, "no homepage");
+      assert.match(root, /class="portal-title"/, "the root is the portal");
+      const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.ok(settings.includes('id="homepage-not-live"'));
+
+      // The console tells the organization about both features, never by email.
+      const outboxBefore = localOutbox().length;
+      const grid = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.ok(grid.includes('id="feature-tip"'));
+      assert.match(grid, /Remote Control<\/strong>/);
+      assert.match(grid, /Your own address<\/strong>/);
+      assert.equal(localOutbox().length, outboxBefore);
+      const dismiss = await call("/api/tenant/feature-tip/dismiss?tenant=greenwood", { method: "POST", cookie: orgSessionCookie });
+      assert.equal(dismiss.status, 200);
+      const later = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.ok(!later.includes('id="feature-tip"'), "dismissed for 30 days");
+      await db.prepare("UPDATE tenants SET feature_tip_dismissed_at = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000) - 31 * 24 * 3600, tenantId).run();
+      assert.ok((await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text()).includes('id="feature-tip"'), "back after 30 days");
+
+      // Granted: the homepage is on, and the tip no longer offers an address.
+      await db.prepare("UPDATE tenants SET chosen_subdomain = 'greenwood-hq' WHERE id = ?").bind(tenantId).run();
+      assert.match(await (await call("/?tenant=greenwood")).text(), /Open User Portal/);
+      const after = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+      assert.doesNotMatch(after, /Your own address<\/strong>/);
+    } finally {
+      await db
+        .prepare("UPDATE tenants SET address_generated = 0, chosen_subdomain = NULL, remote_control_status = ?, feature_tip_dismissed_at = ? WHERE id = ?")
+        .bind(before.remote_control_status, before.feature_tip_dismissed_at, tenantId)
+        .run();
+    }
   });
 
   test("Updates Settings including custom home route", async () => {
@@ -7821,6 +8398,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/admin/plan?tenant=greenwood", orgSessionCookie],
       ["/super", superSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
@@ -7899,6 +8477,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/content-policy",
       "https://www.labkiosk.org/dpa",
+      "https://www.labkiosk.org/refunds",
       "https://www.labkiosk.org/terms/bug-reports"
     ]);
     // Every listed page really is served, indexable, on the canonical host.
@@ -8429,6 +9008,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const switched = await callJson("/api/settings/updates?tenant=greenwood", { ...json({ channel: "beta" }), cookie: orgSessionCookie });
     assert.equal(switched.res.status, 200);
     assert.equal(switched.data.offer.version, "2.9.0", "a beta organization is offered the newest of beta and stable");
+    // The Workstations banner counts the workstations whose system image is older than the offer.
+    const db = getDatabase(mockEnv);
+    const reported = await db.prepare("SELECT tenant_id, image_version FROM client_devices WHERE client_id = 'PC-BUG'").first<any>();
+    assert.equal(reported.image_version, "2.5.1", "an earlier test has PC-BUG report its version");
+    const older = await db
+      .prepare("SELECT COUNT(*) AS n FROM client_devices WHERE tenant_id = ? AND image_version IS NOT NULL")
+      .bind(reported.tenant_id)
+      .first<{ n: number }>();
+    const behind = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(behind.data.behind, older!.n);
+    await db.prepare("UPDATE client_devices SET image_version = '2.9.0' WHERE client_id = 'PC-BUG'").run();
+    const current = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(current.data.behind, older!.n - 1, "a workstation on the offered version is not behind");
+    await db.prepare("UPDATE client_devices SET image_version = '2.5.1' WHERE client_id = 'PC-BUG'").run();
 
     const offered = await (await callWith(releasesEnv, "/api/devices/update", { bearer: token })).json<any>();
     assert.deepEqual(offered.release, {
@@ -9805,6 +10398,565 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await inGroup.closeFromClient();
     await outside.closeFromClient();
     await callJson(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+  });
+
+  // ------------------------------------------------------------------ exam mode (src/exams.ts)
+
+  // Greenwood is at its workstation limit by now: each exam test makes room for its own and gives it back.
+  const withRoom = async (extra: number, run: () => Promise<void>) => {
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    await db.prepare("UPDATE tenants SET workstation_limit = workstation_limit + ? WHERE id = ?").bind(extra, tenantId).run();
+    try {
+      await run();
+    } finally {
+      await db.prepare("UPDATE tenants SET workstation_limit = workstation_limit - ? WHERE id = ?").bind(extra, tenantId).run();
+    }
+  };
+
+  test("An exam is validated: its name, a named https site, other sites, the group, the start and the length", () => {
+    const now = 1_800_000_000;
+    const ok = parseExamInput(
+      { title: " Term 1 ", url: "https://exam.example.org/t?x=1", hosts: ["https://cdn.example.net/a", "EXAM.example.org", "", "cdn.example.net"], durationMinutes: 45 },
+      ["Lab A"],
+      now
+    );
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.ok && ok.value, {
+      title: "Term 1",
+      groupName: null,
+      url: "https://exam.example.org/t?x=1",
+      hosts: ["exam.example.org", "cdn.example.net"],
+      startsAt: now,
+      endsAt: now + 45 * 60
+    });
+    const problem = (body: Record<string, unknown>) => {
+      const r = parseExamInput({ title: "T", url: "https://exam.example.org", durationMinutes: 30, ...body }, ["Lab A"], now);
+      return r.ok ? null : r.error;
+    };
+    assert.equal(problem({}), null);
+    assert.match(problem({ title: "  " })!, /name/);
+    assert.match(problem({ url: "javascript:alert(1)" })!, /http/);
+    assert.match(problem({ url: "https://10.0.0.1/exam" })!, /named site/);
+    assert.match(problem({ hosts: ["not a domain"] })!, /not a domain name/);
+    assert.match(problem({ hosts: Array.from({ length: EXAM_LIMITS.extraHosts + 1 }, (_, i) => `h${i}.example.com`) })!, /At most/);
+    assert.match(problem({ groupName: "Nope" })!, /group not found/);
+    assert.equal(problem({ groupName: "Lab A" }), null);
+    assert.match(problem({ startsAt: now - 600 })!, /passed/);
+    assert.equal(problem({ startsAt: now - 60 }), null, "a start a moment ago is now");
+    assert.match(problem({ startsAt: now + (EXAM_LIMITS.aheadDays + 1) * 86400 })!, /ahead/);
+    assert.match(problem({ durationMinutes: 2 })!, /minutes/);
+    assert.match(problem({ durationMinutes: 30.5 })!, /minutes/);
+    assert.equal(examEpoch(now), now * 1000 + 999);
+  });
+
+  test("A running exam holds its group on the exam site, refuses broadcasts there, and reports who dropped off", () => withRoom(2, async () => {
+    const tenantId = await greenwoodId();
+    const base = "/api/exams?tenant=greenwood";
+    await enrolPower("EX-IN");
+    await enrolPower("EX-OUT");
+    const group = (await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Exam Room" }), cookie: orgSessionCookie })).data.group;
+    let inRoom = await hubs().connectDevice({ tenantId, clientId: "EX-IN", ip: "10.0.0.61", portal: portalContext() });
+    const outside = await hubs().connectDevice({ tenantId, clientId: "EX-OUT", ip: "10.0.0.62", portal: portalContext() });
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["EX-IN"], groupName: "Exam Room" }), cookie: orgSessionCookie });
+    const portal = ofType(inRoom, "config").at(-1)!.targetUrl as string;
+    const outsideConfigs = ofType(outside, "config").length;
+
+    const created = await callJson(base, {
+      ...json({ title: "Science term 1", url: "https://exam.example.org/test", hosts: ["cdn.example.net"], groupName: "Exam Room", durationMinutes: 30 }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(created.res.status, 200, JSON.stringify(created.data));
+    const exam = created.data.exam;
+    assert.equal(exam.phase, "running");
+
+    const during = ofType(inRoom, "config").at(-1)!;
+    assert.equal(during.targetUrl, "https://exam.example.org/test");
+    assert.equal(during.broadcastUrl, "https://exam.example.org/test");
+    assert.equal(during.broadcastEpoch, examEpoch(exam.startsAt));
+    assert.deepEqual(during.whitelist, ["cdn.example.net", "exam.example.org"], "only the exam's sites");
+    assert.deepEqual(during.printing, { enabled: false, printers: [] });
+    assert.equal(during.homeReset, false, "Home goes back to the exam");
+    const cleared = (socket: typeof inRoom) =>
+      ofType(socket, "commands").flatMap((m) => m.commands as Array<{ action: string }>).filter((c) => c.action === "clear-session").length;
+    assert.equal(cleared(inRoom), 1, "its browser is cleared at the start");
+    assert.notEqual(ofType(outside, "config").at(-1)!.targetUrl, "https://exam.example.org/test", "a workstation outside the group is left alone");
+    assert.ok(ofType(outside, "config").length >= outsideConfigs);
+    assert.equal(cleared(outside), 0);
+
+    // Nobody can send the exam's workstations elsewhere.
+    const send = (target: string) =>
+      call("/api/command?tenant=greenwood", { ...json({ target, action: "navigate", url: "https://www.wikipedia.org/" }), cookie: orgSessionCookie });
+    assert.equal((await send("EX-IN")).status, 409);
+    assert.equal((await send("all")).status, 409);
+    assert.equal((await send("EX-OUT")).status, 200, "outside the exam a broadcast works");
+    assert.equal(ofType(inRoom, "config").at(-1)!.targetUrl, "https://exam.example.org/test");
+
+    // Two exams never share a workstation.
+    const clash = await callJson(base, { ...json({ title: "Other", url: "https://other.example.org", durationMinutes: 30 }), cookie: orgSessionCookie });
+    assert.equal(clash.res.status, 409);
+    assert.match(clash.data.error, /Science term 1/);
+
+    // It drops off and comes back: the board counts it.
+    await inRoom.closeFromClient();
+    inRoom = await hubs().connectDevice({ tenantId, clientId: "EX-IN", ip: "10.0.0.61", portal: portalContext() });
+    assert.equal(ofType(inRoom, "config").at(-1)!.targetUrl, "https://exam.example.org/test", "back on the exam when it reconnects");
+    const board = await callJson(`/api/exams/${exam.id}?tenant=greenwood`, { cookie: orgSessionCookie });
+    assert.equal(board.res.status, 200);
+    assert.deepEqual(
+      board.data.workstations.map((w: any) => [w.clientId, w.onlineAtStart, w.disconnections, w.online]),
+      [["EX-IN", true, 1, true]],
+      "only the group's workstations"
+    );
+
+    // Ended early: back to the portal, cleared again.
+    const ended = await callJson(`/api/exams/${exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie });
+    assert.equal(ended.res.status, 200);
+    assert.equal(ended.data.exam.phase, "ended");
+    const after = ofType(inRoom, "config").at(-1)!;
+    assert.equal(after.targetUrl, portal);
+    assert.equal(after.broadcastUrl, "");
+    assert.equal(after.broadcastEpoch, 0, "a reset, as after an operator's Reset to portal");
+    assert.ok(allowlistHas(after.whitelist as string[], "khanacademy.org"), "the organization's allowlist is back");
+    assert.equal(cleared(inRoom), 1, "the reconnected socket was cleared at the end");
+    assert.equal((await callJson(`/api/exams/${exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie })).res.status, 409);
+    assert.equal((await send("EX-IN")).status, 200, "after the exam broadcasts work again");
+
+    const report = await call(`/api/exams/${exam.id}/report.csv?tenant=greenwood`, { cookie: orgSessionCookie });
+    assert.equal(report.status, 200);
+    assert.match(report.headers.get("Content-Type") || "", /text\/csv/);
+    assert.match(report.headers.get("Content-Disposition") || "", /attachment; filename="exam-\d{4}-\d{2}-\d{2}-science-term-1\.csv"/);
+    const csv = await report.text();
+    assert.match(csv, /"Exam","Science term 1"/);
+    assert.match(csv, /"EX-IN","Exam Room","Yes","1","\d+"/);
+
+    const logs = (await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).data.logs as Array<{ action: string }>;
+    assert.ok(logs.some((l) => l.action === "exam.create") && logs.some((l) => l.action === "exam.end"));
+    const listed = await callJson(base, { cookie: orgSessionCookie });
+    assert.ok(listed.data.groups.includes("Exam Room"));
+    assert.equal(listed.data.exams.find((e: any) => e.id === exam.id).phase, "ended");
+
+    await inRoom.closeFromClient();
+    await outside.closeFromClient();
+    await callJson(`/api/groups/${group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    await removeAll(["EX-IN", "EX-OUT"]);
+  }));
+
+  test("A scheduled exam starts and ends on the hub's alarm, and a cancelled one never starts", () => withRoom(1, async () => {
+    const tenantId = await greenwoodId();
+    const base = "/api/exams?tenant=greenwood";
+    await enrolPower("EX-ALL");
+    const start = Math.floor(Date.now() / 1000) + 600;
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const device = await hubs().connectDevice({ tenantId, clientId: "EX-ALL", ip: "10.0.0.63", portal: portalContext() });
+      const portal = ofType(device, "config").at(-1)!.targetUrl as string;
+      const cancelled = await callJson(base, {
+        ...json({ title: "Cancelled", url: "https://cancelled.example.org", startsAt: start + 3600, durationMinutes: 30 }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(cancelled.data.exam.phase, "scheduled");
+      const scheduled = await callJson(base, {
+        ...json({ title: "Maths", url: "https://maths.example.org/paper", startsAt: start, durationMinutes: 10 }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(scheduled.res.status, 200, JSON.stringify(scheduled.data));
+      assert.equal(scheduled.data.exam.phase, "scheduled");
+      assert.ok(hubs().alarmAt(tenantId)! <= start * 1000, "the hub wakes for the start");
+      assert.notEqual(ofType(device, "config").at(-1)!.targetUrl, "https://maths.example.org/paper", "not before it starts");
+      assert.equal((await callJson(`/api/exams/${cancelled.data.exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie })).data.exam.cancelled, true);
+
+      mock.timers.tick(600_000);
+      await device.fromClient(HUB_PING);
+      hubs().setLastPing(device, new Date());
+      await hubs().runAlarm(tenantId);
+      assert.equal(ofType(device, "config").at(-1)!.targetUrl, "https://maths.example.org/paper", "started by the alarm");
+      assert.ok(hubs().alarmAt(tenantId)! <= (start + 600) * 1000, "and it wakes for the end");
+
+      mock.timers.tick(600_000);
+      hubs().setLastPing(device, new Date());
+      await hubs().runAlarm(tenantId);
+      const after = ofType(device, "config").at(-1)!;
+      assert.equal(after.targetUrl, portal, "ended by the alarm");
+      const row = await getDatabase(mockEnv).prepare("SELECT finalized_at FROM exam_sessions WHERE id = ?").bind(scheduled.data.exam.id).first<any>();
+      assert.ok(row.finalized_at, "sent back to the portal once");
+      const cancelledRow = await getDatabase(mockEnv).prepare("SELECT broadcast_epoch FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+      assert.ok(cancelledRow.broadcast_epoch >= (start + 600) * 1000, "the reset is recorded organization-wide");
+      await device.closeFromClient();
+    } finally {
+      mock.timers.reset();
+    }
+    await removeAll(["EX-ALL"]);
+  }));
+
+  test("The Exams page and its API are for the workstations permission", async () => {
+    const page = await call("/admin/exams?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Schedule an exam/);
+    assert.match(html, /data-nav="exams"/, "it is in the menu");
+    const staff = await addStaffMember(orgSessionCookie, "greenwood", { name: "No Screens", email: "noscreens@greenwood.example", password: "NoScreens1234!", permissions: ["staff"] });
+    assert.equal((await call("/api/exams?tenant=greenwood", { cookie: staff.cookie })).status, 403);
+    const own = await (await call("/admin/staff?tenant=greenwood", { cookie: staff.cookie })).text();
+    assert.doesNotMatch(own, /data-nav="exams"/, "not in its menu");
+  });
+
+  // --------------------------------------------- certified hardware and resellers (src/partners.ts)
+
+  test("Certified models are shown first on /hardware, and only the super admin certifies", async () => {
+    const certify = (cookie: string, body: unknown) => call("/api/super/hardware/certify", { ...json(body), cookie });
+    assert.equal((await certify(orgSessionCookie, { vendor: "LENOVO", model: "ThinkCentre M70q" })).status, 403);
+    assert.equal((await certify(superSessionCookie, { vendor: "", model: "x" })).status, 400);
+    const done = await callJson("/api/super/hardware/certify", { ...json({ vendor: "LENOVO", model: "ThinkCentre M70q", note: "BIOS 1.20 or later" }), cookie: superSessionCookie });
+    assert.equal(done.res.status, 200);
+    assert.deepEqual(done.data.certified.map((c: any) => [c.vendor, c.model, c.note]), [["LENOVO", "ThinkCentre M70q", "BIOS 1.20 or later"]]);
+    // The same model in another spelling is the same model.
+    await callJson("/api/super/hardware/certify", { ...json({ vendor: "Lenovo", model: "thinkcentre m70q", note: "" }), cookie: superSessionCookie });
+    const listed = await callJson("/api/super/partners", { cookie: superSessionCookie });
+    assert.equal(listed.data.certified.length, 1);
+    assert.equal(listed.data.certified[0].note, null);
+
+    const page = await (await call("/hardware")).text();
+    assert.match(page, /Certified models/);
+    assert.match(page, /thinkcentre m70q/);
+    assert.match(page, /href="\/contact\?reason=reseller"/, "anyone can apply to be a reseller");
+    assert.doesNotMatch(page, /Where to buy/, "no directory before the first reseller is approved");
+
+    assert.equal((await call("/api/super/hardware/uncertify", { ...json({ vendor: "lenovo", model: "THINKCENTRE M70Q" }), cookie: superSessionCookie })).status, 200);
+    assert.equal((await call("/api/super/hardware/uncertify", { ...json({ vendor: "lenovo", model: "THINKCENTRE M70Q" }), cookie: superSessionCookie })).status, 404);
+    assert.doesNotMatch(await (await call("/hardware")).text(), /Certified models/);
+  });
+
+  test("A reseller applies with the contact form, and is listed on /hardware once approved", async () => {
+    const application = {
+      name: "Asha Rao",
+      organization: "Kalinga Computers",
+      email: "asha@kalinga-computers.example",
+      reason: "reseller",
+      message: "We sell refurbished desktops to schools in Odisha.",
+      phone: "+91 98765 43210",
+      state: "Odisha",
+      city: "Bhubaneswar",
+      website: "kalinga-computers.example",
+      stocks: "Dell OptiPlex 3000"
+    };
+    const contactPage = await (await call("/contact")).text();
+    assert.match(contactPage, /<option value="reseller">Become a reseller<\/option>/);
+    assert.match(contactPage, /id="contact-reseller" hidden/);
+
+    const incomplete = await callJson("/api/contact", { ...json({ ...application, state: "", emailCode: "123456" }), headers: { "CF-Connecting-IP": "203.0.113.91" } });
+    assert.equal(incomplete.res.status, 400);
+    assert.match(incomplete.data.error, /state/);
+
+    const sent = await submitContact(application, "203.0.113.91");
+    assert.equal(sent.res.status, 200, JSON.stringify(sent.data));
+    const db = getDatabase(mockEnv);
+    const row = await db.prepare("SELECT * FROM resellers WHERE email = ?").bind(application.email).first<any>();
+    assert.equal(row.status, "pending");
+    assert.equal(row.website, "https://kalinga-computers.example/");
+    const conversation = await db.prepare("SELECT category, subject FROM conversations WHERE id = ?").bind(row.conversation_id).first<any>();
+    assert.deepEqual({ ...conversation }, { category: "sales", subject: "Become a reseller: Kalinga Computers" }, "filed in Mail under Sales");
+    const again = await callJson("/api/contact", { ...json({ ...application, emailCode: "123456" }), headers: { "CF-Connecting-IP": "203.0.113.92" } });
+    assert.equal(again.res.status, 409, "one application per address");
+    assert.doesNotMatch(await (await call("/hardware")).text(), /Kalinga Computers/, "not listed while it waits");
+
+    const decide = (decision: string) => callJson("/api/super/resellers/decide", { ...json({ id: row.id, decision }), cookie: superSessionCookie });
+    assert.equal((await call("/api/super/resellers/decide", { ...json({ id: row.id, decision: "approve" }), cookie: orgSessionCookie })).status, 403);
+    const approved = await decide("approve");
+    assert.equal(approved.res.status, 200);
+    assert.equal(approved.data.emailed, true);
+    assert.match(lastMailTo(application.email).text, /now listed as a Lab Kiosk reseller/);
+    assert.equal((await decide("approve")).res.status, 409);
+
+    const page = await (await call("/hardware")).text();
+    assert.match(page, /Where to buy/);
+    assert.match(page, /<h3 class="hw-state">Odisha<\/h3>/);
+    assert.match(page, /Kalinga Computers/);
+    assert.match(page, /href="tel:\+919876543210"/);
+    assert.doesNotMatch(page, /Asha Rao/, "the contact person's name stays private");
+
+    assert.equal((await decide("reject")).res.status, 200, "taken off the directory");
+    assert.doesNotMatch(await (await call("/hardware")).text(), /Where to buy/);
+  });
+
+  // ------------------------------------------------------- plans and billing
+
+  const restorePlan = async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null, workstation_limit: 45, trial_started_at: null });
+    await db.prepare("DELETE FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).run();
+    return { db, tenantId };
+  };
+  const hmac = (secret: string, message: string) => nodeCrypto.createHmac("sha256", secret).update(message).digest("hex");
+
+  test("A plan's limit, a lapsed plan, prices with GST and the paid period are worked out exactly", () => {
+    const now = 1_800_000_000;
+    assert.deepEqual(
+      { ...entitlement({ license_plan: null, license_expires_at: null, workstation_limit: 5 }, now) },
+      { kind: "free", label: "Free", limit: 5, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
+    );
+    const trial = entitlement({ license_plan: "evaluation", license_expires_at: now + 86_400, workstation_limit: 45 }, now);
+    assert.equal(trial.kind, "trial");
+    assert.equal(trial.limit, 45);
+    assert.equal(trial.endingSoon, true);
+    const lapsed = entitlement({ license_plan: "subscriber", license_expires_at: now - 1, workstation_limit: 60 }, now);
+    assert.deepEqual([lapsed.kind, lapsed.limit, lapsed.lapsed, lapsed.lapsedFrom], ["free", PRICING.freeWorkstations, true, "subscription"]);
+    assert.equal(entitlement({ license_plan: "commercial", license_expires_at: now - 1, workstation_limit: 3 }, now).limit, 3, "Free never raises a lower limit");
+
+    assert.deepEqual(quote("month", 0), { period: "month", extraWorkstations: 0, workstations: 45, base: 199_900, extras: 0, subtotal: 199_900, gst: 35_982, total: 235_882 });
+    const yearly = quote("year", 10);
+    assert.deepEqual([yearly.workstations, yearly.subtotal, yearly.gst, yearly.total], [55, 1_999_000 + 390_000, 430_020, 2_819_020]);
+
+    const jan31 = Date.UTC(2027, 0, 31, 10, 0, 0) / 1000;
+    assert.equal(new Date(periodEnd(jan31, "month") * 1000).toISOString(), "2027-02-28T10:00:00.000Z", "a month from 31 January is the end of February");
+    assert.equal(new Date(periodEnd(Date.UTC(2028, 1, 29) / 1000, "year") * 1000).toISOString(), "2029-02-28T00:00:00.000Z");
+    assert.equal(new Date(periodEnd(Date.UTC(2027, 4, 15) / 1000, "month") * 1000).toISOString(), "2027-06-15T00:00:00.000Z");
+
+    assert.ok(emailMatchesWebsite("office@greenwoodacademy.in", "https://www.greenwoodacademy.in/"));
+    assert.ok(emailMatchesWebsite("it@mail.greenwoodacademy.in", "https://greenwoodacademy.in"));
+    assert.ok(!emailMatchesWebsite("office@greenwoodacademy.in", "https://greenwood.example"), "another domain");
+    assert.ok(!emailMatchesWebsite("someone@gmail.com", "https://gmail.com"), "a free mail service proves nothing");
+    assert.ok(!emailMatchesWebsite("office@evilgreenwoodacademy.in", "https://greenwoodacademy.in"), "a lookalike is not a subdomain");
+  });
+
+  test("Licences fit the limit: the workstations seen least recently wait, and get theirs back first in, most recent first", async () => {
+    const { db, tenantId } = await restorePlan();
+    const ids = ["PL-A", "PL-B", "PL-C"];
+    await withRoom(3, async () => {
+      for (const [i, clientId] of ids.entries()) {
+        await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
+        await call("/api/telemetry?tenant=greenwood", { ...json({ clientId }), bearer: (await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }))).data.deviceToken });
+        await db.prepare("UPDATE client_devices SET last_seen = ? WHERE tenant_id = ? AND client_id = ?").bind(2_000_000_000 + i, tenantId, clientId).run();
+      }
+      const enrolled = await countEnrolledWorkstations(db, tenantId);
+      const now = 1_900_000_000;
+      const down = await rebalanceLicences(db, tenantId, enrolled - 2, now);
+      assert.equal(down.unlicensed.length, 2);
+      assert.ok(!down.unlicensed.includes("PL-C") && !down.unlicensed.includes("PL-B"), "the two seen most recently keep theirs");
+      assert.deepEqual(await rebalanceLicences(db, tenantId, enrolled - 2, now + 60), { unlicensed: [], relicensed: [] }, "sticky while nothing changes");
+      const up = await rebalanceLicences(db, tenantId, enrolled - 1, now + 120);
+      assert.equal(up.relicensed.length, 1);
+      const all = await rebalanceLicences(db, tenantId, enrolled, now + 180);
+      assert.equal(all.relicensed.length, 1);
+      for (const clientId of ids) await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    });
+    await restorePlan();
+  });
+
+  test("An organization on Free starts its one 15-day trial of 45 workstations; staff without settings cannot", async () => {
+    const { db, tenantId } = await restorePlan();
+    await updateTenant(db, tenantId, { workstation_limit: PRICING.freeWorkstations });
+    assert.ok([401, 403].includes((await call("/api/plan/trial?tenant=greenwood", json({}))).status), "an anonymous caller is refused");
+    const { data: staffData } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Plan operator", email: "plan-operator@greenwood.example", password: "StaffPassword123!", role: "operator", permissions: ["workstations"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(staffData.status, "ok", JSON.stringify(staffData));
+    const operator = await sessionOf(await signIn({ email: "plan-operator@greenwood.example", password: "StaffPassword123!" }));
+    assert.equal((await call("/api/plan?tenant=greenwood", { cookie: operator })).status, 403, "the plan needs the settings permission");
+    assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: operator })).status, 403);
+    assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status, 403, "a cross-site request is refused");
+
+    const before = (await callJson("/api/plan?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.equal(before.plan.kind, "free");
+    assert.equal(before.plan.limit, PRICING.freeWorkstations);
+    assert.equal(before.trial.refusal, null);
+    assert.equal(before.online, false, "Razorpay is off without its keys");
+
+    const started = await callJson("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(started.res.status, 200, JSON.stringify(started.data));
+    const tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+    assert.equal(tenant.license_plan, "evaluation");
+    assert.equal(Number(tenant.workstation_limit), PRICING.includedWorkstations);
+    const days = (Number(tenant.license_expires_at) - Math.floor(Date.now() / 1000)) / 86_400;
+    assert.ok(days > 14.99 && days <= 15, `ends in 15 days, not ${days}`);
+    const after = (await callJson("/api/plan?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.equal(after.plan.label, "Trial");
+    assert.match(after.trial.refusal, /already had its free trial/);
+    const again = await callJson("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(again.res.status, 409);
+
+    // Once it ends, Free again, and still no second trial.
+    await updateTenant(db, tenantId, { license_expires_at: Math.floor(Date.now() / 1000) - 1 });
+    assert.equal((await callJson("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).res.status, 409);
+
+    const page = await call("/admin/plan?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /<h1 class="page-title">Plan<\/h1>/);
+    assert.match(html, /href="\/admin\/plan[^"]*"[^>]*data-nav="plan"/, "Plan is in the navigation");
+    assert.match(html, /Start the 15-day trial/);
+    assert.match(html, /&#8377;|₹/);
+    const operatorPage = await call("/admin/plan?tenant=greenwood", { cookie: operator, redirect: "manual" });
+    assert.notEqual(operatorPage.status, 200, "staff without settings are sent elsewhere");
+    await restorePlan();
+  });
+
+  test("An education application proves the institution's address with a code; the platform reads the certificate and decides", async () => {
+    const { db, tenantId } = await restorePlan();
+    await updateTenant(db, tenantId, { workstation_limit: PRICING.freeWorkstations });
+    const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46]);
+    const apply = async (fields: Record<string, string>, file: { bytes: Uint8Array; type: string; name: string } | null, cookie = orgSessionCookie) => {
+      const form = new FormData();
+      for (const [k, v] of Object.entries({
+        institution: "Greenwood Academy",
+        board: "CBSE",
+        affiliationNumber: "1530123",
+        website: "https://www.greenwoodacademy.in",
+        email: "office@greenwoodacademy.in",
+        ...fields
+      })) form.set(k, v);
+      if (file) form.set("certificate", new File([file.bytes], file.name, { type: file.type }));
+      const res = await worker.fetch(new Request(`${BASE}/api/plan/education?tenant=greenwood`, { method: "POST", body: form, headers: { Cookie: cookie } }), mockEnv);
+      return { res, data: (await res.json()) as any };
+    };
+    const cert = { bytes: pdf, type: "application/pdf", name: "affiliation.pdf" };
+    for (const [fields, file, pattern] of [
+      [{ email: "principal@gmail.com" }, cert, /own domain/],
+      [{ email: "office@other.example" }, cert, /own domain/],
+      [{ website: "not a site" }, cert, /website/],
+      [{ affiliationNumber: "" }, cert, /affiliation/],
+      [{}, null, /certificate/],
+      [{}, { bytes: new Uint8Array([1, 2, 3, 4]), type: "application/pdf", name: "fake.pdf" }, /not a real PDF/],
+      [{}, { bytes: pdf, type: "text/html", name: "x.html" }, /PDF, JPEG or PNG/]
+    ] as const) {
+      const { res, data } = await apply(fields as Record<string, string>, file as any);
+      assert.equal(res.status, 400, JSON.stringify(fields));
+      assert.match(data.error, pattern);
+    }
+
+    const sent = await apply({}, cert);
+    assert.equal(sent.res.status, 200, JSON.stringify(sent.data));
+    assert.equal(sent.data.application.status, "verifying");
+    const code = /(\d{6}) is the code/.exec(lastMailTo("office@greenwoodacademy.in").text)![1];
+    const verify = (body: Record<string, unknown>) => callJson("/api/plan/education/verify?tenant=greenwood", { ...json(body), cookie: orgSessionCookie });
+    const wrong = await verify({ id: sent.data.application.id, code: code === "000000" ? "111111" : "000000" });
+    assert.equal(wrong.res.status, 400);
+    const confirmed = await verify({ id: sent.data.application.id, code });
+    assert.equal(confirmed.res.status, 200, JSON.stringify(confirmed.data));
+    assert.equal(confirmed.data.application.status, "pending");
+    assert.equal((await verify({ id: sent.data.application.id, code })).res.status, 409, "a code works once");
+    assert.equal((await apply({}, cert)).res.status, 409, "one application waits at a time");
+
+    const id = sent.data.application.id as string;
+    assert.equal((await call("/api/super/education", { cookie: orgSessionCookie })).status, 403);
+    const list = await callJson("/api/super/education", { cookie: superSessionCookie });
+    const row = (list.data.applications as any[]).find((a) => a.id === id);
+    assert.ok(row && row.status === "pending" && row.organization === "Greenwood Holdings" && row.hasCertificate);
+    const tasks = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
+    assert.match(tasks, /id="pane-education"/);
+    assert.match(tasks, /data-action="tab-education"[\s\S]*?>1</, "the waiting application is counted");
+
+    const file = await call(`/api/super/education/${id}/certificate`, { cookie: superSessionCookie });
+    assert.equal(file.status, 200);
+    assert.equal(file.headers.get("content-type"), "application/pdf");
+    assert.match(file.headers.get("content-security-policy") || "", /^sandbox/);
+    assert.deepEqual(new Uint8Array(await file.arrayBuffer()), pdf);
+    assert.equal((await call(`/api/super/education/${id}/certificate`, { cookie: orgSessionCookie })).status, 403);
+
+    const decide = (body: Record<string, unknown>, cookie = superSessionCookie) => callJson("/api/super/education/decide", { ...json(body), cookie });
+    assert.equal((await decide({ id, decision: "approve" }, orgSessionCookie)).res.status, 403);
+    assert.equal((await decide({ id, decision: "reject" })).res.status, 400, "a rejection says why");
+    const approved = await decide({ id, decision: "approve" });
+    assert.equal(approved.res.status, 200, JSON.stringify(approved.data));
+    const tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+    assert.equal(tenant.license_plan, "education");
+    assert.equal(Number(tenant.workstation_limit), PRICING.educationWorkstations);
+    const days = (Number(tenant.license_expires_at) - Math.floor(Date.now() / 1000)) / 86_400;
+    assert.ok(days > 364.99 && days <= 365);
+    assert.ok(localOutbox().some((m) => m.subject === "Your Education plan is approved"), "the owner is emailed");
+    assert.equal((await decide({ id, decision: "reject", reason: "Too late now" })).res.status, 409);
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    for (const action of ["plan.education_apply", "plan.education_submit", "plan.education_approve"]) {
+      assert.ok((logs.logs as any[]).some((l) => l.action === action), action);
+    }
+    await db.prepare("DELETE FROM education_applications WHERE tenant_id = ?").bind(tenantId).run();
+    await restorePlan();
+  });
+
+  test("A subscription is paid through a Razorpay link: the signed return or webhook extends the plan once", async () => {
+    const { db, tenantId } = await restorePlan();
+    const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };
+    const send = (path: string, init: RequestInit & { cookie?: string } = {}) => worker.fetch(request(path, init), env);
+
+    const off = await callJson("/api/plan/checkout?tenant=greenwood", { ...json({ period: "month" }), cookie: orgSessionCookie });
+    assert.equal(off.res.status, 503);
+    assert.equal(off.data.contactSales, true, "without keys, sales");
+
+    const created: any[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      assert.equal(url, "https://api.razorpay.com/v1/payment_links");
+      assert.equal(new Headers(init?.headers).get("authorization"), `Basic ${btoa("rzp_test_key:key-secret")}`);
+      const body = JSON.parse(String(init?.body));
+      created.push(body);
+      return new Response(JSON.stringify({ id: `plink_${created.length}`, short_url: `https://rzp.io/i/${created.length}`, status: "created" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      for (const body of [{ period: "week" }, { period: "month", extraWorkstations: -1 }, { period: "month", extraWorkstations: 1.5 }, { period: "year", extraWorkstations: 156 }]) {
+        const res = await send("/api/plan/checkout?tenant=greenwood", { ...json(body), cookie: orgSessionCookie });
+        assert.equal(res.status, 400, JSON.stringify(body));
+      }
+      const monthly = (await (await send("/api/plan/checkout?tenant=greenwood", { ...json({ period: "month", extraWorkstations: 5 }), cookie: orgSessionCookie })).json()) as any;
+      assert.equal(monthly.url, "https://rzp.io/i/1");
+      assert.equal(created[0].amount, quote("month", 5).total, "the price is worked out on the server");
+      assert.equal(created[0].currency, "INR");
+      assert.equal(created[0].callback_url, "https://labkiosk.org/api/billing/return");
+      assert.equal(created[0].callback_method, "get");
+      const reference = created[0].reference_id as string;
+      assert.ok(reference.length <= 40);
+
+      const returned = (q: Record<string, string>) =>
+        send(`/api/billing/return?${new URLSearchParams(q).toString()}`, { redirect: "manual" });
+      const params = { razorpay_payment_id: "pay_1", razorpay_payment_link_id: "plink_1", razorpay_payment_link_reference_id: reference, razorpay_payment_link_status: "paid" };
+      const forged = await returned({ ...params, razorpay_signature: "0".repeat(64) });
+      assert.equal(forged.status, 302);
+      assert.match(forged.headers.get("location") || "", /payment=unverified/);
+      assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "a forged return pays nothing");
+
+      const signature = hmac("key-secret", `plink_1|${reference}|paid|pay_1`);
+      const paid = await returned({ ...params, razorpay_signature: signature });
+      assert.equal(paid.status, 302);
+      assert.equal(paid.headers.get("location"), "https://greenwood.labkiosk.org/admin/plan?payment=paid");
+      let tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+      assert.equal(tenant.license_plan, "subscriber");
+      assert.equal(Number(tenant.workstation_limit), PRICING.includedWorkstations + 5);
+      const firstEnd = Number(tenant.license_expires_at);
+      assert.ok(firstEnd - Date.now() / 1000 > 27 * 86_400 && firstEnd - Date.now() / 1000 < 32 * 86_400, "about a month");
+      await returned({ ...params, razorpay_signature: signature });
+      assert.equal(Number((await findTenantBySubdomain(db, "greenwood"))!.license_expires_at), firstEnd, "a repeated return pays once");
+
+      // A year more, through the webhook, from the end of the month already paid.
+      await (await send("/api/plan/checkout?tenant=greenwood", { ...json({ period: "year" }), cookie: orgSessionCookie })).json();
+      const yearRef = created[1].reference_id as string;
+      const event = JSON.stringify({
+        event: "payment_link.paid",
+        payload: { payment_link: { entity: { id: "plink_2", reference_id: yearRef, status: "paid" } }, payment: { entity: { id: "pay_2" } } }
+      });
+      const hook = (body: string, signature: string) =>
+        send("/api/billing/razorpay/webhook", { method: "POST", body, headers: { "X-Razorpay-Signature": signature } });
+      assert.equal((await hook(event, hmac("wrong", event))).status, 401);
+      assert.equal((await hook(event, hmac("hook-secret", event))).status, 200);
+      tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+      assert.equal(Number(tenant.license_expires_at), periodEnd(firstEnd, "year"), "extended from the end of the paid month");
+      assert.equal(Number(tenant.workstation_limit), PRICING.includedWorkstations);
+      assert.equal((await hook(event, hmac("hook-secret", event))).status, 200);
+      assert.equal(Number((await findTenantBySubdomain(db, "greenwood"))!.license_expires_at), periodEnd(firstEnd, "year"), "a redelivered webhook pays once");
+      const other = JSON.stringify({ event: "payment.failed", payload: {} });
+      assert.equal((await hook(other, hmac("hook-secret", other))).status, 200, "other events are acknowledged");
+
+      const plan = (await (await send("/api/plan?tenant=greenwood", { cookie: orgSessionCookie })).json()) as any;
+      assert.equal(plan.online, true);
+      assert.equal(plan.payments.length, 2);
+      assert.equal(plan.payments[0].paymentId, "pay_2");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
+    await restorePlan();
   });
 });
 

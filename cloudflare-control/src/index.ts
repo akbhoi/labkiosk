@@ -7,7 +7,7 @@
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, UpdateChannel } from "./types";
+import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, UpdateChannel, LicensePlan } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -17,6 +17,7 @@ import {
   renderFeaturesHtml,
   renderSpecsHtml,
   renderHardwareHtml,
+  renderPlatformStatusHtml,
   renderPricingHtml,
   renderDownloadHtml,
   renderDocsHtml,
@@ -27,7 +28,7 @@ import {
   SITE_STYLESHEET_PATH,
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
-import { renderBugReportTermsHtml, renderContentPolicyHtml, renderDataProcessingAgreementHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderContentPolicyHtml, renderRefundPolicyHtml, renderDataProcessingAgreementHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
@@ -49,14 +50,37 @@ import {
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
 const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
-const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/terms/bug-reports", "/admin", "/super"]);
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/refunds", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
+import { renderVerifyPhoneHtml } from "./ui_verify_phone";
+import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
+import { consoleSubdomain, featureTipFor, showsHomepage } from "./addresses";
+import { isSummaryMonth, monthlySummaryFor, previousMonth } from "./monthly_summary";
+import { componentStatuses, createIncident, listIncidents, openIncident, purgeOldStatus, runStatusChecks, updateIncident } from "./status";
+import {
+  EXAM_LIMITS,
+  EXAM_RETENTION_DAYS,
+  ExamRow,
+  createExam,
+  endExam,
+  examBlockingBroadcast,
+  examPhase,
+  examReportCsv,
+  examWindow,
+  examWorkstations,
+  findExam,
+  finishExam,
+  listExams,
+  parseExamInput,
+  purgeOldExams
+} from "./exams";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
   classifyRelease,
   findRelease,
   isReleaseVersion,
+  compareVersions,
   isUpdateChannel,
   listReleases,
   offeredRelease,
@@ -200,6 +224,10 @@ import {
   type EmailOutcome
 } from "./notifications";
 import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
+import { handlePlanRoutes } from "./plan_routes";
+import { syncLicences } from "./plan_sync";
+import { entitlement, PRICING } from "./plans";
+import { purgeEducationApplications } from "./education";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -218,6 +246,7 @@ import {
   getSession,
   deleteSession,
   deleteExpiredSessions,
+  hashLegacySessions,
   listPortalSites,
   findTakenDownPortalSite,
   listTakenDownPortalSites,
@@ -372,10 +401,21 @@ export class MailIntake extends WorkerEntrypoint<Env> {
   }
 }
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
-import { handleContactEmailCode, handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
+import {
+  handleContactEmailCode,
+  handleContactForm,
+  handleRegister,
+  handleRemoteControlRequest,
+  handleSignupEmailCode,
+  notifyPlatformOwner,
+  RouteContext,
+  sendOnConversation
+} from "./signup";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
-import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import { findConversation, inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import { certifyModel, decideReseller, findReseller, listCertifiedModels, listPublicResellers, listResellers, uncertifyModel } from "./partners";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
+import { FIREBASE_SDK_ORIGIN, FirebaseConfig, firebaseConfig, firebaseConfigProblem } from "./phone_verify";
 import {
   handleSsoCallback,
   handleSsoRedeem,
@@ -1252,7 +1292,7 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
-  if (path === "/terms/bug-reports" || path === "/content-policy" || path === "/dpa") return true;
+  if (path === "/terms/bug-reports" || path === "/content-policy" || path === "/dpa" || path === "/refunds") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   // Single sign-on starts from an organization's sign-in page, which may be the platform host with ?tenant=.
   if (path === "/api/auth/sso/start" && method === "GET") return true;
@@ -1277,9 +1317,26 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  */
 function buildHtmlHeaders(
   nonce: string,
-  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean; turnstile?: boolean; revalidate?: boolean }
+  options: {
+    hsts: boolean;
+    indexable: boolean;
+    analyticsOrigin: string | null;
+    remoteViewer?: boolean;
+    turnstile?: boolean;
+    revalidate?: boolean;
+    /** The registration page texting a code through Firebase (src/phone_verify.ts): its SDK, reCAPTCHA and API. */
+    firebase?: FirebaseConfig | null;
+  }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
+  const frameSources = ["'self'"];
+  const connectSources = ["'self'"];
+  if (options.turnstile) frameSources.push(TURNSTILE_ORIGIN);
+  if (options.firebase) {
+    scriptSources.push(`${FIREBASE_SDK_ORIGIN}/firebasejs/`, "https://www.google.com/recaptcha/", "https://www.gstatic.com/recaptcha/");
+    frameSources.push("https://www.google.com/recaptcha/", "https://recaptcha.google.com/recaptcha/", `https://${options.firebase.authDomain}`);
+    connectSources.push("https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com", "https://www.google.com/recaptcha/");
+  }
   // Turnstile's widget script, and the frame it draws the check in (src/turnstile.ts).
   if (options.turnstile) scriptSources.push(TURNSTILE_ORIGIN);
   // The Remote Control viewer's nonced module imports noVNC from /novnc/.
@@ -1292,8 +1349,8 @@ function buildHtmlHeaders(
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
     // Only Remote Control frames a page: the viewer on this console's own address.
-    options.turnstile ? `frame-src 'self' ${TURNSTILE_ORIGIN}` : "frame-src 'self'",
-    "connect-src 'self'",
+    `frame-src ${frameSources.join(" ")}`,
+    `connect-src ${connectSources.join(" ")}`,
     // Only the viewer is framed, and only by the console on its own address.
     options.remoteViewer ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
     "base-uri 'self'",
@@ -1318,17 +1375,97 @@ function buildHtmlHeaders(
   return headers;
 }
 
+/** The cron that runs the status checks; wrangler.jsonc names it beside the hourly one. */
+export const STATUS_CRON = "*/5 * * * *";
+
+/** The registration page: /register, or the public landing routes opened with ?register. */
+function isRegistrationPage(path: string, url: URL): boolean {
+  return path === "/register" || ((path === "/" || path === "/login" || path === "/iso") && url.searchParams.has("register"));
+}
+
+/** Routes that name an account in their JSON body, limited per account by ACCOUNT_RATE_LIMITER. */
+const ACCOUNT_LIMITED_PATHS = new Set([
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/auth/register/email-code",
+  "/api/contact",
+  "/api/contact/email-code"
+]);
+
+/**
+ * The email address a JSON request body names, lower-cased, or null. Reads a
+ * clone, so the route still gets the body; a body that is not JSON is the
+ * route's to refuse.
+ */
+async function requestEmail(request: Request): Promise<string | null> {
+  try {
+    const body = await request.clone().json<{ email?: unknown }>();
+    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    return email && email.length <= 254 ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An exam as the console sees it. */
+function examJson(row: ExamRow, nowSeconds: number) {
+  const w = examWindow(row);
+  return {
+    id: w.id,
+    title: w.title,
+    groupName: w.groupName,
+    url: w.url,
+    hosts: w.hosts,
+    startsAt: w.startsAt,
+    endsAt: w.endsAt,
+    scheduledEndsAt: row.ends_at,
+    cancelled: w.cancelled,
+    phase: examPhase(row, nowSeconds)
+  };
+}
+
 export default {
   /**
    * Hourly housekeeping (see `triggers.crons` in wrangler.jsonc). Expired
    * sessions, delivered commands and stale throttle rows would otherwise only
    * be purged as a side effect of unrelated requests.
    */
-  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     const db = getDatabase(env);
     await bootstrap(db, env);
     useAuditQueue(env.AUDIT_QUEUE);
+    // Every five minutes: the status page's checks (src/status.ts), and nothing else.
+    if (event.cron === STATUS_CRON) {
+      const failed = (await runStatusChecks(env, db)).filter((r) => !r.ok);
+      if (failed.length) console.warn(`[Status] Failing: ${failed.map((r) => `${r.component} (${r.detail})`).join(", ")}`);
+      return;
+    }
+    await purgeOldStatus(db);
+    // Plans that ended this hour drop to Free, and what Free does not cover
+    // shows the licence notice (src/plans.ts); one organization failing does not stop the rest.
+    {
+      const { results: planTenants } = await db
+        .prepare("SELECT id FROM tenants WHERE status = 'active'")
+        .all<{ id: string }>();
+      for (const t of planTenants ?? []) {
+        try {
+          await syncLicences(env, db, t.id);
+        } catch (err) {
+          console.error(`[Worker] Applying the plan of organization ${t.id} failed:`, err);
+        }
+      }
+      try {
+        const purged = await purgeEducationApplications(env, db, Math.floor(Date.now() / 1000));
+        if (purged) console.log(`[Worker] Education applications: ${purged} unconfirmed or old certificates removed.`);
+      } catch (err) {
+        console.error("[Worker] Removing old education applications failed:", err);
+      }
+    }
+    const purgedExams = await purgeOldExams(db, Math.floor(Date.now() / 1000));
+    if (purgedExams) console.log(`[Worker] Deleted ${purgedExams} exams that ended more than ${EXAM_RETENTION_DAYS} days ago.`);
     await deleteExpiredSessions(db);
+    const rehashed = await hashLegacySessions(db);
+    if (rehashed) console.log(`[Worker] Stored ${rehashed} sessions under the hash of their token.`);
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
@@ -1632,6 +1769,7 @@ export default {
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
         path === "/api/contact/email-code" ||
+        path === "/api/verify-phone" ||
         path === "/api/devices/enroll")
     ) {
       let success = true;
@@ -1647,6 +1785,23 @@ export default {
       }
     }
 
+    // The same, per account: a spray at one email address from many addresses
+    // stops here too, before it reaches the D1 lockouts.
+    if (env.ACCOUNT_RATE_LIMITER && method === "POST" && ACCOUNT_LIMITED_PATHS.has(path)) {
+      const email = await requestEmail(request);
+      if (email) {
+        let success = true;
+        try {
+          ({ success } = await env.ACCOUNT_RATE_LIMITER.limit({ key: `${path}|${email}` }));
+        } catch (err) {
+          console.error("[Worker] The per-account rate limiter failed; relying on the D1 lockouts:", err);
+        }
+        if (!success) {
+          return jsonError("Too many attempts for this account. Wait a minute and try again.", 429, jsonHeaders);
+        }
+      }
+    }
+
     // Every HTML response carries the same hardened headers and a fresh CSP nonce.
     const nonce = generateNonce();
     const htmlHeaders = buildHtmlHeaders(nonce, {
@@ -1654,6 +1809,7 @@ export default {
       indexable: isIndexable(request, url, env),
       analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
       turnstile: Boolean(turnstileSiteKey(env)),
+      firebase: (isRegistrationPage(path, url) || path === "/verify-phone") && !firebaseConfigProblem(env) ? firebaseConfig(env) : null,
       revalidate: !session && isIndexable(request, url, env)
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
@@ -1663,7 +1819,11 @@ export default {
     // domain is not one of them, so sign-in there relies on the lockouts alone.
     const loginTurnstile = isDev || isHostUnder(hostname(request), env.DEFAULT_DOMAIN);
     /** What every public page needs to draw the checks its forms carry. */
-    const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
+    const formChecks = {
+      turnstileSiteKey: turnstileSiteKey(env),
+      loginTurnstile,
+      firebase: firebaseConfigProblem(env) ? null : firebaseConfig(env)
+    };
 
     // With SUPER_ADMIN_HOST set, the platform console and its API answer on that host only, so the
     // public apex (landing, registration, legal pages) never shares an origin with it.
@@ -1724,6 +1884,10 @@ export default {
     };
     const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
 
+    // Plan, education applications and Razorpay (src/plan_routes.ts).
+    const planResponse = await handlePlanRoutes({ ...routeContext, method, path, tenant: currentTenant });
+    if (planResponse) return planResponse;
+
     // POST /api/auth/register/email-code: prove the email address before signing up.
     if (path === "/api/auth/register/email-code" && method === "POST") {
       return handleSignupEmailCode(routeContext);
@@ -1738,6 +1902,77 @@ export default {
         console.error("[Worker] Registration failed:", err);
         return jsonError("Registration failed. Please try again.", 500, jsonHeaders);
       }
+    }
+
+    // GET /api/health: for an outside uptime monitor (docs/DEPLOYMENT.md). 200 while
+    // the Worker and its database answer, 503 when the database does not.
+    if (path === "/api/health" && (method === "GET" || method === "HEAD")) {
+      const headers = { ...jsonHeaders, "Cache-Control": "no-store" };
+      try {
+        await db.prepare("SELECT 1").first();
+        return new Response(JSON.stringify({ status: "ok" }), { headers });
+      } catch (err) {
+        console.error("[Health] The database did not answer:", err);
+        return new Response(JSON.stringify({ status: "unavailable" }), { status: 503, headers });
+      }
+    }
+
+    // /licence-needed?tenant=…: what a workstation beyond its organization's
+    // plan shows instead of the portal (src/plans.ts, OrgHub.configFor).
+    if (path === "/licence-needed" && (method === "GET" || method === "HEAD")) {
+      const slug = (url.searchParams.get("tenant") || "").toLowerCase();
+      const named = slug ? await findTenantBySubdomain(db, slug) : null;
+      const organization = named && named.status === "active" ? named.name : null;
+      return new Response(
+        renderStatusPageHtml({
+          title: "Licence Needed",
+          heading: "This workstation is not covered by a licence",
+          messageHtml:
+            `${organization ? `<strong>${escapeHtml(organization)}</strong> has` : "This organization has"} more workstations enrolled than its Lab Kiosk plan covers, ` +
+            "so this one is paused. Ask your administrator to move a licence to it, remove a workstation that is not used, or change the plan under Plan in the console. " +
+            "This page goes away by itself once a licence is free.",
+          homeHref: `${url.pathname}${url.search}`,
+          homeLabel: "Check again",
+          tone: "warning"
+        }),
+        { headers: { ...htmlHeaders, "Cache-Control": "no-store" } }
+      );
+    }
+
+    // /verify-phone?t=…, POST /api/verify-phone: the emailed link that verifies an
+    // organization's phone number by text message (src/phone_link.ts).
+    if (path === "/api/verify-phone" && method === "POST") {
+      return handleVerifyPhone(routeContext);
+    }
+    if (path === "/verify-phone" && (method === "GET" || method === "HEAD")) {
+      const firebase = firebaseConfigProblem(env) ? null : firebaseConfig(env);
+      const token = url.searchParams.get("t") || "";
+      const profile = firebase ? await findPhoneLink(db, token) : null;
+      const tenant = profile ? await findTenantById(db, profile.tenant_id) : null;
+      if (!firebase || !profile || !tenant || tenant.status === "rejected") {
+        return new Response(
+          renderStatusPageHtml({
+            title: "Link Expired",
+            heading: "This link no longer works",
+            messageHtml: "It may have expired, been replaced by a newer one, or the number may already be verified. Reply to our email if you need a new link.",
+            homeHref: `${url.origin}/`,
+            tone: "warning"
+          }),
+          { status: 410, headers: htmlHeaders }
+        );
+      }
+      return new Response(
+        renderVerifyPhoneHtml({
+          nonce,
+          firebase,
+          token,
+          organizationName: tenant.name,
+          phone: profile.contact_phone,
+          maskedPhone: maskPhone(profile.contact_phone),
+          homeHref: `${url.origin}/`
+        }),
+        { headers: htmlHeaders }
+      );
     }
 
     // POST /api/contact/email-code, /api/contact: the contact page. A code proves
@@ -2038,6 +2273,9 @@ export default {
           baseDomain,
           activeTab,
           inbox: counts,
+          pendingEducation: Number(
+            (await db.prepare("SELECT COUNT(*) AS n FROM education_applications WHERE status = 'pending'").first<{ n: number }>())?.n ?? 0
+          ),
           nonce
         }),
         { headers: htmlHeaders }
@@ -2079,6 +2317,39 @@ export default {
       }
     }
 
+    // POST /api/super/tenants/remove-rejected { tenantId }: delete a registration that
+    // was rejected, so its email address and console address can be used again. Its
+    // owner account goes with it, and the organization, its profile and its
+    // registration task with that (ON DELETE CASCADE). The record of the legal
+    // documents it accepted stays: legal_acceptances has no foreign keys on purpose.
+    if (path === "/api/super/tenants/remove-rejected" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown };
+      try {
+        body = await request.json<{ tenantId?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      if (isDemoTenant(target, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+      if (target.status !== "rejected") return jsonError("Only a rejected registration can be removed", 409, jsonHeaders);
+      const owner = await findUserById(db, target.user_id);
+      // The audit entry names the organization in its details: its tenant row is about to go.
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: "tenant.remove_rejected",
+        details: `tenant=${target.id} subdomain=${target.subdomain} name=${target.name} owner=${owner?.email || "none"}`
+      });
+      if (owner && owner.role === "org_admin") {
+        await db.prepare("DELETE FROM users WHERE id = ?").bind(owner.id).run();
+      }
+      await db.prepare("DELETE FROM tenants WHERE id = ?").bind(target.id).run();
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+    }
+
     // POST /api/super/tenants/workstation-limit: how many workstations an organization
     // may enrol. Lowering it below what is enrolled only stops new enrolments.
     if (path === "/api/super/tenants/workstation-limit" && method === "POST") {
@@ -2105,7 +2376,8 @@ export default {
         action: "tenant.workstation_limit",
         details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
       });
-      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now enrol up to ${limit} workstation${limit === 1 ? "" : "s"}; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations already enrolled are never cut off.`, createdBy: session!.user_id });
+      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now use up to ${limit} workstation${limit === 1 ? "" : "s"} while its plan is in force; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations beyond the limit stay enrolled but show a licence notice.`, createdBy: session!.user_id });
+      await syncLicences(env, db, target.id);
       return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
     }
 
@@ -2124,24 +2396,28 @@ export default {
       }
       const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
       if (!target) return jsonError("Organization not found", 404, jsonHeaders);
-      if (!isLicensePlan(body.plan)) {
-        return jsonError("The plan must be education, evaluation, subscriber or commercial", 400, jsonHeaders);
+      // "free" records no plan: the organization is on Free (src/plans.ts).
+      const free = body.plan === "free";
+      if (!free && !isLicensePlan(body.plan)) {
+        return jsonError("The plan must be free, education, evaluation (trial), subscriber or commercial (custom)", 400, jsonHeaders);
       }
+      const plan = free ? null : (body.plan as LicensePlan);
       let expiresAt: number | null = null;
-      if (body.expiresOn !== null && body.expiresOn !== undefined) {
+      if (!free && body.expiresOn !== null && body.expiresOn !== undefined) {
         expiresAt = typeof body.expiresOn === "string" ? parseLicenseDate(body.expiresOn) : null;
         if (expiresAt === null) return jsonError("The end date must be a date as YYYY-MM-DD, or null for none", 400, jsonHeaders);
       }
-      await updateTenant(db, target.id, { license_plan: body.plan, license_expires_at: expiresAt });
+      await updateTenant(db, target.id, { license_plan: plan, license_expires_at: expiresAt });
       const was = target.license_expires_at ? licenseDate(Number(target.license_expires_at)) : "none";
       await writeAuditLog(db, {
         tenantId: target.id,
         userId: session!.user_id,
         action: "tenant.license",
-        details: `plan=${body.plan} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
+        details: `plan=${plan ?? "free"} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
       });
-      await createNotification(db, { tenantId: target.id, kind: "license", title: "License updated", body: `Lab Kiosk recorded the license of ${target.name}: ${licensePlanLabel(body.plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
-      return new Response(JSON.stringify({ status: "ok", plan: body.plan, expiresAt }), { headers: jsonHeaders });
+      await createNotification(db, { tenantId: target.id, kind: "license", title: "Plan updated", body: `Lab Kiosk recorded the plan of ${target.name}: ${licensePlanLabel(plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
+      await syncLicences(env, db, target.id);
+      return new Response(JSON.stringify({ status: "ok", plan: plan ?? "free", expiresAt }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/remote-control { tenantId, action, seats? }: the platform's
@@ -2558,6 +2834,43 @@ export default {
     // POST /api/super/notifications { tenantId | null, title, body, email }: tell one
     // organization (tenantId) or every organization (null) in its console, and
     // with email, email its owner too.
+    // /api/super/status...: the status page's checks and incidents (src/status.ts).
+    if (path === "/api/super/status" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const [components, incidents] = await Promise.all([componentStatuses(env, db), listIncidents(db)]);
+      return new Response(JSON.stringify({ components, incidents }), { headers: jsonHeaders });
+    }
+    if (path === "/api/super/status/incidents" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { title?: unknown; impact?: unknown; body?: unknown };
+      try {
+        body = await request.json<{ title?: unknown; impact?: unknown; body?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const created = await createIncident(db, body, session!.user_id);
+      if ("problem" in created) return jsonError(created.problem, 400, jsonHeaders);
+      await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "status.incident_open", details: `incident=${created.id}` });
+      return new Response(JSON.stringify({ status: "ok", id: created.id, incidents: await listIncidents(db) }), { headers: jsonHeaders });
+    }
+    const incidentMatch = path.match(/^\/api\/super\/status\/incidents\/([0-9a-f-]{36})$/);
+    if (incidentMatch && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { status?: unknown; body?: unknown };
+      try {
+        body = await request.json<{ status?: unknown; body?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const updated = await updateIncident(db, incidentMatch[1], body);
+      if ("problem" in updated) return jsonError(updated.problem, updated.status, jsonHeaders);
+      await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "status.incident_update", details: `incident=${incidentMatch[1]} status=${String(body.status)}` });
+      return new Response(JSON.stringify({ status: "ok", incidents: await listIncidents(db) }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/super/notifications") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -2800,6 +3113,66 @@ export default {
       return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
     }
 
+    // Certified hardware and resellers (src/partners.ts), for the super admin.
+    // GET /api/super/partners: both lists.
+    // POST /api/super/hardware/certify {vendor, model, note?} and /uncertify {vendor, model}.
+    // POST /api/super/resellers/decide {id, decision: "approve" | "reject"}: approving
+    // lists the reseller on /hardware and tells them by email; rejecting an approved
+    // one takes it off the directory.
+    if (
+      (path === "/api/super/partners" && method === "GET") ||
+      ((path === "/api/super/hardware/certify" || path === "/api/super/hardware/uncertify" || path === "/api/super/resellers/decide") && method === "POST")
+    ) {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (method === "GET") {
+        const [certified, resellers] = await Promise.all([listCertifiedModels(db), listResellers(db)]);
+        return new Response(JSON.stringify({ certified, resellers }), { headers: jsonHeaders });
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json<Record<string, unknown>>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const now = Math.floor(Date.now() / 1000);
+      if (path === "/api/super/hardware/certify") {
+        const problem = await certifyModel(db, body, session!.user_id, now);
+        if (problem) return jsonError(problem, 400, jsonHeaders);
+        await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "hardware.certify", details: `${String(body.vendor)} ${String(body.model)}`.slice(0, 300) });
+        return new Response(JSON.stringify({ status: "ok", certified: await listCertifiedModels(db) }), { headers: jsonHeaders });
+      }
+      if (path === "/api/super/hardware/uncertify") {
+        if (!(await uncertifyModel(db, body))) return jsonError("That model is not certified", 404, jsonHeaders);
+        await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "hardware.uncertify", details: `${String(body.vendor)} ${String(body.model)}`.slice(0, 300) });
+        return new Response(JSON.stringify({ status: "ok", certified: await listCertifiedModels(db) }), { headers: jsonHeaders });
+      }
+      const decision = body.decision;
+      if (decision !== "approve" && decision !== "reject") return jsonError('decision is "approve" or "reject"', 400, jsonHeaders);
+      const reseller = typeof body.id === "string" ? await findReseller(db, body.id) : null;
+      if (!reseller) return jsonError("Reseller not found", 404, jsonHeaders);
+      const status = decision === "approve" ? "approved" : "rejected";
+      if (!(await decideReseller(db, reseller.id, status, session!.user_id, now))) {
+        return jsonError(`This reseller is already ${status}`, 409, jsonHeaders);
+      }
+      await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: `reseller.${decision}`, details: `id=${reseller.id} company=${reseller.company}`.slice(0, 300) });
+      let emailed = false;
+      if (status === "approved" && reseller.conversation_id) {
+        const conversation = await findConversation(db, reseller.conversation_id);
+        if (conversation) {
+          emailed = await sendOnConversation(
+            env,
+            db,
+            conversation,
+            `Hello ${reseller.contact_name},\n\n${reseller.company} is now listed as a Lab Kiosk reseller at https://${baseDomain}/hardware#resellers, ` +
+              `under ${reseller.city}, ${reseller.state}, with ${reseller.phone} and ${reseller.email}. Reply to this email to change the listing or to be taken off it.\n\nLab Kiosk`,
+            { subject: "You are listed as a Lab Kiosk reseller", authorUserId: session!.user_id, authorName: "Lab Kiosk" }
+          );
+        }
+      }
+      return new Response(JSON.stringify({ status: "ok", reseller: { ...reseller, status }, emailed }), { headers: jsonHeaders });
+    }
+
     // GET /api/super/usage?days=N: the platform's anonymous usage totals and the
     // hardware every organization's workstations run on, by model. Nothing here
     // names an organization (src/usage.ts, src/hardware.ts).
@@ -2840,8 +3213,11 @@ export default {
         if (!target) return jsonError("Organization not found", 404, jsonHeaders);
         // Activating a registration is a decision with its own checks and email:
         // it is made from Tasks, never as a side effect of assigning an address.
+        // The address is granted beside the one workstations enrolled with, which
+        // keeps working (src/addresses.ts); it also turns on the public homepage.
+        const chosen = cleanSub === target.subdomain ? null : cleanSub;
         await updateTenant(db, body.tenantId, {
-          subdomain: cleanSub,
+          ...(chosen ? { chosen_subdomain: chosen } : {}),
           requested_subdomain: null
         });
 
@@ -2849,11 +3225,21 @@ export default {
           tenantId: body.tenantId,
           userId: session!.user_id,
           action: "tenant.approve",
-          details: `subdomain=${cleanSub}`
+          details: `chosen_subdomain=${cleanSub} subdomain=${target.subdomain}`
         });
+        if (chosen && target.status === "active") {
+          const host = isDev ? `${url.origin}/admin?tenant=${chosen}` : `${chosen}.${baseDomain}`;
+          await createNotification(db, {
+            tenantId: target.id,
+            kind: "account",
+            title: "Your chosen address is ready",
+            body: `${target.name} is now also at ${host}, with its public homepage. ${target.subdomain}.${baseDomain} keeps working, so your workstations need no change.`,
+            createdBy: session!.user_id
+          });
+        }
         await notifyConfigChanged(env, body.tenantId);
 
-        return new Response(JSON.stringify({ status: "ok", subdomain: cleanSub }), { headers: jsonHeaders });
+        return new Response(JSON.stringify({ status: "ok", subdomain: target.subdomain, chosenSubdomain: chosen ?? target.chosen_subdomain ?? null }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Tenant approval failed:", err);
         return jsonError("Could not approve this subdomain", 400, jsonHeaders);
@@ -3162,40 +3548,6 @@ export default {
       } catch (err: any) {
         console.error("[Worker] Deleting broadcast preset failed:", err);
         return jsonError("Could not remove this preset", 400, jsonHeaders);
-      }
-    }
-
-    // POST /api/settings/subdomain: Organization requests new subdomain
-    if (path === "/api/settings/subdomain" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
-      if (denied) return denied;
-      try {
-        if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
-        const body = await request.json<{ requestedSubdomain: string }>();
-        const cleanSub = cleanSubdomain(body.requestedSubdomain);
-        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH || isReservedSlug(cleanSub)) {
-          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens) and not a reserved name`, 400, jsonHeaders);
-        }
-
-        const existing = await findTenantBySubdomain(db, cleanSub);
-        if (existing && existing.id !== currentTenant!.id) {
-          return jsonError("Subdomain already claimed", 400, jsonHeaders);
-        }
-
-        await updateTenant(db, currentTenant!.id, { requested_subdomain: cleanSub });
-        await writeAuditLog(db, {
-          tenantId: currentTenant!.id,
-          userId: session!.user_id,
-          action: "tenant.request_subdomain",
-          details: cleanSub
-        });
-
-        return new Response(JSON.stringify({ status: "ok", requestedSubdomain: cleanSub }), {
-          headers: jsonHeaders
-        });
-      } catch (err: any) {
-        console.error("[Worker] Subdomain request failed:", err);
-        return jsonError("Could not submit this request", 400, jsonHeaders);
       }
     }
 
@@ -3709,45 +4061,73 @@ export default {
     }
 
     // POST /api/tenant/subdomain: update organization subdomain
-    if (path === "/api/tenant/subdomain" && method === "POST") {
+    // POST /api/tenant/subdomain { subdomain }: ask for a chosen address (and with
+    // it the public homepage). A super admin approves it; it is then served beside
+    // the current address, which keeps working (src/addresses.ts). One chosen
+    // address per organization: once granted it is permanent, because
+    // workstations may enrol with it.
+    if ((path === "/api/tenant/subdomain" || path === "/api/settings/subdomain") && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
+      if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+      let body: { subdomain?: unknown; requestedSubdomain?: unknown };
       try {
-        if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
-        const body = await request.json<{ subdomain: string }>();
-        const cleanSub = cleanSubdomain(body.subdomain);
-        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
-          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters`, 400, jsonHeaders);
-        }
-        if (isReservedSlug(cleanSub)) {
-          return jsonError("That subdomain is reserved by the platform", 400, jsonHeaders);
-        }
-
-        const existing = await findTenantBySubdomain(db, cleanSub);
-        if (existing && existing.id !== currentTenant!.id) {
-          return jsonError("That subdomain is already claimed by another organization", 400, jsonHeaders);
-        }
-
-        await updateTenant(db, currentTenant!.id, { subdomain: cleanSub });
-        currentTenant!.subdomain = cleanSub;
-
-        await writeAuditLog(db, {
-          tenantId: currentTenant!.id,
-          userId: session!.user_id,
-          action: "tenant.update_subdomain",
-          details: `subdomain=${cleanSub}`
-        });
-        await notifyConfigChanged(env, currentTenant!.id);
-
-        const redirectUrl = isDev
-          ? `/admin?tenant=${encodeURIComponent(cleanSub)}`
-          : `https://${cleanSub}.${baseDomain}/admin`;
-
-        return new Response(JSON.stringify({ status: "ok", subdomain: cleanSub, redirectUrl }), { headers: jsonHeaders });
-      } catch (err: any) {
-        console.error("[Worker] Subdomain update failed:", err);
-        return jsonError("Could not update subdomain", 400, jsonHeaders);
+        body = await request.json<{ subdomain?: unknown; requestedSubdomain?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
+      const cleanSub = cleanSubdomain(body.subdomain ?? body.requestedSubdomain);
+      if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
+        return jsonError(`The address must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens)`, 400, jsonHeaders);
+      }
+      if (isReservedSlug(cleanSub)) return jsonError("That address is reserved by the platform", 400, jsonHeaders);
+      if (currentTenant!.chosen_subdomain) {
+        return jsonError("Your organization already has its chosen address. Write to support to change it.", 409, jsonHeaders);
+      }
+      if (cleanSub === currentTenant!.subdomain) return jsonError("That is already your address", 400, jsonHeaders);
+      const existing = await findTenantBySubdomain(db, cleanSub);
+      if (existing && existing.id !== currentTenant!.id) {
+        return jsonError("That address is already taken by another organization", 409, jsonHeaders);
+      }
+      // A super admin decides it from the Super Admin console, where pending addresses are listed.
+      await updateTenant(db, currentTenant!.id, { requested_subdomain: cleanSub });
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "tenant.request_subdomain",
+        details: `requested=${cleanSub}`
+      });
+      await notifyPlatformOwner(
+        env,
+        `Address request: ${currentTenant!.name}`,
+        `${currentTenant!.name} (${currentTenant!.subdomain}.${baseDomain}) asked for ${cleanSub}.${baseDomain}.\n\nApprove or reject it in the Super Admin console.`
+      );
+      return new Response(JSON.stringify({ status: "ok", pending: true, requestedSubdomain: cleanSub }), { headers: jsonHeaders });
+    }
+
+    // POST /api/tenant/monthly-summary/dismiss { month }: hide last month's summary.
+    if (path === "/api/tenant/monthly-summary/dismiss" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      let body: { month?: unknown };
+      try {
+        body = await request.json<{ month?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!isSummaryMonth(body.month) || body.month !== previousMonth(Date.now())) {
+        return jsonError("Only last month's summary can be dismissed", 400, jsonHeaders);
+      }
+      await updateTenant(db, currentTenant!.id, { summary_dismissed_month: body.month });
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+    }
+
+    // POST /api/tenant/feature-tip/dismiss: hide the console's feature tip for 30 days.
+    if (path === "/api/tenant/feature-tip/dismiss" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      await updateTenant(db, currentTenant!.id, { feature_tip_dismissed_at: Math.floor(Date.now() / 1000) });
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
     }
 
     // POST /api/tenant/settings: update Settings (mode, home_route, profile)
@@ -3934,26 +4314,19 @@ export default {
           return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
         }
 
-        const licenseEnded = licenseExpiredMessage(tenant);
-        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId, existingOnly: licenseEnded !== null });
-        if (!issued && licenseEnded) {
-          await writeAuditLog(db, {
-            tenantId: tenant.id,
-            action: "device.enroll_license",
-            details: `client=${clientId}`
-          });
-          return jsonError(licenseEnded, 403, jsonHeaders);
-        }
+        const plan = entitlement(tenant);
+        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId, limit: plan.limit });
         if (!issued) {
-          const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
           await writeAuditLog(db, {
             tenantId: tenant.id,
             action: "device.enroll_limit",
-            details: `client=${clientId} limit=${limit}`
+            details: `client=${clientId} limit=${plan.limit} plan=${plan.kind}`
           });
           return jsonError(
-            `${tenant.name} has enrolled all ${limit} workstations its plan allows. ` +
-              "Remove a workstation in the console, or ask Lab Kiosk to raise the limit.",
+            `${tenant.name} has enrolled all ${plan.limit} workstation${plan.limit === 1 ? "" : "s"} its ${plan.label} plan allows. ` +
+              (plan.kind === "free"
+                ? "An administrator can start a free trial, subscribe or apply for Education under Plan in the console, or remove a workstation."
+                : "Remove a workstation in the console, or add workstations under Plan."),
             403,
             jsonHeaders
           );
@@ -4256,10 +4629,15 @@ export default {
       const devices = await listClientDevices(db, tenantId);
       const pending = securityReleasesPending(releases, devices);
       const notices = await organizationReleaseNotices(db, tenantId, releases, devices);
+      const offer = newestOffered(releases);
       return new Response(
         JSON.stringify({
           channel,
-          offer: newestOffered(releases),
+          offer,
+          // Enrolled workstations whose system image is older than the offer (the banner on Workstations).
+          behind: offer
+            ? devices.filter((d) => d.image_version && isReleaseVersion(d.image_version) && compareVersions(d.image_version, offer.version) < 0).length
+            : 0,
           lanSharing,
           pending,
           support: notices.support,
@@ -4316,6 +4694,126 @@ export default {
       }
       const summary = await usageSummary(db, tenant.id, reportPeriod(days), tenant.usage_sites !== 0);
       return new Response(JSON.stringify(summary), { headers: jsonHeaders });
+    }
+
+    // Exam mode (src/exams.ts), for the `workstations` permission.
+    // GET /api/exams: the organization's exams and its workstation groups.
+    // POST /api/exams {title, url, hosts?, groupName?, startsAt?, durationMinutes}: schedule one.
+    // GET /api/exams/:id: one exam with its workstations, for the live board.
+    // POST /api/exams/:id/end: end it now, or cancel it before it starts.
+    // GET /api/exams/:id/report.csv: the report.
+    if ((path === "/api/exams" && (method === "GET" || method === "POST")) || path.startsWith("/api/exams/")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      const now = Math.floor(Date.now() / 1000);
+      const tellHub = async () => {
+        try {
+          await hubJson(env, tenant.id, "/exams-changed", {});
+        } catch (err) {
+          // The hub's alarm at the exam's start or end still does it; a start
+          // or end that was due now waits for that alarm or the hub's next reload.
+          console.error(`[Worker] Could not tell organization ${tenant.id}'s hub about an exam:`, err);
+        }
+      };
+      if (path === "/api/exams") {
+        if (method === "GET") {
+          const [exams, groups] = await Promise.all([listExams(db, tenant.id), listWorkstationGroups(db, tenant.id)]);
+          return new Response(
+            JSON.stringify({ exams: exams.map((e) => examJson(e, now)), groups: groups.map((g) => g.name), limits: EXAM_LIMITS, now }),
+            { headers: jsonHeaders }
+          );
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const groups = (await listWorkstationGroups(db, tenant.id)).map((g) => g.name);
+        const parsed = parseExamInput(body, groups, now);
+        if (!parsed.ok) return jsonError(parsed.error, 400, jsonHeaders);
+        const created = await createExam(db, tenant.id, parsed.value, session!.user_id, now);
+        if (!created.ok) return jsonError(created.error, created.status, jsonHeaders);
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: "exam.create",
+          details: `id=${created.id} group=${parsed.value.groupName ?? "all"} url=${parsed.value.url} starts=${parsed.value.startsAt} ends=${parsed.value.endsAt}`
+        });
+        await tellHub();
+        const exam = (await findExam(db, tenant.id, created.id))!;
+        return new Response(JSON.stringify({ status: "ok", exam: examJson(exam, now) }), { headers: jsonHeaders });
+      }
+      const match = /^\/api\/exams\/([0-9a-f-]{36})(\/end|\/report\.csv)?$/.exec(path);
+      if (!match) return jsonError("Not found", 404, jsonHeaders);
+      const [, id, action] = match;
+      if (action === "/end") {
+        if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
+        const ended = await endExam(db, tenant.id, id, session!.user_id, now);
+        if (!ended.ok) return jsonError(ended.error, ended.status, jsonHeaders);
+        // Sent back to the portal here as well as by the hub, so a hub that
+        // cannot be reached does not leave the exam's sites on its workstations.
+        if (ended.exam.starts_at <= now) await finishExam(db, examWindow(ended.exam), Date.now());
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: ended.exam.starts_at <= now ? "exam.end" : "exam.cancel",
+          details: `id=${id}`
+        });
+        await tellHub();
+        return new Response(JSON.stringify({ status: "ok", exam: examJson(ended.exam, now) }), { headers: jsonHeaders });
+      }
+      if (method !== "GET") return jsonError("Method not allowed", 405, jsonHeaders);
+      const exam = await findExam(db, tenant.id, id);
+      if (!exam) return jsonError("Exam not found", 404, jsonHeaders);
+      const rows = await examWorkstations(db, exam, now);
+      if (action === "/report.csv") {
+        const day = new Date(exam.starts_at * 1000).toISOString().slice(0, 10);
+        const slug = exam.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "exam";
+        return new Response(examReportCsv(exam, rows), {
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="exam-${day}-${slug}.csv"`,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+          }
+        });
+      }
+      let live: Record<string, LiveStatus> = {};
+      if (examPhase(exam, now) === "running") {
+        try {
+          live = (await hubJson<{ clients: Record<string, LiveStatus> }>(env, tenant.id, "/live", { watch: [] })).clients;
+        } catch (err) {
+          console.error(`[Worker] Could not read organization ${tenant.id}'s live workstations for an exam board:`, err);
+          return jsonError("The live state of the workstations is not available right now. Try again in a moment.", 503, jsonHeaders);
+        }
+      }
+      const hosts = examWindow(exam).hosts;
+      const onExamSite = (activeUrl: string | undefined) => {
+        try {
+          const host = activeUrl ? new URL(activeUrl).hostname.toLowerCase() : "";
+          return Boolean(host) && hosts.some((h) => host === h || host.endsWith(`.${h}`));
+        } catch {
+          return false;
+        }
+      };
+      return new Response(
+        JSON.stringify({
+          exam: examJson(exam, now),
+          workstations: rows.map((r) => {
+            const status = live[r.clientId];
+            return {
+              ...r,
+              online: status ? status.online : null,
+              locked: status ? status.isLocked : null,
+              onExamSite: status?.online ? onExamSite(status.activeUrl) : null
+            };
+          }),
+          now
+        }),
+        { headers: jsonHeaders }
+      );
     }
 
     // GET /api/power-schedules: the organization's power schedules and the groups
@@ -4689,6 +5187,8 @@ export default {
         await revokeDeviceTokensForClient(db, tenantId, clientId);
         forgetDeviceToken(tenantId, clientId);
         await hubJson(env, tenantId, "/remove-device", { clientId });
+        // Its licence goes to a workstation waiting for one (src/plans.ts).
+        await syncLicences(env, db, tenantId);
         await writeAuditLog(db, {
           tenantId,
           userId: session!.user_id,
@@ -4863,6 +5363,11 @@ export default {
         const requiredPerm = action === "navigate" ? "broadcast" : "workstations";
         const denied = await requireTenantPermission(db, session, currentTenant, requiredPerm, jsonHeaders);
         if (denied) return denied;
+        if (action === "navigate") {
+          // A workstation in a running exam stays on the exam (src/exams.ts).
+          const exam = await examBlockingBroadcast(db, currentTenant!.id, targets, Math.floor(Date.now() / 1000));
+          if (exam) return jsonError(exam, 409, jsonHeaders);
+        }
 
         let commandUrl: string | undefined;
         let commandEpoch: number | undefined;
@@ -5026,6 +5531,9 @@ export default {
     if (path === "/dpa") {
       return new Response(renderDataProcessingAgreementHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
+    if (path === "/refunds") {
+      return new Response(renderRefundPolicyHtml({ canonicalUrl }), { headers: htmlHeaders });
+    }
     if (path === "/terms/bug-reports") {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
@@ -5092,8 +5600,21 @@ export default {
         { headers: htmlHeaders }
       );
     }
+    if (path === "/status") {
+      const at = Math.floor(Date.now() / 1000);
+      const [components, incidents] = await Promise.all([componentStatuses(env, db, at), listIncidents(db, at)]);
+      return new Response(
+        renderPlatformStatusHtml({ baseDomain, contactEmail: "contact@labkiosk.org", ...formChecks, canonicalUrl, nonce }, components, incidents, at),
+        { headers: htmlHeaders }
+      );
+    }
     if (path === "/hardware") {
-      const [models, computedAt] = await Promise.all([listPublicHardwareModels(db), hardwareModelsComputedAt(db)]);
+      const [models, computedAt, certified, resellers] = await Promise.all([
+        listPublicHardwareModels(db),
+        hardwareModelsComputedAt(db),
+        listCertifiedModels(db),
+        listPublicResellers(db)
+      ]);
       return new Response(
         renderHardwareHtml(
           {
@@ -5104,7 +5625,9 @@ export default {
             nonce
           },
           models,
-          computedAt
+          computedAt,
+          certified,
+          resellers
         ),
         { headers: htmlHeaders }
       );
@@ -5283,7 +5806,9 @@ export default {
       const tenant = currentTenant!;
       let activePage: AdminPageId = "workstations";
       if (path === "/admin/apps-web") activePage = "apps-web";
+      else if (path === "/admin/exams") activePage = "exams";
       else if (path === "/admin/staff") activePage = "staff";
+      else if (path === "/admin/plan") activePage = "plan";
       else if (path === "/admin/settings") activePage = "settings";
 
       const userPerms = session.role === "super_admin"
@@ -5292,6 +5817,8 @@ export default {
 
       const checkPermission = (page: AdminPageId) => {
         if (userPerms.includes("*") || userPerms.includes(page)) return true;
+        if (page === "exams") return userPerms.includes("workstations");
+        if (page === "plan") return userPerms.includes("settings");
         if (page === "apps-web") {
           return (
             userPerms.includes("broadcast") ||
@@ -5307,7 +5834,7 @@ export default {
       const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
-        const pages: AdminPageId[] = ["workstations", "apps-web", "staff", "settings"];
+        const pages: AdminPageId[] = ["workstations", "exams", "apps-web", "staff", "plan", "settings"];
         const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
           const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;
@@ -5375,6 +5902,11 @@ export default {
           legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
           license: isDemoTenant(tenant, session.user_id) ? undefined : licenseState(tenant),
           notifications: await listNotificationsFor(db, tenant.id, session.user_id, { unreadOnly: true, limit: 50 }),
+          incident: await openIncident(db),
+          monthlySummary:
+            activePage === "workstations" && (userPerms.includes("*") || userPerms.includes("settings")) && !isDemoTenant(tenant, session.user_id)
+              ? await monthlySummaryFor(db, tenant)
+              : null,
           takedowns: {
             homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
             cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))
@@ -5445,8 +5977,10 @@ export default {
       // Anyone can report a hosted page: the platform's contact form, preset to legal.
       const reportHref = `${isDev ? url.origin : `https://${baseDomain}`}/contact?reason=legal&report=${encodeURIComponent(`${url.origin}${url.pathname}${namedTenant ? `?tenant=${currentTenant.subdomain}` : ""}`)}`;
 
-      // The root is the organization's own page; the grid lives at /home.
-      if (wantsOrganizationHome) {
+      // The root is the organization's own page; the grid lives at /home. An
+      // organization on a generated address has no public homepage until it is
+      // granted a chosen one (src/addresses.ts): its root is the portal.
+      if (wantsOrganizationHome && showsHomepage(currentTenant)) {
         const portalPath = namedTenant
           ? `/home?tenant=${encodeURIComponent(currentTenant.subdomain)}`
           : "/home";
@@ -5473,7 +6007,7 @@ export default {
       path === "/iso"
     ) {
       const openModal =
-        path === "/register" || url.searchParams.has("register")
+        isRegistrationPage(path, url)
           ? "register"
           : path === "/login" || url.searchParams.has("login")
             ? "login"

@@ -16,10 +16,13 @@ import {
 } from "./ui_admin_legal";
 import type { LicenseState } from "./license";
 import type { NotificationRow } from "./notifications";
+import { escapeAttr, escapeHtml } from "./escape";
+import type { MonthlySummary } from "./monthly_summary";
 import { renderNotificationsHtml, renderNotificationsScript } from "./ui_admin_notifications";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
-import { DEFAULT_WORKSTATION_LIMIT } from "./db";
+import { entitlement } from "./plans";
+import { buildPlanPage } from "./ui_admin_plan";
 import {
   AdminPageInput,
   AdminPageParts,
@@ -30,11 +33,14 @@ import { buildWorkstationsPage } from "./ui_admin_workstations";
 import { buildAppsWebPage } from "./ui_admin_apps_web";
 import { buildStaffPage } from "./ui_admin_staff";
 import { buildSettingsPage } from "./ui_admin_settings";
+import { buildExamsPage } from "./ui_admin_exams";
 
 export type AdminPageId =
   | "workstations"
+  | "exams"
   | "apps-web"
   | "staff"
+  | "plan"
   | "settings";
 
 export interface DashboardOptions {
@@ -73,13 +79,19 @@ export interface DashboardOptions {
   license?: LicenseState;
   /** The platform's notifications this user has not dismissed, newest first. */
   notifications?: NotificationRow[];
+  /** An open platform incident (src/status.ts), shown above every console page. */
+  incident?: { title: string; impact: "minor" | "major"; status: string } | null;
+  /** Last month's summary for Workstations (src/monthly_summary.ts). */
+  monthlySummary?: MonthlySummary | null;
   nonce: string;
 }
 
 const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPageParts> = {
   workstations: buildWorkstationsPage,
+  exams: buildExamsPage,
   "apps-web": buildAppsWebPage,
   staff: buildStaffPage,
+  plan: buildPlanPage,
   settings: buildSettingsPage
 };
 
@@ -126,6 +138,12 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`
     },
     {
+      id: "exams",
+      label: "Exams",
+      href: `/admin/exams${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`
+    },
+    {
       id: "apps-web",
       label: "Apps & Web",
       href: `/admin/apps-web${tenantParam}`,
@@ -138,6 +156,12 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       href: `/admin/staff${tenantParam}`,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
       badge: staff.length
+    },
+    {
+      id: "plan",
+      label: "Plan",
+      href: `/admin/plan${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
     },
     {
       id: "settings",
@@ -159,6 +183,10 @@ export function renderDashboardHtml(options: DashboardOptions): string {
             userPermissions.includes("whitelist")
           );
         }
+        // Exams are run by whoever runs the workstations.
+        if (item.id === "exams") return userPermissions.includes("workstations");
+        // The plan is the organization's, like its settings.
+        if (item.id === "plan") return userPermissions.includes("settings");
         // Everyone opens Settings: without the permission it holds only their own sign-in.
         return item.id === "settings" || userPermissions.includes(item.id);
       });
@@ -170,7 +198,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   ];
   if (tenant) {
     const enrolled = options.enrolledWorkstations ?? 0;
-    const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
+    const limit = entitlement(tenant).limit;
     stats.push({
       label: "Enrolled",
       value: `${enrolled} of ${limit}`,
@@ -190,6 +218,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     tenantParam,
     accountOnly: activePage === "settings" && !hasAll && !userPermissions.includes("settings"),
     canUpdate: hasAll || userPermissions.includes("updates"),
+    canSettings: hasAll || userPermissions.includes("settings"),
+    monthlySummary: options.monthlySummary ?? null,
     canRemoteControl: options.currentUser?.role === "org_admin" || options.currentUser?.role === "super_admin",
     nonce
   };
@@ -204,8 +234,15 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const legalHtml =
     (legal ? renderLegalNoticeHtml(legal, labName) : "") +
     (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "") +
-    (options.license ? renderLicenseNoticeHtml(options.license, labName) : "") +
-    renderNotificationsHtml(options.notifications ?? []);
+    (options.license ? renderLicenseNoticeHtml(options.license, labName, `/admin/plan${tenantParam}`) : "") +
+    renderNotificationsHtml(options.notifications ?? []) +
+    (options.incident
+      ? `
+      <div class="callout ${options.incident.impact === "major" ? "callout-danger" : "callout-warning"}" id="incident-banner" role="status">
+        <div><strong>${escapeHtml(options.incident.title)}</strong>
+        <div>We are working on it. Follow the updates on the <a href="${escapeAttr(isDev ? "/status" : `https://${baseDomain}/status`)}" target="_blank" rel="noopener">status page</a>.</div></div>
+      </div>`
+      : "");
   const gated = Boolean(legal?.gated);
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +

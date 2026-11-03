@@ -9,19 +9,103 @@ import { LabConfig, Tenant, PortalSite, BroadcastPreset, WorkstationGroup } from
 import { escapeHtml, escapeAttr, escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 import { SECURITY_WAIT_WARN_DAYS } from "./releases";
+import { featureTipFor, TipFeature } from "./addresses";
+import type { MonthlySummary } from "./monthly_summary";
 
 export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
   const canUpdate = options.canUpdate === true;
   return {
     title: "Workstation Grid & Control",
-    contentHtml: renderWorkstationsPageHtml(tenantParam, groups, canUpdate),
+    contentHtml: renderWorkstationsPageHtml(
+      tenantParam,
+      groups,
+      canUpdate,
+      renderMonthlySummaryHtml(tenantParam, options.monthlySummary ?? null) +
+        renderFeatureTipHtml(tenantParam, options.canSettings === true && tenant ? featureTipFor(tenant, Math.floor(Date.now() / 1000)) : [])
+    ),
     modalsHtml: renderWorkstationsModalsHtml(tenant, presets, groups),
     scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups, canUpdate, options.canRemoteControl === true)
   };
 }
 
-function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[], canUpdate: boolean): string {
+/** Last month in numbers (src/monthly_summary.ts); "Got it" hides it until next month. */
+function renderMonthlySummaryHtml(tenantParam: string, summary: MonthlySummary | null): string {
+  if (!summary) return "";
+  const number = (n: number) => n.toLocaleString("en-US");
+  const change =
+    summary.previousActiveHours !== null && summary.previousActiveHours > 0
+      ? Math.round(((summary.activeHours - summary.previousActiveHours) / summary.previousActiveHours) * 100)
+      : null;
+  const facts: string[] = [
+    `<li><strong>${number(summary.activeHours)} hours</strong> of use on ${number(summary.workstations)} workstation${summary.workstations === 1 ? "" : "s"}${
+      change === null ? "" : `, ${change >= 0 ? "up" : "down"} ${Math.abs(change)}% on the month before`
+    }</li>`,
+    `<li><strong>${number(summary.sessions)}</strong> session${summary.sessions === 1 ? "" : "s"}</li>`
+  ];
+  if (summary.busiestDay) {
+    // Spelled out piece by piece: how locales join these parts differs between runtimes.
+    const date = new Date(`${summary.busiestDay.day}T00:00:00Z`);
+    const part = (options: Intl.DateTimeFormatOptions) => date.toLocaleDateString("en-GB", { ...options, timeZone: "UTC" });
+    const day = `${part({ weekday: "long" })} ${date.getUTCDate()} ${part({ month: "long" })}`;
+    facts.push(`<li>Busiest day: <strong>${escapeHtml(day)}</strong>, ${number(summary.busiestDay.activeHours)} hours</li>`);
+  }
+  if (summary.topSites.length) {
+    facts.push(`<li>Used most: ${summary.topSites.map((s) => `<strong>${escapeHtml(s.domain)}</strong>`).join(", ")}</li>`);
+  }
+  facts.push(
+    summary.problems
+      ? `<li><strong>${number(summary.problems)}</strong> problem${summary.problems === 1 ? "" : "s"} reported by workstations${
+          summary.bugReports ? `, ${number(summary.bugReports)} sent to us as bug reports` : ""
+        }</li>`
+      : `<li>No problems reported by workstations</li>`
+  );
+  const usage = `/admin/settings${tenantParam ? `${tenantParam}&` : "?"}tab=usage`;
+  return `
+    <div class="callout" id="monthly-summary" role="note" style="margin-bottom: 16px;" data-month="${escapeAttr(summary.month)}">
+      <div style="flex: 1;">
+        <strong>${escapeHtml(summary.label)} at a glance</strong>
+        <ul style="margin: 6px 0 0; padding-left: 18px;">${facts.join("")}</ul>
+        <a href="${escapeAttr(usage)}" style="display: inline-block; margin-top: 6px;">See all usage</a>
+      </div>
+      <div style="flex-shrink: 0; align-self: flex-start;">
+        <button type="button" class="btn btn-ghost btn-sm" id="monthly-summary-dismiss">Got it</button>
+      </div>
+    </div>`;
+}
+
+/**
+ * The tip that tells an organization about Remote Control and a chosen address
+ * while it has neither (src/addresses.ts). Shown in the console only, never
+ * emailed; dismissing it hides it for 30 days.
+ */
+function renderFeatureTipHtml(tenantParam: string, features: TipFeature[]): string {
+  if (!features.length) return "";
+  const settings = (tab: string) => `/admin/settings${tenantParam ? `${tenantParam}&` : "?"}tab=${tab}`;
+  const items: string[] = [];
+  if (features.includes("remote_control")) {
+    items.push(
+      `<li><strong>Remote Control</strong>: see and use a workstation's screen from the console to help someone without walking over. <a href="${escapeAttr(settings("general"))}">Request it</a></li>`
+    );
+  }
+  if (features.includes("address")) {
+    items.push(
+      `<li><strong>Your own address</strong>: a short console address you choose, with a public homepage for your organization. <a href="${escapeAttr(settings("domains"))}">Ask for one</a></li>`
+    );
+  }
+  return `
+    <div class="callout" id="feature-tip" role="note" style="margin-bottom: 16px;">
+      <div style="flex: 1;">
+        <strong>Available for your organization</strong>
+        <ul style="margin: 6px 0 0; padding-left: 18px;">${items.join("")}</ul>
+      </div>
+      <div style="flex-shrink: 0; align-self: flex-start;">
+        <button type="button" class="btn btn-ghost btn-sm" id="feature-tip-dismiss">Not now</button>
+      </div>
+    </div>`;
+}
+
+function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[], canUpdate: boolean, featureTipHtml = ""): string {
   const groupChipsHtml = groups
     .map(
       (g) => `
@@ -41,6 +125,22 @@ function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGrou
         <p class="page-desc">Live screens, status and remote commands for every enrolled workstation.</p>
       </div>
     </div>
+${featureTipHtml}
+${
+  canUpdate
+    ? `
+    <div class="callout" id="update-offer" role="status" hidden>
+      <div style="flex: 1;">
+        <strong id="update-offer-title"></strong>
+        <div id="update-offer-text"></div>
+      </div>
+      <div style="display: flex; gap: 8px; flex-shrink: 0; align-self: center;">
+        <button type="button" class="btn btn-primary btn-sm" id="update-offer-accept"></button>
+        <button type="button" class="btn btn-ghost btn-sm" id="update-offer-dismiss">Dismiss</button>
+      </div>
+    </div>`
+    : ""
+}
 
     <div class="controls-bar">
       <div class="filter-chips" id="workstation-filter-chips" role="group" aria-label="Workstation telemetry filters">
@@ -299,6 +399,44 @@ function renderWorkstationsScripts(
   return `
     <script nonce="${escapeAttr(nonce)}">
       const CAN_UPDATE = ${escapeJson(canUpdate)};
+      // Last month's summary: "Got it" hides it until next month, for the whole organization.
+      (function () {
+        const summary = document.getElementById("monthly-summary");
+        const button = document.getElementById("monthly-summary-dismiss");
+        if (!summary || !button) return;
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/monthly-summary/dismiss"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ month: summary.dataset.month })
+            });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            summary.remove();
+          } catch (err) {
+            button.disabled = false;
+            lkToast("Could not hide the summary: " + err.message, "error");
+          }
+        });
+      })();
+      // The feature tip: "Not now" hides it for 30 days, for the whole organization.
+      (function () {
+        const tipDismiss = document.getElementById("feature-tip-dismiss");
+        if (!tipDismiss) return;
+        tipDismiss.addEventListener("click", async () => {
+          tipDismiss.disabled = true;
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/feature-tip/dismiss"), { method: "POST" });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            document.getElementById("feature-tip").remove();
+          } catch (err) {
+            tipDismiss.disabled = false;
+            lkToast("Could not hide the tip: " + err.message, "error");
+          }
+        });
+      })();
+      const TENANT_SLUG = ${escapeJson(tenant?.subdomain || "")};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -1292,6 +1430,79 @@ function renderWorkstationsScripts(
             lkToast(err.message, "error");
           }
         });
+
+        // A new release for this organization: accept it here, or dismiss the notice.
+        // A major release waits for an administrator to confirm it, as under Settings ->
+        // Updates. A minor release or a security fix installs at the next restart in any
+        // case; accepting starts the download now, and dismissing only hides the notice
+        // (for this version, in this browser), never the update itself.
+        (async function showUpdateOffer() {
+          const box = document.getElementById("update-offer");
+          if (!box) return;
+          let data;
+          try {
+            const res = await fetch(labkioskApi("/api/settings/updates"));
+            if (!res.ok) return;
+            data = await res.json();
+          } catch (err) {
+            console.warn("Could not read the update offer:", err);
+            return;
+          }
+          const major = Array.isArray(data.majors) ? data.majors.find((m) => m && m.access === "available") : null;
+          const offer = data.offer && typeof data.offer.version === "string" ? data.offer : null;
+          const version = major ? String(major.newest) : offer && data.behind > 0 ? offer.version : null;
+          if (!version) return;
+          const key = "lk-update-dismissed:" + (TENANT_SLUG || "") + ":" + version;
+          try {
+            if (localStorage.getItem(key)) return;
+          } catch (err) {
+            // Storage blocked: the notice shows every time, which is the safe side.
+          }
+          const accept = document.getElementById("update-offer-accept");
+          document.getElementById("update-offer-title").textContent = "Lab Kiosk " + version + " is available";
+          if (major) {
+            document.getElementById("update-offer-text").textContent =
+              "A new major version. Accept it and your workstations install it at their next restart; a workstation it does not start on goes back to its old version by itself.";
+            accept.textContent = "Accept " + version;
+          } else {
+            document.getElementById("update-offer-text").textContent =
+              data.behind + " workstation(s) run an older version. It installs at their next restart whatever you choose; download it now so the restart is quick.";
+            accept.textContent = "Download now";
+          }
+          box.hidden = false;
+          accept.addEventListener("click", async () => {
+            accept.disabled = true;
+            try {
+              if (major) {
+                const res = await fetch(labkioskApi("/api/settings/updates/confirm-major"), {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ major: major.major })
+                });
+                const result = await res.json();
+                if (!res.ok) throw new Error(result.error || "The release could not be accepted");
+                lkToast("Lab Kiosk " + version + " accepted. Workstations install it at their next restart.", "success");
+              } else {
+                const ids = getVisibleClientIds();
+                if (!ids.length) throw new Error("No workstations are shown.");
+                const result = await postUpdate("/api/clients/check-update", ids);
+                lkToast("Downloading on " + result.sent.length + " workstation(s).", "success");
+              }
+              box.hidden = true;
+            } catch (err) {
+              lkToast(err.message, "error");
+              accept.disabled = false;
+            }
+          });
+          document.getElementById("update-offer-dismiss").addEventListener("click", () => {
+            try {
+              localStorage.setItem(key, "1");
+            } catch (err) {
+              // Not remembered; it shows again next time.
+            }
+            box.hidden = true;
+          });
+        })();
 
         document.getElementById("btn-install-update").addEventListener("click", async () => {
           const targets = getSelectedOrAll(false);

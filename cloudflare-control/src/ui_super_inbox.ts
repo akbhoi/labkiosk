@@ -14,7 +14,8 @@
 
 import { escapeAttr, escapeJson } from "./escape";
 import { CATEGORIES } from "./conversations";
-import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
+import { MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
+import { PRICING } from "./plans";
 
 export type InboxBox = "tasks" | "support";
 
@@ -127,7 +128,8 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
       (function () {
         var BOX = ${escapeJson(box)};
         var BASE_DOMAIN = ${escapeJson(baseDomain)};
-        var DEFAULT_WORKSTATION_LIMIT = ${escapeJson(DEFAULT_WORKSTATION_LIMIT)};
+        var FREE_WORKSTATIONS = ${escapeJson(PRICING.freeWorkstations)};
+        var TRIAL_DAYS = ${escapeJson(PRICING.trialDays)};
         var MAX_WORKSTATION_LIMIT = ${escapeJson(MAX_WORKSTATION_LIMIT)};
         var MAX_REMOTE_CONTROL_SEATS = ${escapeJson(MAX_REMOTE_CONTROL_SEATS)};
         var OTHER_TASKS = ${escapeJson(Math.max(0, Math.floor(Number(otherTasks) || 0)))};
@@ -309,7 +311,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             definition(list, "Type", p.organization_type);
             definition(list, "Technical contact", p.contact_name);
             definition(list, "Email", p.contact_email, p.email_verified_at ? badge("verified", "badge-green") : badge("not verified", "badge-red"));
-            var phoneState = p.phone_verified_at ? badge("verified", "badge-green") : badge("not verified", "badge-yellow");
+            var phoneState = p.phone_verified_at ? badge(p.phone_verified_by ? "verified" : "verified by SMS", "badge-green") : badge("not verified", "badge-yellow");
             definition(list, "Phone", p.contact_phone, phoneState);
             definition(list, "Postal address", [p.address_line1, p.address_line2, p.city, p.region, p.postal_code, p.country].filter(Boolean).join(", "));
             definition(list, "Tax ID", p.tax_id);
@@ -318,8 +320,27 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             if (p.notes) definition(list, "Notes", p.notes);
           }
           card.append(list);
+          var actions = el("div", "form-actions mt-md");
+          // Any registration not yet verified, approved or still waiting, can be sent a
+          // link to verify its number by text message (src/phone_link.ts).
+          if (p && !p.phone_verified_at && data.conversation.kind === "signup" && data.smsVerification && org && org.status !== "rejected") {
+            var linkOut = p.phone_link_expires_at && p.phone_link_expires_at * 1000 > Date.now();
+            var sendLink = el("button", "btn btn-sm btn-secondary", linkOut ? "Send a new verification link" : "Send phone verification link");
+            sendLink.type = "button";
+            sendLink.addEventListener("click", async function () {
+              var ok = await lkConfirm({
+                title: "Email a verification link?",
+                message: p.contact_email + " gets a one-time link, valid for 7 days, to verify " + p.contact_phone + " with a code we text to it." +
+                  (linkOut ? " The link sent earlier stops working." : ""),
+                confirmLabel: "Send link"
+              });
+              if (!ok) return;
+              await act(data.conversation.id, "phone-link", {}, "Verification link emailed.");
+            });
+            actions.append(sendLink);
+            if (linkOut) definition(list, "Verification link", "sent, valid until " + new Date(p.phone_link_expires_at * 1000).toLocaleDateString());
+          }
           if (p && !p.phone_verified_at && data.conversation.kind === "signup" && data.conversation.status === "open") {
-            var actions = el("div", "form-actions mt-md");
             var verify = el("button", "btn btn-sm btn-secondary", "Mark phone as verified");
             verify.type = "button";
             verify.addEventListener("click", async function () {
@@ -332,8 +353,8 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
               await act(data.conversation.id, "verify-phone", {}, "Phone number marked as verified.");
             });
             actions.append(verify);
-            card.append(actions);
           }
+          if (actions.children.length) card.append(actions);
           return card;
         }
 
@@ -426,11 +447,11 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             limitInput.max = String(MAX_WORKSTATION_LIMIT);
             limitInput.inputMode = "numeric";
             var estimate = data.profile && Number(data.profile.workstation_estimate);
-            limitInput.value = String(estimate > 0 ? Math.min(estimate, MAX_WORKSTATION_LIMIT) : DEFAULT_WORKSTATION_LIMIT);
+            limitInput.value = String(FREE_WORKSTATIONS);
             limitGroup.append(
               limitLabel,
               limitInput,
-              el("p", "form-hint", "How many workstations this organization may enrol. Prefilled from what they expect; the free license covers at most " + DEFAULT_WORKSTATION_LIMIT + ".")
+              el("p", "form-hint", "How many workstations the Free plan gives this organization; Free is " + FREE_WORKSTATIONS + ". They expect " + (estimate > 0 ? estimate : "an unknown number") + "; for more they start the " + TRIAL_DAYS + "-day trial, subscribe or apply for Education under Plan.")
             );
             card.append(limitGroup);
           }

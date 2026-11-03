@@ -172,6 +172,7 @@ provisioned by a Workflow. **A production worker refuses to start without every 
 | `AUDIT_ARCHIVE` | R2 bucket `labkiosk-audit-archive` (audit entries older than 180 days, as NDJSON) | `npx wrangler r2 bucket create labkiosk-audit-archive` |
 | `FLEET_METRICS` | Analytics Engine dataset `labkiosk_fleet` (connects and disconnects) | Nothing: it is created on first write. |
 | `AUTH_RATE_LIMITER` | Rate limit, namespace `1001`, 20 requests per 60 s per address | Nothing; change `namespace_id` if your account already uses `1001`. |
+| `ACCOUNT_RATE_LIMITER` | Rate limit, namespace `1002`, 10 requests per 60 s per email address on sign-in, registration and the contact form | Nothing; change `namespace_id` if your account already uses `1002`. |
 | `CUSTOM_HOSTNAMES` | Workflow `labkiosk-custom-hostnames` | Nothing: created on deploy. |
 | `CF_API_TOKEN` | Secret: an API token for the zone with **SSL and Certificates: Edit** (custom hostnames) | `npx wrangler secret put CF_API_TOKEN` |
 | `CF_ZONE_ID` | Secret: the zone id of your platform domain | `npx wrangler secret put CF_ZONE_ID` |
@@ -338,6 +339,84 @@ unavailable to every organization until all three of these are set:
 
 Issues filed in a public repository are public. Each organization's administrator sees the
 repository name before turning the option on.
+
+### Phone verification by text message (optional)
+
+With Firebase configured, the registration page texts a six-digit code to the phone number given,
+and **every registration then needs it**: `POST /api/auth/register` refuses a phone that was not
+proved (`src/phone_verify.ts`). Firebase only sends the SMS and checks the code. The Worker
+verifies the ID token Firebase hands the page (RS256 against Google's published keys, issuer and
+audience of your project, signed in by phone in the last 15 minutes, the same number as the form)
+and records `organization_profiles.phone_verified_at`; the Super Admin's Verify button is not
+needed for those registrations ("verified by SMS"). Without Firebase, the phone is confirmed by
+hand before approval, as before.
+
+1. Create a Firebase project (or use one) and switch it to the **Blaze** plan: SMS needs a billing
+   account. Google bills India at about $0.07 per SMS after the first 10 SMS a day.
+2. Authentication → Sign-in method → enable **Phone**.
+3. Authentication → Settings → **Authorized domains**: add your platform domain (`labkiosk.org`).
+4. Authentication → Settings → **SMS region policy**: *Allow* only the countries you register
+   organizations from, so nobody can make the project text expensive destinations.
+5. Google Cloud console → Billing → **Budgets & alerts**: set a monthly budget with an email alert.
+6. Project settings → General → *Your apps* → add a **Web app**, and copy its `projectId`,
+   `apiKey` and `authDomain` into the Worker's variables (Dashboard → Worker → Settings →
+   Variables). They are public browser values, not secrets.
+
+| Variable | Value |
+| --- | --- |
+| `FIREBASE_PROJECT_ID` | e.g. `labkiosk-prod` |
+| `FIREBASE_API_KEY` | the web API key, e.g. `AIza…` |
+| `FIREBASE_AUTH_DOMAIN` | e.g. `labkiosk-prod.firebaseapp.com` |
+
+Set all three or none: some but not all of them makes registration refuse (Rule 10). The
+registration page, and only it, loads the Firebase Auth SDK (`FIREBASE_SDK_VERSION`, from
+`www.gstatic.com`) and Google reCAPTCHA, and its Content Security Policy allows exactly those.
+
+Organizations that registered before Firebase was set up have unverified numbers. In the Super
+Admin console, open the organization's registration under Tasks and choose **Send phone
+verification link**: the contact gets a one-time link, valid for 7 days, to `/verify-phone`, which
+texts the number on record and records it as verified (`src/phone_link.ts`). The page loads
+Firebase the same way, and only the SHA-256 of the link's token is stored.
+
+### Online payment (Razorpay, optional)
+
+Plans (`src/plans.ts`): Free (5 workstations), a one-time 15-day trial (45), a subscription
+(₹1,999 a month or ₹19,990 a year plus 18% GST, 45 workstations, ₹39 / ₹390 per extra one up to
+200), Education (free, 45, verified by hand in Super Admin → Tasks → Education) and Custom (set
+by hand). Without Razorpay, Plan in the console sends customers to sales and the super admin
+records a subscription with **License** and **Workstation Limit** on the organization.
+
+To take payments online (needs a Razorpay account with KYC done and your GSTIN):
+
+1. Razorpay Dashboard → Account & Settings → **API Keys**: generate a key pair.
+2. Razorpay Dashboard → Account & Settings → **Webhooks**: add
+   `https://<your domain>/api/billing/razorpay/webhook` with the event **payment_link.paid**
+   and a secret of your choice.
+3. Set the Worker's secrets:
+
+| Secret | Value |
+| --- | --- |
+| `RAZORPAY_KEY_ID` | `rzp_live_…` |
+| `RAZORPAY_KEY_SECRET` | the key secret |
+| `RAZORPAY_WEBHOOK_SECRET` | the webhook secret from step 2 |
+
+Payments go through Payment Links: the console never loads Razorpay's script. Either the signed
+redirect back to `/api/billing/return` or the webhook records a payment, once.
+
+Education certificates are stored in the `AUDIT_ARCHIVE` bucket under `education/`; a rejected
+application's certificate is deleted 90 days after the decision.
+
+### Status page and outside monitoring
+
+`/status` shows whether the console, workstation connections, email and updates are working,
+from checks a 5-minute cron runs (`"*/5 * * * *"` in `wrangler.jsonc`, `src/status.ts`), and the
+incidents posted under Super Admin → System → Status & incidents. An open incident is also shown
+as a banner in every organization's console. Nothing is emailed.
+
+The Worker cannot report its own outage, so point an outside uptime monitor at
+`https://<platform domain>/api/health`. It answers `200 {"status":"ok"}` while the Worker and D1
+answer, and `503` when D1 does not. Any free HTTP monitor that checks every few minutes works;
+link its public page from your support documents if it has one.
 
 ### Staff sign-in with Google or Microsoft (optional)
 
