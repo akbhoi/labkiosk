@@ -10958,6 +10958,47 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
     await restorePlan();
   });
+  test("A Razorpay call Cloudflare could not complete TLS for is sent once more, and a second failure names the edge that answered", async () => {
+    const { db, tenantId } = await restorePlan();
+    const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };
+    const checkout = () =>
+      worker.fetch(request("/api/plan/checkout?tenant=greenwood", { ...json({ period: "month" }), cookie: orgSessionCookie }), env);
+    const edgeFailure = () => new Response("<html>525</html>", { status: 525, headers: { server: "cloudflare", "cf-ray": "a54c-MAA" } });
+    const realFetch = globalThis.fetch;
+    const realError = console.error;
+    let calls = 0;
+    console.error = () => {};
+    try {
+      globalThis.fetch = (async () => (++calls === 1 ? edgeFailure() : new Response(JSON.stringify({ id: "plink_r", short_url: "https://rzp.io/i/r" }), { status: 200 }))) as typeof fetch;
+      const retried = await checkout();
+      assert.equal(retried.status, 200);
+      assert.equal(((await retried.json()) as any).url, "https://rzp.io/i/r");
+      assert.equal(calls, 2, "one more try after a 525");
+
+      calls = 0;
+      globalThis.fetch = (async () => (++calls, edgeFailure())) as typeof fetch;
+      const failed = await checkout();
+      assert.equal(failed.status, 502);
+      assert.equal(calls, 2, "only one more try");
+      assert.match(((await failed.json()) as any).error, /HTTP 525 \(server cloudflare, ray a54c-MAA\)/);
+
+      calls = 0;
+      globalThis.fetch = (async () => (++calls, new Response(JSON.stringify({ error: { description: "Authentication failed" } }), { status: 401 }))) as typeof fetch;
+      const refused = await checkout();
+      assert.equal(calls, 1, "an answer from Razorpay itself is not retried");
+      assert.match(((await refused.json()) as any).error, /Authentication failed/);
+      assert.equal(
+        Number((await db.prepare("SELECT COUNT(*) AS n FROM payments WHERE tenant_id = ? AND link_id IS NULL").bind(tenantId).first<{ n: number }>())!.n),
+        0,
+        "a failed link leaves no payment behind"
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      console.error = realError;
+    }
+    await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
+    await restorePlan();
+  });
 });
 
 /**

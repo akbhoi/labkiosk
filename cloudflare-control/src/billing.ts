@@ -85,6 +85,30 @@ export function rupees(paise: number): string {
 }
 
 /**
+ * Cloudflare answers 522, 525 and 526 itself when it could not connect, or
+ * could not complete TLS, to the server behind the host: the request never
+ * reached Razorpay's API, so it is safe to send once more.
+ */
+const NEVER_REACHED_ORIGIN = new Set([522, 525, 526]);
+
+async function fetchRazorpay(url: string, init: RequestInit): Promise<Response> {
+  const first = await fetch(url, init);
+  if (!NEVER_REACHED_ORIGIN.has(first.status)) return first;
+  console.error(`[Billing] Razorpay ${url} answered ${describeHttpFailure(first)}; trying once more`);
+  await first.body?.cancel();
+  return fetch(url, init);
+}
+
+/** "HTTP 525 (server cloudflare, ray abc123-MAA)": enough to tell whose edge answered, for Razorpay support. */
+export function describeHttpFailure(res: Response): string {
+  const details = [
+    res.headers.get("server") ? `server ${res.headers.get("server")}` : "",
+    res.headers.get("cf-ray") ? `ray ${res.headers.get("cf-ray")}` : ""
+  ].filter(Boolean);
+  return `HTTP ${res.status}${details.length ? ` (${details.join(", ")})` : ""}`;
+}
+
+/**
  * Ask Razorpay for a payment link for this quote. Throws when Razorpay does
  * not give one, with its own description of why.
  */
@@ -105,7 +129,7 @@ export async function createPaymentLink(
     .run();
   const description =
     `Lab Kiosk subscription, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations, for ${input.organization}`.slice(0, 2048);
-  const res = await fetch(`${RAZORPAY_API}/payment_links`, {
+  const res = await fetchRazorpay(`${RAZORPAY_API}/payment_links`, {
     method: "POST",
     headers: {
       Authorization: `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`,
@@ -133,7 +157,7 @@ export async function createPaymentLink(
   }
   if (!res.ok || typeof data.id !== "string" || typeof data.short_url !== "string") {
     await db.prepare("DELETE FROM payments WHERE id = ? AND status = 'created'").bind(id).run();
-    const why = typeof data.error?.description === "string" ? data.error.description : `HTTP ${res.status}`;
+    const why = typeof data.error?.description === "string" ? data.error.description : describeHttpFailure(res);
     throw new Error(`Razorpay did not create the payment link: ${why}`);
   }
   await db.prepare("UPDATE payments SET link_id = ?, short_url = ? WHERE id = ?").bind(data.id, data.short_url, id).run();
