@@ -98,7 +98,7 @@ const NEVER_REACHED_ORIGIN = new Set([522, 525, 526]);
  */
 export function razorpayRoute(env: Env): { kind: "direct" } | { kind: "relay"; url: string; secret: string } {
   const url = (env.RAZORPAY_RELAY_URL || "").trim().replace(/\/+$/, "");
-  const secret = env.RAZORPAY_RELAY_SECRET || "";
+  const secret = (env.RAZORPAY_RELAY_SECRET || "").trim();
   if (!url && !secret) return { kind: "direct" };
   if (!url || !secret) throw new Error("Set both RAZORPAY_RELAY_URL and RAZORPAY_RELAY_SECRET, or neither");
   if (!/^https:\/\/[^/?#]+(\/[^?#]*)?$/.test(url)) throw new Error("RAZORPAY_RELAY_URL must be an https address with no query");

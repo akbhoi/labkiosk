@@ -41,7 +41,9 @@ function refuse(status, error) {
  * @param {{ method: string, path: string, headers: Record<string, string | undefined>, body: string, secret: string | undefined, nowSeconds: number, fetchImpl: typeof fetch }} input
  */
 export async function handleRelay(input) {
-  if (!input.secret || input.secret.length < 32) {
+  // A secret stored from a file often ends in a newline; the Worker's copy does not.
+  const secret = typeof input.secret === "string" ? input.secret.trim() : "";
+  if (secret.length < 32) {
     console.error("[relay] RELAY_SECRET is not set, or is shorter than 32 characters");
     return refuse(503, "The relay is not configured");
   }
@@ -56,7 +58,7 @@ export async function handleRelay(input) {
   if (!/^\d{1,12}$/.test(timestamp) || Math.abs(input.nowSeconds - Number(timestamp)) > MAX_SKEW_SECONDS) {
     return refuse(401, "The request is not signed, or its time is more than five minutes off");
   }
-  if (!sameHex(relaySignature(input.secret, timestamp, method, path, body), signature)) return refuse(401, "The signature does not match");
+  if (!sameHex(relaySignature(secret, timestamp, method, path, body), signature)) return refuse(401, "The signature does not match");
 
   const authorization = input.headers.authorization || "";
   if (!/^Basic [A-Za-z0-9+/=]+$/.test(authorization)) return refuse(400, "Razorpay authorization is missing");

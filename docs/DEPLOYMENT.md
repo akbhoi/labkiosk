@@ -417,7 +417,7 @@ Deploy it in the Google Cloud project you already use for Firebase (Cloud Run fu
 project on the Blaze / pay-as-you-go plan; this traffic stays inside the free tier):
 
 ```sh
-openssl rand -hex 32 > relay-secret.txt          # the shared secret, 64 characters
+openssl rand -hex 32 | tr -d '\n' > relay-secret.txt   # the shared secret, 64 characters, no newline
 gcloud services enable cloudfunctions.googleapis.com run.googleapis.com cloudbuild.googleapis.com \
   artifactregistry.googleapis.com secretmanager.googleapis.com
 gcloud secrets create razorpay-relay-secret --data-file=relay-secret.txt
