@@ -10997,7 +10997,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal((await signed({ headers: { "x-relay-timestamp": String(now), "x-relay-signature": "zz", authorization: "Basic eA==" } })).status, 401);
       assert.equal((await signed({ headers: { "x-relay-timestamp": String(now), "x-relay-signature": relaySignature(secret, String(now), "POST", "/v1/payment_links", body) } })).status, 400, "no authorization");
       assert.equal((await signed({ secret: "short" })).status, 503, "a relay without a proper secret forwards nothing");
-      assert.equal(forwarded.length, 1, "nothing refused was forwarded");
+      assert.equal((await signed({ secret: secret + "\n" })).status, 200, "a stored secret's trailing newline is ignored");
+      assert.equal(forwarded.length, 2, "only the two accepted calls were forwarded");
       const down = await signed({ fetchImpl: (async () => { throw new TypeError("network"); }) as unknown as typeof fetch });
       assert.equal(down.status, 502);
     } finally {
@@ -11009,6 +11010,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.throws(() => razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "http://relay.example", RAZORPAY_RELAY_SECRET: secret }), /https/);
     assert.throws(() => razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "https://relay.example", RAZORPAY_RELAY_SECRET: "short" }), /32/);
     assert.deepEqual(razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "https://relay.example/fn/", RAZORPAY_RELAY_SECRET: secret }), { kind: "relay", url: "https://relay.example/fn", secret });
+    assert.deepEqual(razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "https://relay.example/fn", RAZORPAY_RELAY_SECRET: ` ${secret}\n` }), { kind: "relay", url: "https://relay.example/fn", secret }, "whitespace around the secret is ignored");
   });
 
   test("With the relay set, checkout creates the payment link through it, signed, and a half-set relay writes nothing", async () => {
