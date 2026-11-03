@@ -40,6 +40,7 @@ cloudflare-control/
 │   ├── status.ts                       # Status checks (5-minute cron), daily counts, incidents; /status, /api/health
 │   ├── addresses.ts                    # Generated console addresses; a chosen one (and the homepage) on request, kept beside it; the feature tip
 │   ├── monthly_summary.ts              # Last month in numbers on Workstations, from recorded usage; never emailed
+│   ├── exams.ts                        # Exam mode: schedule, hold a group on the exam site, events, report, purge
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback
@@ -74,6 +75,7 @@ cloudflare-control/
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   ├── ui_status_public.ts             # /status body: component strips and incidents
 │   ├── ui_super_status.ts              # Super Admin -> System -> Status & incidents
+│   ├── ui_admin_exams.ts               # Admin -> Exams: schedule, live board, CSV report
 │   ├── ui_verify_phone.ts              # /verify-phone: texts the number on record and sends Firebase's token
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/

@@ -74,6 +74,7 @@ import {
   loadPowerRules
 } from "./power";
 import { Printer, WorkstationPrinting, listPrinters, printingFor } from "./printing";
+import { ExamWindow, examClients, examCovers, examEpoch, finishExam, hubExams, recordExamEvents } from "./exams";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -247,6 +248,9 @@ interface HubConfig {
   /** The organization's printers, and the group of each workstation in a group one is limited to. */
   printers: Printer[];
   printerGroups: Map<string, string>;
+  /** Exams not yet ended or ended in the last day (src/exams.ts), and the group of each workstation in a group one is for. */
+  exams: ExamWindow[];
+  examGroups: Map<string, string>;
   loadedAt: number;
 }
 
@@ -419,6 +423,10 @@ export class OrgHub {
         case "/config-changed":
           await this.configChanged();
           return json({ status: "ok" });
+        case "/exams-changed":
+          await this.loadConfig(true);
+          await this.examTick();
+          return json({ status: "ok" });
         case "/remove-device":
           await this.removeDevice(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
           return json({ status: "ok" });
@@ -538,20 +546,35 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts, releases, power, printers] = await Promise.all([
+    const [whitelist, broadcasts, releases, power, printers, exams] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
       offeredReleases(db, tenant.update_channel, tenant.id),
       loadPowerRules(db, tenant.id),
-      tenant.printing_enabled === 1 ? listPrinters(db, tenant.id) : Promise.resolve([])
+      tenant.printing_enabled === 1 ? listPrinters(db, tenant.id) : Promise.resolve([]),
+      hubExams(db, tenant.id, Math.floor(Date.now() / 1000))
     ]);
     const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
     const printerGroupNames = [...new Set(printers.flatMap((p) => (p.groupName ? [p.groupName] : [])))];
-    const [pilotGroups, printerGroups] = await Promise.all([
+    const examGroupNames = [...new Set(exams.flatMap((e) => (e.groupName ? [e.groupName] : [])))];
+    const [pilotGroups, printerGroups, examGroups] = await Promise.all([
       workstationGroupsIn(db, tenant.id, pilots),
-      workstationGroupsIn(db, tenant.id, printerGroupNames)
+      workstationGroupsIn(db, tenant.id, printerGroupNames),
+      workstationGroupsIn(db, tenant.id, examGroupNames)
     ]);
-    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, power, printers, printerGroups, loadedAt: Date.now() };
+    this.config = {
+      tenant,
+      whitelist,
+      deviceBroadcasts: broadcasts,
+      releases,
+      pilotGroups,
+      power,
+      printers,
+      printerGroups,
+      exams,
+      examGroups,
+      loadedAt: Date.now()
+    };
     return this.config;
   }
 
@@ -593,6 +616,24 @@ export class OrgHub {
       }
     }
     whitelist.sort();
+    const exam = this.examFor(config, clientId, Math.floor(Date.now() / 1000));
+    if (exam) {
+      // During an exam (src/exams.ts) the exam is the broadcast and its sites
+      // the whole allowlist, nothing prints, and Home goes back to the exam.
+      return {
+        whitelist: [...exam.hosts].sort(),
+        mode: tenant.mode,
+        targetUrl: exam.url,
+        broadcastUrl: exam.url,
+        broadcastEpoch: examEpoch(exam.startsAt),
+        lanSharing: tenant.lan_sharing === 1,
+        usageSites: tenant.usage_sites !== 0,
+        power: effectivePower(config.power.rules, config.power.groupOf.get(clientId)),
+        printing: { enabled: false, printers: [] },
+        homeReset: false,
+        portalUrl
+      };
+    }
     return {
       whitelist,
       mode: tenant.mode,
@@ -606,6 +647,82 @@ export class OrgHub {
       homeReset: tenant.home_reset !== 0,
       portalUrl
     };
+  }
+
+  /** The exam running on this workstation now, if any. */
+  private examFor(config: HubConfig, clientId: string, nowSeconds: number): ExamWindow | null {
+    return (
+      config.exams.find(
+        (e) => !e.cancelled && e.startsAt <= nowSeconds && nowSeconds < e.endsAt && examCovers(e, config.examGroups.get(clientId))
+      ) ?? null
+    );
+  }
+
+  /**
+   * Start and end exams whose time has come (src/exams.ts). At a start the
+   * covered workstations' online state is recorded for the report; at a start
+   * and at an end they are sent their new configuration and their browser
+   * session is cleared, which also empties the clipboard. After an end they are
+   * sent back to the portal. The hub remembers each exam's phase in `meta`, so
+   * each step happens once however often the alarm fires.
+   */
+  private async examTick(): Promise<void> {
+    const config = await this.loadConfig();
+    if (!config) return;
+    const db = getDatabase(this.env);
+    const nowMs = Date.now();
+    const now = Math.floor(nowMs / 1000);
+    const cleared: ExamWindow[] = [];
+    for (const exam of config.exams) {
+      const key = `exam:${exam.id}`;
+      const seen = this.readMeta(key);
+      if (now >= exam.endsAt) {
+        if (seen === "ended") continue;
+        this.writeMeta(key, "ended");
+        if (exam.cancelled) continue;
+        await finishExam(db, exam, nowMs);
+        cleared.push(exam);
+      } else if (now >= exam.startsAt && seen !== "running") {
+        this.writeMeta(key, "running");
+        const live = this.liveClients(false);
+        const covered = await examClients(db, this.tenantId!, exam.groupName);
+        await recordExamEvents(
+          db,
+          exam.id,
+          covered.map((c) => ({ clientId: c.client_id, event: live[c.client_id]?.online ? "start-online" : "start-offline", at: now }))
+        );
+        cleared.push(exam);
+      }
+    }
+    const kept = new Set(config.exams.map((e) => `exam:${e.id}`));
+    const remembered = this.ctx.storage.sql.exec("SELECT key FROM meta WHERE key LIKE 'exam:%'").toArray() as Array<{ key: string }>;
+    for (const { key } of remembered) if (!kept.has(key)) this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = ?", key);
+
+    if (cleared.length) {
+      await this.configChanged();
+      for (const exam of cleared) {
+        const targets = exam.groupName === null ? ["all"] : (await examClients(db, this.tenantId!, exam.groupName)).map((c) => c.client_id);
+        if (targets.length) await this.enqueue({ targets, action: "clear-session" });
+      }
+    }
+    await this.scheduleExamAlarm();
+  }
+
+  private async scheduleExamAlarm(): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    const next = (this.config?.exams ?? [])
+      .flatMap((e) => (e.cancelled ? [e.endsAt] : [e.startsAt, e.endsAt]))
+      .filter((t) => t > now)
+      .reduce((a, b) => Math.min(a, b), Infinity);
+    if (Number.isFinite(next)) await this.ensureAlarm(next * 1000 - Date.now());
+  }
+
+  /** A covered workstation came or went during an exam: kept for the board and the report. */
+  private async noteExamEvent(event: "connect" | "disconnect", clientId: string, nowMs: number): Promise<void> {
+    const config = this.config ?? (await this.loadConfig());
+    if (!config) return;
+    const exam = this.examFor(config, clientId, Math.floor(nowMs / 1000));
+    if (exam) await recordExamEvents(getDatabase(this.env), exam.id, [{ clientId, event, at: Math.floor(nowMs / 1000) }]);
   }
 
   /** The Worker saved a change a workstation must hear about. */
@@ -670,6 +787,7 @@ export class OrgHub {
     this.updateStreaming();
     this.notifyConsoles({ type: "status", client: this.statusOf(attachment, now) });
     this.recordEvent("connect", meta.clientId);
+    await this.noteExamEvent("connect", meta.clientId, now);
     await this.ensureAlarm(FLUSH_DELAY_MS);
   }
 
@@ -714,6 +832,7 @@ export class OrgHub {
       client.dirty = false;
       await this.writeRegistry([this.registryRow({ clientId, ...client }, now)]);
       this.recordEvent("connect", clientId);
+      await this.noteExamEvent("connect", clientId, now);
     }
     if (changed) {
       this.notifyConsoles({ type: "status", client: this.httpStatus(clientId, client, now) });
@@ -847,6 +966,7 @@ export class OrgHub {
     if (this.isRevoked(attachment.clientId)) this.notifyConsoles({ type: "removed", clientId: attachment.clientId });
     else this.notifyConsoles({ type: "status", client: { ...this.statusOf(attachment, now), online: false } });
     this.recordEvent("disconnect", attachment.clientId, now, ws);
+    if (!this.isRevoked(attachment.clientId)) await this.noteExamEvent("disconnect", attachment.clientId, now);
     await this.ensureAlarm(FLUSH_DELAY_MS);
     // A seed that left no longer counts; someone else at its site takes its place.
     await this.nudgeSite(siteKey(attachment.ip, attachment.lan), attachment.clientId, ws);
@@ -1250,6 +1370,7 @@ export class OrgHub {
         this.frames.delete(clientId);
         this.notifyConsoles({ type: "status", client: { ...this.httpStatus(clientId, c, now), online: false } });
         this.recordEvent("disconnect", clientId, now);
+        await this.noteExamEvent("disconnect", clientId, now);
       }
     }
     await this.writeRegistry(rows);
@@ -1280,6 +1401,7 @@ export class OrgHub {
 
   async alarm(): Promise<void> {
     if (!this.tenantId) return;
+    await this.examTick();
     await this.sweepStale();
     this.updateStreaming();
     await this.flush();
@@ -1299,6 +1421,8 @@ export class OrgHub {
       const waitEnds = this.nextWaitEnd();
       if (waitEnds !== null) await this.ctx.storage.setAlarm(waitEnds);
     }
+    // The next exam start or end comes first if it is sooner.
+    await this.scheduleExamAlarm();
   }
 
   /** Schedule the alarm no later than `delayMs` from now. Each setAlarm is a billed row write. */

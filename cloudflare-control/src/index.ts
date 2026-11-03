@@ -57,6 +57,23 @@ import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
 import { consoleSubdomain, featureTipFor, showsHomepage } from "./addresses";
 import { isSummaryMonth, monthlySummaryFor, previousMonth } from "./monthly_summary";
 import { componentStatuses, createIncident, listIncidents, openIncident, purgeOldStatus, runStatusChecks, updateIncident } from "./status";
+import {
+  EXAM_LIMITS,
+  EXAM_RETENTION_DAYS,
+  ExamRow,
+  createExam,
+  endExam,
+  examBlockingBroadcast,
+  examPhase,
+  examReportCsv,
+  examWindow,
+  examWorkstations,
+  findExam,
+  finishExam,
+  listExams,
+  parseExamInput,
+  purgeOldExams
+} from "./exams";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -1376,6 +1393,23 @@ async function requestEmail(request: Request): Promise<string | null> {
   }
 }
 
+/** An exam as the console sees it. */
+function examJson(row: ExamRow, nowSeconds: number) {
+  const w = examWindow(row);
+  return {
+    id: w.id,
+    title: w.title,
+    groupName: w.groupName,
+    url: w.url,
+    hosts: w.hosts,
+    startsAt: w.startsAt,
+    endsAt: w.endsAt,
+    scheduledEndsAt: row.ends_at,
+    cancelled: w.cancelled,
+    phase: examPhase(row, nowSeconds)
+  };
+}
+
 export default {
   /**
    * Hourly housekeeping (see `triggers.crons` in wrangler.jsonc). Expired
@@ -1393,6 +1427,8 @@ export default {
       return;
     }
     await purgeOldStatus(db);
+    const purgedExams = await purgeOldExams(db, Math.floor(Date.now() / 1000));
+    if (purgedExams) console.log(`[Worker] Deleted ${purgedExams} exams that ended more than ${EXAM_RETENTION_DAYS} days ago.`);
     await deleteExpiredSessions(db);
     const rehashed = await hashLegacySessions(db);
     if (rehashed) console.log(`[Worker] Stored ${rehashed} sessions under the hash of their token.`);
@@ -4539,6 +4575,126 @@ export default {
       return new Response(JSON.stringify(summary), { headers: jsonHeaders });
     }
 
+    // Exam mode (src/exams.ts), for the `workstations` permission.
+    // GET /api/exams: the organization's exams and its workstation groups.
+    // POST /api/exams {title, url, hosts?, groupName?, startsAt?, durationMinutes}: schedule one.
+    // GET /api/exams/:id: one exam with its workstations, for the live board.
+    // POST /api/exams/:id/end: end it now, or cancel it before it starts.
+    // GET /api/exams/:id/report.csv: the report.
+    if ((path === "/api/exams" && (method === "GET" || method === "POST")) || path.startsWith("/api/exams/")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      const now = Math.floor(Date.now() / 1000);
+      const tellHub = async () => {
+        try {
+          await hubJson(env, tenant.id, "/exams-changed", {});
+        } catch (err) {
+          // The hub's alarm at the exam's start or end still does it; a start
+          // or end that was due now waits for that alarm or the hub's next reload.
+          console.error(`[Worker] Could not tell organization ${tenant.id}'s hub about an exam:`, err);
+        }
+      };
+      if (path === "/api/exams") {
+        if (method === "GET") {
+          const [exams, groups] = await Promise.all([listExams(db, tenant.id), listWorkstationGroups(db, tenant.id)]);
+          return new Response(
+            JSON.stringify({ exams: exams.map((e) => examJson(e, now)), groups: groups.map((g) => g.name), limits: EXAM_LIMITS, now }),
+            { headers: jsonHeaders }
+          );
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const groups = (await listWorkstationGroups(db, tenant.id)).map((g) => g.name);
+        const parsed = parseExamInput(body, groups, now);
+        if (!parsed.ok) return jsonError(parsed.error, 400, jsonHeaders);
+        const created = await createExam(db, tenant.id, parsed.value, session!.user_id, now);
+        if (!created.ok) return jsonError(created.error, created.status, jsonHeaders);
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: "exam.create",
+          details: `id=${created.id} group=${parsed.value.groupName ?? "all"} url=${parsed.value.url} starts=${parsed.value.startsAt} ends=${parsed.value.endsAt}`
+        });
+        await tellHub();
+        const exam = (await findExam(db, tenant.id, created.id))!;
+        return new Response(JSON.stringify({ status: "ok", exam: examJson(exam, now) }), { headers: jsonHeaders });
+      }
+      const match = /^\/api\/exams\/([0-9a-f-]{36})(\/end|\/report\.csv)?$/.exec(path);
+      if (!match) return jsonError("Not found", 404, jsonHeaders);
+      const [, id, action] = match;
+      if (action === "/end") {
+        if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
+        const ended = await endExam(db, tenant.id, id, session!.user_id, now);
+        if (!ended.ok) return jsonError(ended.error, ended.status, jsonHeaders);
+        // Sent back to the portal here as well as by the hub, so a hub that
+        // cannot be reached does not leave the exam's sites on its workstations.
+        if (ended.exam.starts_at <= now) await finishExam(db, examWindow(ended.exam), Date.now());
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: ended.exam.starts_at <= now ? "exam.end" : "exam.cancel",
+          details: `id=${id}`
+        });
+        await tellHub();
+        return new Response(JSON.stringify({ status: "ok", exam: examJson(ended.exam, now) }), { headers: jsonHeaders });
+      }
+      if (method !== "GET") return jsonError("Method not allowed", 405, jsonHeaders);
+      const exam = await findExam(db, tenant.id, id);
+      if (!exam) return jsonError("Exam not found", 404, jsonHeaders);
+      const rows = await examWorkstations(db, exam, now);
+      if (action === "/report.csv") {
+        const day = new Date(exam.starts_at * 1000).toISOString().slice(0, 10);
+        const slug = exam.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "exam";
+        return new Response(examReportCsv(exam, rows), {
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="exam-${day}-${slug}.csv"`,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+          }
+        });
+      }
+      let live: Record<string, LiveStatus> = {};
+      if (examPhase(exam, now) === "running") {
+        try {
+          live = (await hubJson<{ clients: Record<string, LiveStatus> }>(env, tenant.id, "/live", { watch: [] })).clients;
+        } catch (err) {
+          console.error(`[Worker] Could not read organization ${tenant.id}'s live workstations for an exam board:`, err);
+          return jsonError("The live state of the workstations is not available right now. Try again in a moment.", 503, jsonHeaders);
+        }
+      }
+      const hosts = examWindow(exam).hosts;
+      const onExamSite = (activeUrl: string | undefined) => {
+        try {
+          const host = activeUrl ? new URL(activeUrl).hostname.toLowerCase() : "";
+          return Boolean(host) && hosts.some((h) => host === h || host.endsWith(`.${h}`));
+        } catch {
+          return false;
+        }
+      };
+      return new Response(
+        JSON.stringify({
+          exam: examJson(exam, now),
+          workstations: rows.map((r) => {
+            const status = live[r.clientId];
+            return {
+              ...r,
+              online: status ? status.online : null,
+              locked: status ? status.isLocked : null,
+              onExamSite: status?.online ? onExamSite(status.activeUrl) : null
+            };
+          }),
+          now
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
     // GET /api/power-schedules: the organization's power schedules and the groups
     // one may be for. POST /api/power-schedules {id?, days, off, on?, groupId?}:
     // create one, or replace the one with `id`. DELETE /api/power-schedules/:id.
@@ -5084,6 +5240,11 @@ export default {
         const requiredPerm = action === "navigate" ? "broadcast" : "workstations";
         const denied = await requireTenantPermission(db, session, currentTenant, requiredPerm, jsonHeaders);
         if (denied) return denied;
+        if (action === "navigate") {
+          // A workstation in a running exam stays on the exam (src/exams.ts).
+          const exam = await examBlockingBroadcast(db, currentTenant!.id, targets, Math.floor(Date.now() / 1000));
+          if (exam) return jsonError(exam, 409, jsonHeaders);
+        }
 
         let commandUrl: string | undefined;
         let commandEpoch: number | undefined;
@@ -5512,6 +5673,7 @@ export default {
       const tenant = currentTenant!;
       let activePage: AdminPageId = "workstations";
       if (path === "/admin/apps-web") activePage = "apps-web";
+      else if (path === "/admin/exams") activePage = "exams";
       else if (path === "/admin/staff") activePage = "staff";
       else if (path === "/admin/settings") activePage = "settings";
 
@@ -5521,6 +5683,7 @@ export default {
 
       const checkPermission = (page: AdminPageId) => {
         if (userPerms.includes("*") || userPerms.includes(page)) return true;
+        if (page === "exams") return userPerms.includes("workstations");
         if (page === "apps-web") {
           return (
             userPerms.includes("broadcast") ||
@@ -5536,7 +5699,7 @@ export default {
       const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
-        const pages: AdminPageId[] = ["workstations", "apps-web", "staff", "settings"];
+        const pages: AdminPageId[] = ["workstations", "exams", "apps-web", "staff", "settings"];
         const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
           const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;

@@ -54,6 +54,7 @@ import { normalizePhone } from "../src/signup";
 import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhoneToken } from "../src/phone_verify";
 import { checkComponents, componentStatuses, recordStatusChecks } from "../src/status";
 import { monthlySummaryFor } from "../src/monthly_summary";
+import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -10336,6 +10337,207 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await inGroup.closeFromClient();
     await outside.closeFromClient();
     await callJson(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+  });
+
+  // ------------------------------------------------------------------ exam mode (src/exams.ts)
+
+  // Greenwood is at its workstation limit by now: each exam test makes room for its own and gives it back.
+  const withRoom = async (extra: number, run: () => Promise<void>) => {
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    await db.prepare("UPDATE tenants SET workstation_limit = workstation_limit + ? WHERE id = ?").bind(extra, tenantId).run();
+    try {
+      await run();
+    } finally {
+      await db.prepare("UPDATE tenants SET workstation_limit = workstation_limit - ? WHERE id = ?").bind(extra, tenantId).run();
+    }
+  };
+
+  test("An exam is validated: its name, a named https site, other sites, the group, the start and the length", () => {
+    const now = 1_800_000_000;
+    const ok = parseExamInput(
+      { title: " Term 1 ", url: "https://exam.example.org/t?x=1", hosts: ["https://cdn.example.net/a", "EXAM.example.org", "", "cdn.example.net"], durationMinutes: 45 },
+      ["Lab A"],
+      now
+    );
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.ok && ok.value, {
+      title: "Term 1",
+      groupName: null,
+      url: "https://exam.example.org/t?x=1",
+      hosts: ["exam.example.org", "cdn.example.net"],
+      startsAt: now,
+      endsAt: now + 45 * 60
+    });
+    const problem = (body: Record<string, unknown>) => {
+      const r = parseExamInput({ title: "T", url: "https://exam.example.org", durationMinutes: 30, ...body }, ["Lab A"], now);
+      return r.ok ? null : r.error;
+    };
+    assert.equal(problem({}), null);
+    assert.match(problem({ title: "  " })!, /name/);
+    assert.match(problem({ url: "javascript:alert(1)" })!, /http/);
+    assert.match(problem({ url: "https://10.0.0.1/exam" })!, /named site/);
+    assert.match(problem({ hosts: ["not a domain"] })!, /not a domain name/);
+    assert.match(problem({ hosts: Array.from({ length: EXAM_LIMITS.extraHosts + 1 }, (_, i) => `h${i}.example.com`) })!, /At most/);
+    assert.match(problem({ groupName: "Nope" })!, /group not found/);
+    assert.equal(problem({ groupName: "Lab A" }), null);
+    assert.match(problem({ startsAt: now - 600 })!, /passed/);
+    assert.equal(problem({ startsAt: now - 60 }), null, "a start a moment ago is now");
+    assert.match(problem({ startsAt: now + (EXAM_LIMITS.aheadDays + 1) * 86400 })!, /ahead/);
+    assert.match(problem({ durationMinutes: 2 })!, /minutes/);
+    assert.match(problem({ durationMinutes: 30.5 })!, /minutes/);
+    assert.equal(examEpoch(now), now * 1000 + 999);
+  });
+
+  test("A running exam holds its group on the exam site, refuses broadcasts there, and reports who dropped off", () => withRoom(2, async () => {
+    const tenantId = await greenwoodId();
+    const base = "/api/exams?tenant=greenwood";
+    await enrolPower("EX-IN");
+    await enrolPower("EX-OUT");
+    const group = (await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Exam Room" }), cookie: orgSessionCookie })).data.group;
+    let inRoom = await hubs().connectDevice({ tenantId, clientId: "EX-IN", ip: "10.0.0.61", portal: portalContext() });
+    const outside = await hubs().connectDevice({ tenantId, clientId: "EX-OUT", ip: "10.0.0.62", portal: portalContext() });
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["EX-IN"], groupName: "Exam Room" }), cookie: orgSessionCookie });
+    const portal = ofType(inRoom, "config").at(-1)!.targetUrl as string;
+    const outsideConfigs = ofType(outside, "config").length;
+
+    const created = await callJson(base, {
+      ...json({ title: "Science term 1", url: "https://exam.example.org/test", hosts: ["cdn.example.net"], groupName: "Exam Room", durationMinutes: 30 }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(created.res.status, 200, JSON.stringify(created.data));
+    const exam = created.data.exam;
+    assert.equal(exam.phase, "running");
+
+    const during = ofType(inRoom, "config").at(-1)!;
+    assert.equal(during.targetUrl, "https://exam.example.org/test");
+    assert.equal(during.broadcastUrl, "https://exam.example.org/test");
+    assert.equal(during.broadcastEpoch, examEpoch(exam.startsAt));
+    assert.deepEqual(during.whitelist, ["cdn.example.net", "exam.example.org"], "only the exam's sites");
+    assert.deepEqual(during.printing, { enabled: false, printers: [] });
+    assert.equal(during.homeReset, false, "Home goes back to the exam");
+    const cleared = (socket: typeof inRoom) =>
+      ofType(socket, "commands").flatMap((m) => m.commands as Array<{ action: string }>).filter((c) => c.action === "clear-session").length;
+    assert.equal(cleared(inRoom), 1, "its browser is cleared at the start");
+    assert.notEqual(ofType(outside, "config").at(-1)!.targetUrl, "https://exam.example.org/test", "a workstation outside the group is left alone");
+    assert.ok(ofType(outside, "config").length >= outsideConfigs);
+    assert.equal(cleared(outside), 0);
+
+    // Nobody can send the exam's workstations elsewhere.
+    const send = (target: string) =>
+      call("/api/command?tenant=greenwood", { ...json({ target, action: "navigate", url: "https://www.wikipedia.org/" }), cookie: orgSessionCookie });
+    assert.equal((await send("EX-IN")).status, 409);
+    assert.equal((await send("all")).status, 409);
+    assert.equal((await send("EX-OUT")).status, 200, "outside the exam a broadcast works");
+    assert.equal(ofType(inRoom, "config").at(-1)!.targetUrl, "https://exam.example.org/test");
+
+    // Two exams never share a workstation.
+    const clash = await callJson(base, { ...json({ title: "Other", url: "https://other.example.org", durationMinutes: 30 }), cookie: orgSessionCookie });
+    assert.equal(clash.res.status, 409);
+    assert.match(clash.data.error, /Science term 1/);
+
+    // It drops off and comes back: the board counts it.
+    await inRoom.closeFromClient();
+    inRoom = await hubs().connectDevice({ tenantId, clientId: "EX-IN", ip: "10.0.0.61", portal: portalContext() });
+    assert.equal(ofType(inRoom, "config").at(-1)!.targetUrl, "https://exam.example.org/test", "back on the exam when it reconnects");
+    const board = await callJson(`/api/exams/${exam.id}?tenant=greenwood`, { cookie: orgSessionCookie });
+    assert.equal(board.res.status, 200);
+    assert.deepEqual(
+      board.data.workstations.map((w: any) => [w.clientId, w.onlineAtStart, w.disconnections, w.online]),
+      [["EX-IN", true, 1, true]],
+      "only the group's workstations"
+    );
+
+    // Ended early: back to the portal, cleared again.
+    const ended = await callJson(`/api/exams/${exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie });
+    assert.equal(ended.res.status, 200);
+    assert.equal(ended.data.exam.phase, "ended");
+    const after = ofType(inRoom, "config").at(-1)!;
+    assert.equal(after.targetUrl, portal);
+    assert.equal(after.broadcastUrl, "");
+    assert.equal(after.broadcastEpoch, 0, "a reset, as after an operator's Reset to portal");
+    assert.ok((after.whitelist as string[]).includes("khanacademy.org"), "the organization's allowlist is back");
+    assert.equal(cleared(inRoom), 1, "the reconnected socket was cleared at the end");
+    assert.equal((await callJson(`/api/exams/${exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie })).res.status, 409);
+    assert.equal((await send("EX-IN")).status, 200, "after the exam broadcasts work again");
+
+    const report = await call(`/api/exams/${exam.id}/report.csv?tenant=greenwood`, { cookie: orgSessionCookie });
+    assert.equal(report.status, 200);
+    assert.match(report.headers.get("Content-Type") || "", /text\/csv/);
+    assert.match(report.headers.get("Content-Disposition") || "", /attachment; filename="exam-\d{4}-\d{2}-\d{2}-science-term-1\.csv"/);
+    const csv = await report.text();
+    assert.match(csv, /"Exam","Science term 1"/);
+    assert.match(csv, /"EX-IN","Exam Room","Yes","1","\d+"/);
+
+    const logs = (await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).data.logs as Array<{ action: string }>;
+    assert.ok(logs.some((l) => l.action === "exam.create") && logs.some((l) => l.action === "exam.end"));
+    const listed = await callJson(base, { cookie: orgSessionCookie });
+    assert.ok(listed.data.groups.includes("Exam Room"));
+    assert.equal(listed.data.exams.find((e: any) => e.id === exam.id).phase, "ended");
+
+    await inRoom.closeFromClient();
+    await outside.closeFromClient();
+    await callJson(`/api/groups/${group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    await removeAll(["EX-IN", "EX-OUT"]);
+  }));
+
+  test("A scheduled exam starts and ends on the hub's alarm, and a cancelled one never starts", () => withRoom(1, async () => {
+    const tenantId = await greenwoodId();
+    const base = "/api/exams?tenant=greenwood";
+    await enrolPower("EX-ALL");
+    const start = Math.floor(Date.now() / 1000) + 600;
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const device = await hubs().connectDevice({ tenantId, clientId: "EX-ALL", ip: "10.0.0.63", portal: portalContext() });
+      const portal = ofType(device, "config").at(-1)!.targetUrl as string;
+      const cancelled = await callJson(base, {
+        ...json({ title: "Cancelled", url: "https://cancelled.example.org", startsAt: start + 3600, durationMinutes: 30 }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(cancelled.data.exam.phase, "scheduled");
+      const scheduled = await callJson(base, {
+        ...json({ title: "Maths", url: "https://maths.example.org/paper", startsAt: start, durationMinutes: 10 }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(scheduled.res.status, 200, JSON.stringify(scheduled.data));
+      assert.equal(scheduled.data.exam.phase, "scheduled");
+      assert.ok(hubs().alarmAt(tenantId)! <= start * 1000, "the hub wakes for the start");
+      assert.notEqual(ofType(device, "config").at(-1)!.targetUrl, "https://maths.example.org/paper", "not before it starts");
+      assert.equal((await callJson(`/api/exams/${cancelled.data.exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie })).data.exam.cancelled, true);
+
+      mock.timers.tick(600_000);
+      await device.fromClient(HUB_PING);
+      hubs().setLastPing(device, new Date());
+      await hubs().runAlarm(tenantId);
+      assert.equal(ofType(device, "config").at(-1)!.targetUrl, "https://maths.example.org/paper", "started by the alarm");
+      assert.ok(hubs().alarmAt(tenantId)! <= (start + 600) * 1000, "and it wakes for the end");
+
+      mock.timers.tick(600_000);
+      hubs().setLastPing(device, new Date());
+      await hubs().runAlarm(tenantId);
+      const after = ofType(device, "config").at(-1)!;
+      assert.equal(after.targetUrl, portal, "ended by the alarm");
+      const row = await getDatabase(mockEnv).prepare("SELECT finalized_at FROM exam_sessions WHERE id = ?").bind(scheduled.data.exam.id).first<any>();
+      assert.ok(row.finalized_at, "sent back to the portal once");
+      const cancelledRow = await getDatabase(mockEnv).prepare("SELECT broadcast_epoch FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+      assert.ok(cancelledRow.broadcast_epoch >= (start + 600) * 1000, "the reset is recorded organization-wide");
+      await device.closeFromClient();
+    } finally {
+      mock.timers.reset();
+    }
+    await removeAll(["EX-ALL"]);
+  }));
+
+  test("The Exams page and its API are for the workstations permission", async () => {
+    const page = await call("/admin/exams?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Schedule an exam/);
+    assert.match(html, /data-nav="exams"/, "it is in the menu");
+    const staff = await addStaffMember(orgSessionCookie, "greenwood", { name: "No Screens", email: "noscreens@greenwood.example", password: "NoScreens1234!", permissions: ["staff"] });
+    assert.equal((await call("/api/exams?tenant=greenwood", { cookie: staff.cookie })).status, 403);
+    const own = await (await call("/admin/staff?tenant=greenwood", { cookie: staff.cookie })).text();
+    assert.doesNotMatch(own, /data-nav="exams"/, "not in its menu");
   });
 });
 

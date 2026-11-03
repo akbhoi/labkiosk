@@ -32,9 +32,11 @@ import { buildWorkstationsPage } from "./ui_admin_workstations";
 import { buildAppsWebPage } from "./ui_admin_apps_web";
 import { buildStaffPage } from "./ui_admin_staff";
 import { buildSettingsPage } from "./ui_admin_settings";
+import { buildExamsPage } from "./ui_admin_exams";
 
 export type AdminPageId =
   | "workstations"
+  | "exams"
   | "apps-web"
   | "staff"
   | "settings";
@@ -84,6 +86,7 @@ export interface DashboardOptions {
 
 const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPageParts> = {
   workstations: buildWorkstationsPage,
+  exams: buildExamsPage,
   "apps-web": buildAppsWebPage,
   staff: buildStaffPage,
   settings: buildSettingsPage
@@ -132,6 +135,12 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`
     },
     {
+      id: "exams",
+      label: "Exams",
+      href: `/admin/exams${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`
+    },
+    {
       id: "apps-web",
       label: "Apps & Web",
       href: `/admin/apps-web${tenantParam}`,
@@ -165,6 +174,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
             userPermissions.includes("whitelist")
           );
         }
+        // Exams are run by whoever runs the workstations.
+        if (item.id === "exams") return userPermissions.includes("workstations");
         // Everyone opens Settings: without the permission it holds only their own sign-in.
         return item.id === "settings" || userPermissions.includes(item.id);
       });
