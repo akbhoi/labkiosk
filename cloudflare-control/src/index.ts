@@ -55,6 +55,7 @@ import { renderStatusPageHtml } from "./ui_status";
 import { renderVerifyPhoneHtml } from "./ui_verify_phone";
 import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
 import { consoleSubdomain, featureTipFor, showsHomepage } from "./addresses";
+import { isSummaryMonth, monthlySummaryFor, previousMonth } from "./monthly_summary";
 import { componentStatuses, createIncident, listIncidents, openIncident, purgeOldStatus, runStatusChecks, updateIncident } from "./status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
@@ -3940,6 +3941,23 @@ export default {
       return new Response(JSON.stringify({ status: "ok", pending: true, requestedSubdomain: cleanSub }), { headers: jsonHeaders });
     }
 
+    // POST /api/tenant/monthly-summary/dismiss { month }: hide last month's summary.
+    if (path === "/api/tenant/monthly-summary/dismiss" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      let body: { month?: unknown };
+      try {
+        body = await request.json<{ month?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!isSummaryMonth(body.month) || body.month !== previousMonth(Date.now())) {
+        return jsonError("Only last month's summary can be dismissed", 400, jsonHeaders);
+      }
+      await updateTenant(db, currentTenant!.id, { summary_dismissed_month: body.month });
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+    }
+
     // POST /api/tenant/feature-tip/dismiss: hide the console's feature tip for 30 days.
     if (path === "/api/tenant/feature-tip/dismiss" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
@@ -5587,6 +5605,10 @@ export default {
           license: isDemoTenant(tenant, session.user_id) ? undefined : licenseState(tenant),
           notifications: await listNotificationsFor(db, tenant.id, session.user_id, { unreadOnly: true, limit: 50 }),
           incident: await openIncident(db),
+          monthlySummary:
+            activePage === "workstations" && (userPerms.includes("*") || userPerms.includes("settings")) && !isDemoTenant(tenant, session.user_id)
+              ? await monthlySummaryFor(db, tenant)
+              : null,
           takedowns: {
             homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
             cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))

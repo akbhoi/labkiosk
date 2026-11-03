@@ -17,6 +17,7 @@ import {
 import type { LicenseState } from "./license";
 import type { NotificationRow } from "./notifications";
 import { escapeAttr, escapeHtml } from "./escape";
+import type { MonthlySummary } from "./monthly_summary";
 import { renderNotificationsHtml, renderNotificationsScript } from "./ui_admin_notifications";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
@@ -76,6 +77,8 @@ export interface DashboardOptions {
   notifications?: NotificationRow[];
   /** An open platform incident (src/status.ts), shown above every console page. */
   incident?: { title: string; impact: "minor" | "major"; status: string } | null;
+  /** Last month's summary for Workstations (src/monthly_summary.ts). */
+  monthlySummary?: MonthlySummary | null;
   nonce: string;
 }
 
@@ -194,6 +197,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     accountOnly: activePage === "settings" && !hasAll && !userPermissions.includes("settings"),
     canUpdate: hasAll || userPermissions.includes("updates"),
     canSettings: hasAll || userPermissions.includes("settings"),
+    monthlySummary: options.monthlySummary ?? null,
     canRemoteControl: options.currentUser?.role === "org_admin" || options.currentUser?.role === "super_admin",
     nonce
   };

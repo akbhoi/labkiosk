@@ -53,6 +53,7 @@ import {
 import { normalizePhone } from "../src/signup";
 import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhoneToken } from "../src/phone_verify";
 import { checkComponents, componentStatuses, recordStatusChecks } from "../src/status";
+import { monthlySummaryFor } from "../src/monthly_summary";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -6720,6 +6721,68 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.doesNotMatch(after, /A major incident is under way/);
     const listed = await callJson("/api/super/status", { cookie: admin });
     assert.equal(listed.data.incidents[0].updates.length, 3);
+  });
+
+  test("Last month's summary shows on Workstations in the first half of the month, from recorded usage", async () => {
+    const db = getDatabase(mockEnv);
+    const tenant = (await db.prepare("SELECT * FROM tenants WHERE subdomain = 'greenwood'").first<any>())!;
+    // October 2026, and September for the comparison; nothing else of these months is recorded.
+    const rows: Array<[string, string, number, number]> = [
+      ["SUM-A", "2026-10-05", 7200, 3],
+      ["SUM-B", "2026-10-05", 3600, 2],
+      ["SUM-A", "2026-10-20", 1800, 1],
+      ["SUM-A", "2026-09-10", 9000, 4]
+    ];
+    for (const [client, day, active, sessions] of rows) {
+      await db
+        .prepare("INSERT INTO usage_daily (tenant_id, client_id, day, on_seconds, active_seconds, sessions) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(tenant.id, client, day, active, active, sessions)
+        .run();
+    }
+    // Earlier tests may have filed problems in October too: count those first.
+    const earlier = (await db
+      .prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN report_state = 'sent' THEN 1 ELSE 0 END) AS sent FROM workstation_issues WHERE tenant_id = ? AND occurred_at >= ? AND occurred_at < ?")
+      .bind(tenant.id, Date.UTC(2026, 9, 1) / 1000, Date.UTC(2026, 10, 1) / 1000)
+      .first<{ n: number; sent: number | null }>())!;
+    await db
+      .prepare("INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, occurred_at, created_at, report_state) VALUES (?, ?, 'SUM-A', 'error', 'boot', ?, ?, 'sent')")
+      .bind(crypto.randomUUID(), tenant.id, Date.UTC(2026, 9, 7) / 1000, Date.UTC(2026, 9, 7) / 1000)
+      .run();
+    try {
+      const nov3 = Date.UTC(2026, 10, 3, 9);
+      const summary = (await monthlySummaryFor(db, tenant, nov3))!;
+      assert.equal(summary.month, "2026-10");
+      assert.equal(summary.label, "October 2026");
+      assert.equal(summary.activeHours, 3.5);
+      assert.equal(summary.previousActiveHours, 2.5);
+      assert.equal(summary.sessions, 6);
+      assert.equal(summary.workstations, 2);
+      assert.deepEqual(summary.busiestDay, { day: "2026-10-05", activeHours: 3 });
+      assert.equal(summary.problems, Number(earlier.n) + 1);
+      assert.equal(summary.bugReports, Number(earlier.sent ?? 0) + 1);
+      assert.equal(await monthlySummaryFor(db, tenant, Date.UTC(2026, 10, 15)), null, "only in the first 14 days");
+      assert.equal(await monthlySummaryFor(db, { ...tenant, summary_dismissed_month: "2026-10" }, nov3), null);
+      assert.equal(await monthlySummaryFor(db, tenant, Date.UTC(2026, 7, 3)), null, "a month without usage has no summary");
+
+      mock.timers.enable({ apis: ["Date"], now: nov3 });
+      try {
+        const grid = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+        assert.ok(grid.includes('id="monthly-summary"'));
+        assert.match(grid, /October 2026 at a glance/);
+        assert.match(grid, /3\.5 hours<\/strong> of use on 2 workstations, up 40% on the month before/);
+        assert.match(grid, /Busiest day: <strong>Monday 5 October<\/strong>/);
+        assert.equal((await call("/api/tenant/monthly-summary/dismiss?tenant=greenwood", { ...json({ month: "2026-09" }), cookie: orgSessionCookie })).status, 400);
+        assert.equal((await call("/api/tenant/monthly-summary/dismiss?tenant=greenwood", { ...json({ month: "2026-10" }), cookie: orgSessionCookie })).status, 200);
+        const later = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+        assert.ok(!later.includes('id="monthly-summary"'), "dismissed until next month");
+      } finally {
+        mock.timers.reset();
+      }
+    } finally {
+      await db.prepare("DELETE FROM usage_daily WHERE tenant_id = ? AND client_id LIKE 'SUM-%'").bind(tenant.id).run();
+      await db.prepare("DELETE FROM workstation_issues WHERE tenant_id = ? AND client_id = 'SUM-A'").bind(tenant.id).run();
+      await db.prepare("UPDATE tenants SET summary_dismissed_month = NULL WHERE id = ?").bind(tenant.id).run();
+    }
   });
 
   test("Runs the scheduled housekeeping handler", async () => {

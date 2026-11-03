@@ -10,6 +10,7 @@ import { escapeHtml, escapeAttr, escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 import { SECURITY_WAIT_WARN_DAYS } from "./releases";
 import { featureTipFor, TipFeature } from "./addresses";
+import type { MonthlySummary } from "./monthly_summary";
 
 export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
@@ -20,11 +21,57 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
       tenantParam,
       groups,
       canUpdate,
-      renderFeatureTipHtml(tenantParam, options.canSettings === true && tenant ? featureTipFor(tenant, Math.floor(Date.now() / 1000)) : [])
+      renderMonthlySummaryHtml(tenantParam, options.monthlySummary ?? null) +
+        renderFeatureTipHtml(tenantParam, options.canSettings === true && tenant ? featureTipFor(tenant, Math.floor(Date.now() / 1000)) : [])
     ),
     modalsHtml: renderWorkstationsModalsHtml(tenant, presets, groups),
     scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups, canUpdate, options.canRemoteControl === true)
   };
+}
+
+/** Last month in numbers (src/monthly_summary.ts); "Got it" hides it until next month. */
+function renderMonthlySummaryHtml(tenantParam: string, summary: MonthlySummary | null): string {
+  if (!summary) return "";
+  const number = (n: number) => n.toLocaleString("en-US");
+  const change =
+    summary.previousActiveHours !== null && summary.previousActiveHours > 0
+      ? Math.round(((summary.activeHours - summary.previousActiveHours) / summary.previousActiveHours) * 100)
+      : null;
+  const facts: string[] = [
+    `<li><strong>${number(summary.activeHours)} hours</strong> of use on ${number(summary.workstations)} workstation${summary.workstations === 1 ? "" : "s"}${
+      change === null ? "" : `, ${change >= 0 ? "up" : "down"} ${Math.abs(change)}% on the month before`
+    }</li>`,
+    `<li><strong>${number(summary.sessions)}</strong> session${summary.sessions === 1 ? "" : "s"}</li>`
+  ];
+  if (summary.busiestDay) {
+    // Spelled out piece by piece: how locales join these parts differs between runtimes.
+    const date = new Date(`${summary.busiestDay.day}T00:00:00Z`);
+    const part = (options: Intl.DateTimeFormatOptions) => date.toLocaleDateString("en-GB", { ...options, timeZone: "UTC" });
+    const day = `${part({ weekday: "long" })} ${date.getUTCDate()} ${part({ month: "long" })}`;
+    facts.push(`<li>Busiest day: <strong>${escapeHtml(day)}</strong>, ${number(summary.busiestDay.activeHours)} hours</li>`);
+  }
+  if (summary.topSites.length) {
+    facts.push(`<li>Used most: ${summary.topSites.map((s) => `<strong>${escapeHtml(s.domain)}</strong>`).join(", ")}</li>`);
+  }
+  facts.push(
+    summary.problems
+      ? `<li><strong>${number(summary.problems)}</strong> problem${summary.problems === 1 ? "" : "s"} reported by workstations${
+          summary.bugReports ? `, ${number(summary.bugReports)} sent to us as bug reports` : ""
+        }</li>`
+      : `<li>No problems reported by workstations</li>`
+  );
+  const usage = `/admin/settings${tenantParam ? `${tenantParam}&` : "?"}tab=usage`;
+  return `
+    <div class="callout" id="monthly-summary" role="note" style="margin-bottom: 16px;" data-month="${escapeAttr(summary.month)}">
+      <div style="flex: 1;">
+        <strong>${escapeHtml(summary.label)} at a glance</strong>
+        <ul style="margin: 6px 0 0; padding-left: 18px;">${facts.join("")}</ul>
+        <a href="${escapeAttr(usage)}" style="display: inline-block; margin-top: 6px;">See all usage</a>
+      </div>
+      <div style="flex-shrink: 0; align-self: flex-start;">
+        <button type="button" class="btn btn-ghost btn-sm" id="monthly-summary-dismiss">Got it</button>
+      </div>
+    </div>`;
 }
 
 /**
@@ -352,6 +399,27 @@ function renderWorkstationsScripts(
   return `
     <script nonce="${escapeAttr(nonce)}">
       const CAN_UPDATE = ${escapeJson(canUpdate)};
+      // Last month's summary: "Got it" hides it until next month, for the whole organization.
+      (function () {
+        const summary = document.getElementById("monthly-summary");
+        const button = document.getElementById("monthly-summary-dismiss");
+        if (!summary || !button) return;
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/monthly-summary/dismiss"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ month: summary.dataset.month })
+            });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            summary.remove();
+          } catch (err) {
+            button.disabled = false;
+            lkToast("Could not hide the summary: " + err.message, "error");
+          }
+        });
+      })();
       // The feature tip: "Not now" hides it for 30 days, for the whole organization.
       (function () {
         const tipDismiss = document.getElementById("feature-tip-dismiss");

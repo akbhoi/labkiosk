@@ -39,6 +39,7 @@ cloudflare-control/
 │   ├── phone_link.ts                   # Emailed one-time link that verifies an existing organization's phone by SMS (/verify-phone)
 │   ├── status.ts                       # Status checks (5-minute cron), daily counts, incidents; /status, /api/health
 │   ├── addresses.ts                    # Generated console addresses; a chosen one (and the homepage) on request, kept beside it; the feature tip
+│   ├── monthly_summary.ts              # Last month in numbers on Workstations, from recorded usage; never emailed
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback

@@ -102,6 +102,8 @@ export interface Tenant {
   chosen_subdomain?: string | null;
   /** When the console's feature tip was last dismissed (0053). */
   feature_tip_dismissed_at?: number | null;
+  /** The month ("YYYY-MM") whose summary the organization dismissed (0055, src/monthly_summary.ts). */
+  summary_dismissed_month?: string | null;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */

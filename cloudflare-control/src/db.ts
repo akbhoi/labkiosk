@@ -105,7 +105,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   address_generated INTEGER NOT NULL DEFAULT 0
   CHECK (address_generated IN (0, 1)),
   chosen_subdomain TEXT,
-  feature_tip_dismissed_at INTEGER
+  feature_tip_dismissed_at INTEGER,
+  summary_dismissed_month TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -902,7 +903,9 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT component, ok, checked_at FROM status_latest LIMIT 1",
   "SELECT component, day, checks, failures FROM status_daily LIMIT 1",
   "SELECT id, impact, status, resolved_at FROM status_incidents LIMIT 1",
-  "SELECT incident_id, body FROM status_incident_updates LIMIT 1"
+  "SELECT incident_id, body FROM status_incident_updates LIMIT 1",
+  // 0055: the monthly summary on Workstations.
+  "SELECT summary_dismissed_month FROM tenants LIMIT 1"
 ];
 
 /**
@@ -1254,6 +1257,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "requested_subdomain",
   "chosen_subdomain",
   "feature_tip_dismissed_at",
+  "summary_dismissed_month",
   "status",
   "mode",
   "default_url",
