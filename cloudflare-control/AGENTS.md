@@ -9,6 +9,7 @@
 
 ```text
 cloudflare-control/
+├── relay/razorpay/                    # Cloud Run function the Worker creates Razorpay payment links through (Razorpay refuses Workers: HTTP 525); docs/DEPLOYMENT.md
 ├── migrations/                         # Cloudflare D1 SQL migrations (0001..0029)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron

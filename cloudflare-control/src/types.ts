@@ -474,6 +474,15 @@ export interface Env {
   RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;
   RAZORPAY_WEBHOOK_SECRET?: string;
+  /**
+   * Optional: the Razorpay relay on Google Cloud (relay/razorpay), for when
+   * Razorpay's API refuses connections from Workers (HTTP 525). Set both, and
+   * payment links are created through the relay; set neither, and the Worker
+   * calls Razorpay itself. The secret is at least 32 characters and equals the
+   * relay's RELAY_SECRET.
+   */
+  RAZORPAY_RELAY_URL?: string;
+  RAZORPAY_RELAY_SECRET?: string;
 }
 
 /** The one Workers AI method the Worker uses. */

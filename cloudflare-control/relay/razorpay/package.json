@@ -1,0 +1,17 @@
+{
+  "name": "labkiosk-razorpay-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Forwards the control plane's signed Razorpay payment-link requests from Google Cloud, which Razorpay's API accepts",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "functions-framework --target=relay"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "5.0.5"
+  }
+}
