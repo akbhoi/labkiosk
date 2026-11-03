@@ -318,8 +318,27 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             if (p.notes) definition(list, "Notes", p.notes);
           }
           card.append(list);
+          var actions = el("div", "form-actions mt-md");
+          // Any registration not yet verified, approved or still waiting, can be sent a
+          // link to verify its number by text message (src/phone_link.ts).
+          if (p && !p.phone_verified_at && data.conversation.kind === "signup" && data.smsVerification && org && org.status !== "rejected") {
+            var linkOut = p.phone_link_expires_at && p.phone_link_expires_at * 1000 > Date.now();
+            var sendLink = el("button", "btn btn-sm btn-secondary", linkOut ? "Send a new verification link" : "Send phone verification link");
+            sendLink.type = "button";
+            sendLink.addEventListener("click", async function () {
+              var ok = await lkConfirm({
+                title: "Email a verification link?",
+                message: p.contact_email + " gets a one-time link, valid for 7 days, to verify " + p.contact_phone + " with a code we text to it." +
+                  (linkOut ? " The link sent earlier stops working." : ""),
+                confirmLabel: "Send link"
+              });
+              if (!ok) return;
+              await act(data.conversation.id, "phone-link", {}, "Verification link emailed.");
+            });
+            actions.append(sendLink);
+            if (linkOut) definition(list, "Verification link", "sent, valid until " + new Date(p.phone_link_expires_at * 1000).toLocaleDateString());
+          }
           if (p && !p.phone_verified_at && data.conversation.kind === "signup" && data.conversation.status === "open") {
-            var actions = el("div", "form-actions mt-md");
             var verify = el("button", "btn btn-sm btn-secondary", "Mark phone as verified");
             verify.type = "button";
             verify.addEventListener("click", async function () {
@@ -332,8 +351,8 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
               await act(data.conversation.id, "verify-phone", {}, "Phone number marked as verified.");
             });
             actions.append(verify);
-            card.append(actions);
           }
+          if (actions.children.length) card.append(actions);
           return card;
         }
 

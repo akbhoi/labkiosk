@@ -372,6 +372,12 @@ Set all three or none: some but not all of them makes registration refuse (Rule 
 registration page, and only it, loads the Firebase Auth SDK (`FIREBASE_SDK_VERSION`, from
 `www.gstatic.com`) and Google reCAPTCHA, and its Content Security Policy allows exactly those.
 
+Organizations that registered before Firebase was set up have unverified numbers. In the Super
+Admin console, open the organization's registration under Tasks and choose **Send phone
+verification link**: the contact gets a one-time link, valid for 7 days, to `/verify-phone`, which
+texts the number on record and records it as verified (`src/phone_link.ts`). The page loads
+Firebase the same way, and only the SHA-256 of the link's token is stored.
+
 ### Staff sign-in with Google or Microsoft (optional)
 
 Organizations can let their staff sign in with Google Workspace or Microsoft Entra ID (OpenID

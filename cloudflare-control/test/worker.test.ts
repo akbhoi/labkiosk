@@ -961,6 +961,93 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("A super admin emails a one-time link that verifies an organization's phone by text message", async () => {
+    const signer = await firebaseSigner();
+    const firebaseEnv: Env = { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
+    const fb = async (path: string, init: RequestInit & { cookie?: string } = {}) => {
+      const res = await worker.fetch(request(path, init), firebaseEnv);
+      return { res, data: res.headers.get("Content-Type")?.includes("json") ? ((await res.clone().json()) as any) : null };
+    };
+    const realFetch = globalThis.fetch;
+    const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === FIREBASE_JWKS_URL ? signer.jwksResponse() : realFetch(input, init)
+    );
+    resetFirebaseKeys();
+    try {
+      // Registered before phones were checked by text message: not verified.
+      const { data: signup } = await submitSignup({ name: "Linked Org", email: "linked@example.org", subdomain: "linked-org" });
+      const admin = await superCookie();
+      const task = await taskByReference(admin, signup.reference);
+      const db = getDatabase(mockEnv);
+      const tenant = await findTenantBySubdomain(db, "linked-org");
+
+      // Without Firebase the inbox offers no link, and the action refuses.
+      assert.equal((await callJson(`/api/super/inbox/${task.id}`, { cookie: admin })).data.smsVerification, false);
+      assert.equal((await call(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).status, 503);
+      assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: orgSessionCookie })).res.status, 403);
+
+      const detail = await fb(`/api/super/inbox/${task.id}`, { cookie: admin });
+      assert.equal(detail.data.smsVerification, true);
+      assert.equal(detail.data.profile.phone_link_hash, undefined, "the link's hash stays on the server");
+
+      const first = await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin });
+      assert.equal(first.res.status, 200, JSON.stringify(first.data));
+      const firstToken = lastMailTo("linked@example.org").text.match(/\/verify-phone\?t=([0-9a-f]{64})/)![1];
+      const sent = await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin });
+      assert.equal(sent.res.status, 200);
+      const mail = lastMailTo("linked@example.org");
+      assert.match(mail.subject, /Please verify your phone number/);
+      assert.match(mail.text, /\u2022+ 3210/, "the email names the number with most digits hidden");
+      const token = mail.text.match(/\/verify-phone\?t=([0-9a-f]{64})/)![1];
+      assert.notEqual(token, firstToken);
+      const stored = await db.prepare("SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles WHERE tenant_id = ?").bind(tenant!.id).first<any>();
+      assert.ok(stored.phone_link_hash && !stored.phone_link_hash.includes(token), "only a hash of the token is stored");
+      const recorded = await db.prepare("SELECT body FROM conversation_messages WHERE conversation_id = ? AND direction = 'outbound'").bind(task.id).all<{ body: string }>();
+      assert.ok(recorded.results.every((m) => !m.body.includes(token)), "the conversation keeps the email without the link");
+
+      // The page: the replaced link and a made-up one are dead; the current one shows the masked number.
+      assert.equal((await fb(`/verify-phone?t=${firstToken}`)).res.status, 410);
+      assert.equal((await fb("/verify-phone?t=nonsense")).res.status, 410);
+      assert.equal((await worker.fetch(request(`/verify-phone?t=${token}`), mockEnv)).status, 410, "without Firebase the page does not work");
+      const page = await fb(`/verify-phone?t=${token}`);
+      assert.equal(page.res.status, 200);
+      assert.match(page.res.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/www\.gstatic\.com\/firebasejs\//);
+      const html = await page.res.text();
+      assert.ok(html.includes("Linked Org") && html.includes("3210"));
+
+      const now = Math.floor(Date.now() / 1000);
+      const idToken = (phone: string) =>
+        signer.sign({
+          iss: "https://securetoken.google.com/labkiosk-test", aud: "labkiosk-test", sub: "uid-2",
+          iat: now, exp: now + 3600, auth_time: now, phone_number: phone, firebase: { sign_in_provider: "phone" }
+        });
+      const verify = (body: unknown) => fb("/api/verify-phone", { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.90" } });
+      assert.equal((await verify({ token: firstToken, phoneToken: await idToken("+919876543210") })).res.status, 410);
+      const wrong = await verify({ token, phoneToken: await idToken("+919999999999") });
+      assert.equal(wrong.res.status, 400, "a token for another number does not verify this one");
+      assert.equal((await verify({ token, phoneToken: "not.a.token" })).res.status, 400);
+      const done = await verify({ token, phoneToken: await idToken("+919876543210") });
+      assert.equal(done.res.status, 200, JSON.stringify(done.data));
+      const profile = await db.prepare("SELECT phone_verified_at, phone_verified_by, phone_link_hash FROM organization_profiles WHERE tenant_id = ?").bind(tenant!.id).first<any>();
+      assert.ok(profile.phone_verified_at);
+      assert.equal(profile.phone_verified_by, null, "verified by text message, not by a person");
+      assert.equal(profile.phone_link_hash, null, "the link is spent");
+      assert.equal((await verify({ token, phoneToken: await idToken("+919876543210") })).res.status, 410, "the link works once");
+      const events = await db.prepare("SELECT body FROM conversation_messages WHERE conversation_id = ? AND direction = 'event'").bind(task.id).all<{ body: string }>();
+      assert.ok(events.results.some((m) => /verified by text message/.test(m.body)));
+      assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409, "a verified number needs no link");
+
+      // A rejected registration is sent none.
+      const { data: declined } = await submitSignup({ name: "No Link Org", email: "nolink@example.org", subdomain: "nolink-org" });
+      const declinedTask = await taskByReference(admin, declined.reference);
+      await call(`/api/super/inbox/${declinedTask.id}/reject`, { ...json({ message: "No." }), cookie: admin });
+      assert.equal((await fb(`/api/super/inbox/${declinedTask.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409);
+    } finally {
+      fetchMock.mock.restore();
+      resetFirebaseKeys();
+    }
+  });
+
   test("Turnstile guards the registration code, the contact code and sign-in once it is configured", async () => {
     const turnstileEnv: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite", TURNSTILE_SECRET_KEY: "0x4AAAAAAAsecret" };
     const post = (path: string, body: unknown, env = turnstileEnv) =>

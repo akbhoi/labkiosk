@@ -51,6 +51,8 @@ const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/ha
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
 const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
+import { renderVerifyPhoneHtml } from "./ui_verify_phone";
+import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -1683,6 +1685,7 @@ export default {
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
         path === "/api/contact/email-code" ||
+        path === "/api/verify-phone" ||
         path === "/api/devices/enroll")
     ) {
       let success = true;
@@ -1722,7 +1725,7 @@ export default {
       indexable: isIndexable(request, url, env),
       analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
       turnstile: Boolean(turnstileSiteKey(env)),
-      firebase: isRegistrationPage(path, url) && !firebaseConfigProblem(env) ? firebaseConfig(env) : null,
+      firebase: (isRegistrationPage(path, url) || path === "/verify-phone") && !firebaseConfigProblem(env) ? firebaseConfig(env) : null,
       revalidate: !session && isIndexable(request, url, env)
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
@@ -1811,6 +1814,42 @@ export default {
         console.error("[Worker] Registration failed:", err);
         return jsonError("Registration failed. Please try again.", 500, jsonHeaders);
       }
+    }
+
+    // /verify-phone?t=…, POST /api/verify-phone: the emailed link that verifies an
+    // organization's phone number by text message (src/phone_link.ts).
+    if (path === "/api/verify-phone" && method === "POST") {
+      return handleVerifyPhone(routeContext);
+    }
+    if (path === "/verify-phone" && (method === "GET" || method === "HEAD")) {
+      const firebase = firebaseConfigProblem(env) ? null : firebaseConfig(env);
+      const token = url.searchParams.get("t") || "";
+      const profile = firebase ? await findPhoneLink(db, token) : null;
+      const tenant = profile ? await findTenantById(db, profile.tenant_id) : null;
+      if (!firebase || !profile || !tenant || tenant.status === "rejected") {
+        return new Response(
+          renderStatusPageHtml({
+            title: "Link Expired",
+            heading: "This link no longer works",
+            messageHtml: "It may have expired, been replaced by a newer one, or the number may already be verified. Reply to our email if you need a new link.",
+            homeHref: `${url.origin}/`,
+            tone: "warning"
+          }),
+          { status: 410, headers: htmlHeaders }
+        );
+      }
+      return new Response(
+        renderVerifyPhoneHtml({
+          nonce,
+          firebase,
+          token,
+          organizationName: tenant.name,
+          phone: profile.contact_phone,
+          maskedPhone: maskPhone(profile.contact_phone),
+          homeHref: `${url.origin}/`
+        }),
+        { headers: htmlHeaders }
+      );
     }
 
     // POST /api/contact/email-code, /api/contact: the contact page. A code proves

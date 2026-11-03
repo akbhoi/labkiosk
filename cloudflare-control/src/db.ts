@@ -403,7 +403,9 @@ CREATE TABLE IF NOT EXISTS organization_profiles (
   organization_type TEXT,
   notes TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  phone_link_hash TEXT,
+  phone_link_expires_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS email_codes (
@@ -850,7 +852,9 @@ const SCHEMA_PROBES: readonly string[] = [
   // 0050: a release's arm64 ISO, for /download.
   "SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1",
   // 0051: sessions stored by the hash of their token.
-  "SELECT hashed FROM sessions LIMIT 1"
+  "SELECT hashed FROM sessions LIMIT 1",
+  // 0052: the emailed link that asks an organization to verify its phone by text message.
+  "SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles LIMIT 1"
 ];
 
 /**

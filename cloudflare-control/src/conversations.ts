@@ -169,6 +169,9 @@ export interface OrganizationProfile {
   notes: string | null;
   created_at: number;
   updated_at: number;
+  /** The emailed phone verification link (src/phone_link.ts): the SHA-256 of its token, and when it stops working. */
+  phone_link_hash?: string | null;
+  phone_link_expires_at?: number | null;
 }
 
 /** Longest message body stored or sent, in characters. */

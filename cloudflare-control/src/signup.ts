@@ -162,6 +162,8 @@ export async function sendOnConversation(
     template?: MailTemplate;
     /** An automatic answer (a receipt for an incoming email). */
     autoReply?: boolean;
+    /** What the conversation records instead of `body`, when the email carries a secret (a one-time link). */
+    recordedBody?: string;
   } = {}
 ): Promise<boolean> {
   const subject = subjectWithReference(conversation.reference, options.subject || conversation.subject);
@@ -191,7 +193,7 @@ export async function sendOnConversation(
   await addConversationMessage(db, {
     conversationId: conversation.id,
     direction: "outbound",
-    body,
+    body: options.recordedBody ?? body,
     fromAddress: conversation.mailbox || supportAddress(env),
     toAddress: conversation.contact_email,
     subject,
