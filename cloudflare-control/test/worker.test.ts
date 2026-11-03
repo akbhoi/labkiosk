@@ -122,7 +122,9 @@ import {
   hashPassword,
   isEnrollmentKey,
   passwordPepper,
+  oneTimeCodeHash,
   pepperLegacyHash,
+  sha256Hex,
   verifyPassword
 } from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
@@ -686,6 +688,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(resend.res.status, 200);
     const again = await callJson("/api/auth/register/email-code", json({ email }));
     assert.equal(again.res.status, 429, "the next one waits a minute");
+  });
+
+  test("An emailed code is stored keyed by PASSWORD_PEPPER, so a copy of the database cannot be searched for it", async () => {
+    const email = "keyed-code@example.com";
+    assert.equal((await call("/api/auth/register/email-code", json({ email }))).status, 200);
+    const code = lastMailTo(email).subject.slice(0, 6);
+    const row = await getDatabase(mockEnv).prepare("SELECT code_hash FROM email_codes WHERE id = ?").bind(`signup:${email}`).first<{ code_hash: string }>();
+    assert.ok(row);
+    assert.notEqual(row!.code_hash, await sha256Hex(`signup:${email}:${code}`), "not the unkeyed hash a copy of D1 could brute-force");
+    assert.equal(row!.code_hash, await oneTimeCodeHash(passwordPepper(mockEnv), `signup:${email}:${code}`));
+    assert.notEqual(row!.code_hash, await oneTimeCodeHash("another-pepper-of-sufficient-length-0123456789", `signup:${email}:${code}`));
   });
 
   test("Registers a new organization as pending, emails the customer, and signs nobody in", async () => {

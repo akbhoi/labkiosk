@@ -11,7 +11,7 @@
  * email codes that verify an address before an account exists.
  */
 
-import { sha256Hex } from "./auth";
+import { oneTimeCodeHash, timingSafeEqual } from "./auth";
 
 export type ConversationKind = "signup" | "remote_control" | "support";
 export type ConversationStatus = "open" | "approved" | "rejected" | "closed";
@@ -619,8 +619,8 @@ function codeId(purpose: EmailCodePurpose, email: string): string {
   return `${purpose}:${email.toLowerCase()}`;
 }
 
-async function codeHash(purpose: EmailCodePurpose, email: string, code: string): Promise<string> {
-  return sha256Hex(`${codeId(purpose, email)}:${code}`);
+async function codeHash(pepper: string, purpose: EmailCodePurpose, email: string, code: string): Promise<string> {
+  return oneTimeCodeHash(pepper, `${codeId(purpose, email)}:${code}`);
 }
 
 /** Seconds until a new code may be sent to this address (0 when it may). */
@@ -644,7 +644,7 @@ export function uniformBelow(limit: number): number {
 }
 
 /** A fresh six-digit code for this address, replacing any earlier one. */
-export async function issueEmailCode(db: D1Database, purpose: EmailCodePurpose, email: string): Promise<string> {
+export async function issueEmailCode(db: D1Database, pepper: string, purpose: EmailCodePurpose, email: string): Promise<string> {
   const code = String(uniformBelow(1_000_000)).padStart(6, "0");
   const ts = now();
   await db
@@ -654,7 +654,7 @@ export async function issueEmailCode(db: D1Database, purpose: EmailCodePurpose, 
        ON CONFLICT(id) DO UPDATE SET code_hash = excluded.code_hash, attempts = 0,
          expires_at = excluded.expires_at, sent_at = excluded.sent_at`
     )
-    .bind(codeId(purpose, email), purpose, email.toLowerCase(), await codeHash(purpose, email, code), ts + EMAIL_CODE_TTL_SECONDS, ts)
+    .bind(codeId(purpose, email), purpose, email.toLowerCase(), await codeHash(pepper, purpose, email, code), ts + EMAIL_CODE_TTL_SECONDS, ts)
     .run();
   return code;
 }
@@ -670,6 +670,7 @@ export async function discardEmailCode(db: D1Database, purpose: EmailCodePurpose
  */
 export async function checkEmailCode(
   db: D1Database,
+  pepper: string,
   purpose: EmailCodePurpose,
   email: string,
   code: string
@@ -680,8 +681,8 @@ export async function checkEmailCode(
     .bind(id)
     .first<{ code_hash: string; attempts: number; expires_at: number }>();
   if (!row || row.expires_at <= now() || row.attempts >= EMAIL_CODE_MAX_ATTEMPTS) return "expired";
-  const supplied = await codeHash(purpose, email, String(code).trim());
-  if (supplied === row.code_hash) return "ok";
+  const supplied = await codeHash(pepper, purpose, email, String(code).trim());
+  if (timingSafeEqual(supplied, row.code_hash)) return "ok";
   if (row.attempts + 1 >= EMAIL_CODE_MAX_ATTEMPTS) {
     await discardEmailCode(db, purpose, email);
   } else {

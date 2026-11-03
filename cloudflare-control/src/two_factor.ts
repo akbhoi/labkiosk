@@ -28,7 +28,7 @@
 
 import { Env, Session, User, UserRole } from "./types";
 import { jsonError } from "./guard";
-import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword, passwordPepper } from "./auth";
+import { bufferToHex, oneTimeCodeHash, parseCookies, sha256Hex, timingSafeEqual, verifyPassword, passwordPepper } from "./auth";
 import { clearSessionCookies, sessionSecondsFor, signInDestination } from "./session_handoff";
 import { clearLoginFailures, createSession, deleteSessionsForUser, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
 import { uniformBelow } from "./conversations";
@@ -391,7 +391,7 @@ async function sendChallengeCode(env: Env, db: D1Database, tokenHash: string, us
   const code = String(uniformBelow(1_000_000)).padStart(6, "0");
   await db
     .prepare("UPDATE login_challenges SET email_code_hash = ?, email_codes_sent = email_codes_sent + 1, email_code_sent_at = ? WHERE token_hash = ?")
-    .bind(await sha256Hex(`${tokenHash}:${code}`), now(), tokenHash)
+    .bind(await oneTimeCodeHash(passwordPepper(env), `${tokenHash}:${code}`), now(), tokenHash)
     .run();
   try {
     await sendMail(env, {
@@ -623,7 +623,7 @@ export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOption
   } else {
     const code = String(body.code ?? "").trim().slice(0, 40);
     if (/^\d{6}$/.test(code) && challenge.email_code_hash) {
-      const hash = await sha256Hex(`${challenge.token_hash}:${code}`);
+      const hash = await oneTimeCodeHash(passwordPepper(env), `${challenge.token_hash}:${code}`);
       if (timingSafeEqual(hash, challenge.email_code_hash)) method = "email";
     }
     if (!method && code && state.app) method = await checkAccountCode(db, state.app, code);

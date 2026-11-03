@@ -239,7 +239,7 @@ export async function handleSignupEmailCode(ctx: RouteContext): Promise<Response
 
   await recordRateLimitHit(db, addressKey, CODE_RATE_LIMIT.windowSeconds);
   await recordRateLimitHit(db, emailKey, CODE_RATE_LIMIT.windowSeconds);
-  const code = await issueEmailCode(db, "signup", email);
+  const code = await issueEmailCode(db, passwordPepper(env), "signup", email);
   try {
     await sendMail(env, {
       to: email,
@@ -412,7 +412,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const breached = await breachedPasswordProblem(signup.password, ctx.env);
   if (breached) return jsonError(breached, 400, jsonHeaders);
 
-  const verdict = await checkEmailCode(db, "signup", signup.contact_email, signup.emailCode);
+  const verdict = await checkEmailCode(db, passwordPepper(env), "signup", signup.contact_email, signup.emailCode);
   if (verdict === "expired") return jsonError("That code has expired. Ask for a new one.", 400, jsonHeaders);
   if (verdict === "wrong") return jsonError("That code is not correct", 400, jsonHeaders);
 
@@ -528,7 +528,7 @@ export async function handleContactEmailCode(ctx: RouteContext): Promise<Respons
 
   await recordRateLimitHit(db, addressKey, CODE_RATE_LIMIT.windowSeconds);
   await recordRateLimitHit(db, emailKey, CODE_RATE_LIMIT.windowSeconds);
-  const code = await issueEmailCode(db, "contact", email);
+  const code = await issueEmailCode(db, passwordPepper(env), "contact", email);
   try {
     await sendMail(env, {
       to: email,
@@ -580,7 +580,7 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   const wait = await rateLimitWait(db, key, CONTACT_RATE_LIMIT.limit, CONTACT_RATE_LIMIT.windowSeconds);
   if (wait > 0) return jsonError(`Too many messages from this address. Try again in ${Math.ceil(wait / 60)} minute(s).`, 429, jsonHeaders);
 
-  const verdict = await checkEmailCode(db, "contact", email, emailCode);
+  const verdict = await checkEmailCode(db, passwordPepper(env), "contact", email, emailCode);
   if (verdict === "expired") return jsonError("That code has expired. Ask for a new one.", 400, jsonHeaders);
   if (verdict === "wrong") return jsonError("That code is not correct", 400, jsonHeaders);
   await recordRateLimitHit(db, key, CONTACT_RATE_LIMIT.windowSeconds);

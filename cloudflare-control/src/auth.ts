@@ -93,6 +93,17 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * HMAC-SHA256 of a one-time code under PASSWORD_PEPPER, hex encoded. A six-digit
+ * code hashed without a secret is found in a million tries by anyone holding a
+ * copy of the database; under the pepper, which lives only in the Worker's
+ * secrets, it cannot be.
+ */
+export async function oneTimeCodeHash(pepper: string, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pepper), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bufferToHex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`code:${message}`)));
+}
+
 /** SHA-256 of a UTF-8 string, hex encoded. Used to store device tokens at rest. */
 export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
