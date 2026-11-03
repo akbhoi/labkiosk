@@ -340,6 +340,38 @@ unavailable to every organization until all three of these are set:
 Issues filed in a public repository are public. Each organization's administrator sees the
 repository name before turning the option on.
 
+### Phone verification by text message (optional)
+
+With Firebase configured, the registration page texts a six-digit code to the phone number given,
+and **every registration then needs it**: `POST /api/auth/register` refuses a phone that was not
+proved (`src/phone_verify.ts`). Firebase only sends the SMS and checks the code. The Worker
+verifies the ID token Firebase hands the page (RS256 against Google's published keys, issuer and
+audience of your project, signed in by phone in the last 15 minutes, the same number as the form)
+and records `organization_profiles.phone_verified_at`; the Super Admin's Verify button is not
+needed for those registrations ("verified by SMS"). Without Firebase, the phone is confirmed by
+hand before approval, as before.
+
+1. Create a Firebase project (or use one) and switch it to the **Blaze** plan: SMS needs a billing
+   account. Google bills India at about $0.07 per SMS after the first 10 SMS a day.
+2. Authentication → Sign-in method → enable **Phone**.
+3. Authentication → Settings → **Authorized domains**: add your platform domain (`labkiosk.org`).
+4. Authentication → Settings → **SMS region policy**: *Allow* only the countries you register
+   organizations from, so nobody can make the project text expensive destinations.
+5. Google Cloud console → Billing → **Budgets & alerts**: set a monthly budget with an email alert.
+6. Project settings → General → *Your apps* → add a **Web app**, and copy its `projectId`,
+   `apiKey` and `authDomain` into the Worker's variables (Dashboard → Worker → Settings →
+   Variables). They are public browser values, not secrets.
+
+| Variable | Value |
+| --- | --- |
+| `FIREBASE_PROJECT_ID` | e.g. `labkiosk-prod` |
+| `FIREBASE_API_KEY` | the web API key, e.g. `AIza…` |
+| `FIREBASE_AUTH_DOMAIN` | e.g. `labkiosk-prod.firebaseapp.com` |
+
+Set all three or none: some but not all of them makes registration refuse (Rule 10). The
+registration page, and only it, loads the Firebase Auth SDK (`FIREBASE_SDK_VERSION`, from
+`www.gstatic.com`) and Google reCAPTCHA, and its Content Security Policy allows exactly those.
+
 ### Staff sign-in with Google or Microsoft (optional)
 
 Organizations can let their staff sign in with Google Workspace or Microsoft Entra ID (OpenID

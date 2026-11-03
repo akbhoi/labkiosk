@@ -377,6 +377,7 @@ import { handleContactEmailCode, handleContactForm, handleRegister, handleRemote
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
+import { FIREBASE_SDK_ORIGIN, FirebaseConfig, firebaseConfig, firebaseConfigProblem } from "./phone_verify";
 import {
   handleSsoCallback,
   handleSsoRedeem,
@@ -1278,9 +1279,26 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  */
 function buildHtmlHeaders(
   nonce: string,
-  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean; turnstile?: boolean; revalidate?: boolean }
+  options: {
+    hsts: boolean;
+    indexable: boolean;
+    analyticsOrigin: string | null;
+    remoteViewer?: boolean;
+    turnstile?: boolean;
+    revalidate?: boolean;
+    /** The registration page texting a code through Firebase (src/phone_verify.ts): its SDK, reCAPTCHA and API. */
+    firebase?: FirebaseConfig | null;
+  }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
+  const frameSources = ["'self'"];
+  const connectSources = ["'self'"];
+  if (options.turnstile) frameSources.push(TURNSTILE_ORIGIN);
+  if (options.firebase) {
+    scriptSources.push(`${FIREBASE_SDK_ORIGIN}/firebasejs/`, "https://www.google.com/recaptcha/", "https://www.gstatic.com/recaptcha/");
+    frameSources.push("https://www.google.com/recaptcha/", "https://recaptcha.google.com/recaptcha/", `https://${options.firebase.authDomain}`);
+    connectSources.push("https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com", "https://www.google.com/recaptcha/");
+  }
   // Turnstile's widget script, and the frame it draws the check in (src/turnstile.ts).
   if (options.turnstile) scriptSources.push(TURNSTILE_ORIGIN);
   // The Remote Control viewer's nonced module imports noVNC from /novnc/.
@@ -1293,8 +1311,8 @@ function buildHtmlHeaders(
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
     // Only Remote Control frames a page: the viewer on this console's own address.
-    options.turnstile ? `frame-src 'self' ${TURNSTILE_ORIGIN}` : "frame-src 'self'",
-    "connect-src 'self'",
+    `frame-src ${frameSources.join(" ")}`,
+    `connect-src ${connectSources.join(" ")}`,
     // Only the viewer is framed, and only by the console on its own address.
     options.remoteViewer ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
     "base-uri 'self'",
@@ -1317,6 +1335,11 @@ function buildHtmlHeaders(
   if (options.hsts) headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
   if (!options.indexable) headers["X-Robots-Tag"] = "noindex, nofollow";
   return headers;
+}
+
+/** The registration page: /register, or the public landing routes opened with ?register. */
+function isRegistrationPage(path: string, url: URL): boolean {
+  return path === "/register" || ((path === "/" || path === "/login" || path === "/iso") && url.searchParams.has("register"));
 }
 
 /** Routes that name an account in their JSON body, limited per account by ACCOUNT_RATE_LIMITER. */
@@ -1698,6 +1721,7 @@ export default {
       indexable: isIndexable(request, url, env),
       analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
       turnstile: Boolean(turnstileSiteKey(env)),
+      firebase: isRegistrationPage(path, url) && !firebaseConfigProblem(env) ? firebaseConfig(env) : null,
       revalidate: !session && isIndexable(request, url, env)
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
@@ -1707,7 +1731,11 @@ export default {
     // domain is not one of them, so sign-in there relies on the lockouts alone.
     const loginTurnstile = isDev || isHostUnder(hostname(request), env.DEFAULT_DOMAIN);
     /** What every public page needs to draw the checks its forms carry. */
-    const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
+    const formChecks = {
+      turnstileSiteKey: turnstileSiteKey(env),
+      loginTurnstile,
+      firebase: firebaseConfigProblem(env) ? null : firebaseConfig(env)
+    };
 
     // With SUPER_ADMIN_HOST set, the platform console and its API answer on that host only, so the
     // public apex (landing, registration, legal pages) never shares an origin with it.
@@ -5517,7 +5545,7 @@ export default {
       path === "/iso"
     ) {
       const openModal =
-        path === "/register" || url.searchParams.has("register")
+        isRegistrationPage(path, url)
           ? "register"
           : path === "/login" || url.searchParams.has("login")
             ? "login"

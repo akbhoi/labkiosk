@@ -561,14 +561,20 @@ export type ProfileInput = Omit<
   "tenant_id" | "phone_verified_at" | "phone_verified_by" | "created_at" | "updated_at"
 >;
 
-export async function createOrganizationProfile(db: D1Database, tenantId: string, profile: ProfileInput): Promise<void> {
+/** `phoneVerifiedAt` is set when the registration proved the phone by a texted code (src/phone_verify.ts). */
+export async function createOrganizationProfile(
+  db: D1Database,
+  tenantId: string,
+  profile: ProfileInput,
+  phoneVerifiedAt: number | null = null
+): Promise<void> {
   const ts = now();
   await db
     .prepare(
       `INSERT INTO organization_profiles (tenant_id, legal_name, contact_name, contact_email, contact_phone, email_verified_at,
-         address_line1, address_line2, city, region, postal_code, country, tax_id, billing_email, workstation_estimate,
-         organization_type, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         phone_verified_at, address_line1, address_line2, city, region, postal_code, country, tax_id, billing_email,
+         workstation_estimate, organization_type, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       tenantId,
@@ -577,6 +583,7 @@ export async function createOrganizationProfile(db: D1Database, tenantId: string
       profile.contact_email.toLowerCase(),
       profile.contact_phone,
       profile.email_verified_at,
+      phoneVerifiedAt,
       profile.address_line1,
       profile.address_line2,
       profile.city,

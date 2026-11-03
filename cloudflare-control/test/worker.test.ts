@@ -51,6 +51,7 @@ import {
   taxIdProblem
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
+import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhoneToken } from "../src/phone_verify";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -214,6 +215,29 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
 }
 
 /** Every field a registration needs, valid unless overridden. */
+/** An RSA key standing in for Google's: signs Firebase-shaped ID tokens and serves its JWKS. */
+async function firebaseSigner(kid = "test-kid") {
+  const pair = (await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"]
+  )) as CryptoKeyPair;
+  const jwk = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
+  const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+  return {
+    jwksResponse: () =>
+      new Response(JSON.stringify({ keys: [{ kty: "RSA", n: jwk.n, e: jwk.e, kid, alg: "RS256", use: "sig" }] }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=3600" }
+      }),
+    async sign(claims: Record<string, unknown>, header: Record<string, unknown> = {}) {
+      const head = b64(new TextEncoder().encode(JSON.stringify({ alg: "RS256", kid, typ: "JWT", ...header })));
+      const body = b64(new TextEncoder().encode(JSON.stringify(claims)));
+      const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(`${head}.${body}`));
+      return `${head}.${body}.${b64(new Uint8Array(sig))}`;
+    }
+  };
+}
+
 function signupBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     name: "Example Organization",
@@ -824,6 +848,117 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       password: "RiversidePass456!",
       subdomain: "riverside"
     });
+  });
+
+  test("A phone token is accepted only when Google signed it for this project, recently, for this number", async () => {
+    const config = { projectId: "labkiosk-test", apiKey: "AIzaSyTestKey000000000000000", authDomain: "labkiosk-test.firebaseapp.com" };
+    const signer = await firebaseSigner();
+    const stranger = await firebaseSigner("other-kid");
+    const now = 1_800_000_000;
+    const fetcher = (async () => signer.jwksResponse()) as unknown as typeof fetch;
+    const check = (token: unknown, phone = "+919876543210", fetch: typeof globalThis.fetch = fetcher) =>
+      verifyPhoneToken(config, token, phone, { fetcher: fetch, now });
+    const claims = (over: Record<string, unknown> = {}) => ({
+      iss: "https://securetoken.google.com/labkiosk-test",
+      aud: "labkiosk-test",
+      sub: "firebase-uid",
+      iat: now - 30,
+      exp: now + 3570,
+      auth_time: now - 30,
+      phone_number: "+919876543210",
+      firebase: { sign_in_provider: "phone", identities: { phone: ["+919876543210"] } },
+      ...over
+    });
+    resetFirebaseKeys();
+    assert.deepEqual(await check(await signer.sign(claims())), { ok: true, phone: "+919876543210" });
+    const reason = async (token: unknown, phone?: string) => ((await check(token, phone)) as { reason: string }).reason;
+    assert.equal(await reason(await stranger.sign(claims())), "signature", "a key Google never published");
+    assert.equal(await reason((await signer.sign(claims())).replace(/\.[^.]+$/, ".AAAA")), "signature", "a forged signature");
+    assert.equal(await reason(await signer.sign(claims({ aud: "someone-else" }))), "claims", "another project's token");
+    assert.equal(await reason(await signer.sign(claims({ iss: "https://securetoken.google.com/someone-else" }))), "claims");
+    assert.equal(await reason(await signer.sign(claims({ exp: now - 120 }))), "claims", "expired");
+    assert.equal(await reason(await signer.sign(claims({ firebase: { sign_in_provider: "password" } }))), "claims", "not a phone sign-in");
+    assert.equal(await reason(await signer.sign(claims({ auth_time: now - 16 * 60 }))), "stale", "a code entered long ago");
+    assert.equal(await reason(await signer.sign(claims()), "+919876500000"), "mismatch", "another number than the form's");
+    assert.equal(await reason(await signer.sign(claims(), { alg: "HS256" })), "malformed", "only RS256");
+    for (const junk of [undefined, "", "a.b", "x".repeat(5000), 42]) assert.equal(await reason(junk), "malformed");
+    // Google's keys out of reach: the token is not judged, and the caller says to try again.
+    resetFirebaseKeys();
+    const down = await check(await signer.sign(claims()), "+919876543210", (async () => new Response("", { status: 500 })) as unknown as typeof fetch);
+    assert.equal(down.ok, false);
+    assert.equal((down as { reason: string }).reason, "unavailable");
+    resetFirebaseKeys();
+  });
+
+  test("Firebase settings are all or nothing, and only Firebase's shapes are accepted", () => {
+    const base = { ...mockEnv } as Env;
+    assert.equal(firebaseConfigProblem(base), null, "off");
+    assert.match(firebaseConfigProblem({ ...base, FIREBASE_PROJECT_ID: "labkiosk-test" })!, /half configured/);
+    const full = { ...base, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
+    assert.equal(firebaseConfigProblem(full), null);
+    assert.match(firebaseConfigProblem({ ...full, FIREBASE_AUTH_DOMAIN: "evil.example/'; script-src *" })!, /FIREBASE_AUTH_DOMAIN/);
+    assert.match(firebaseConfigProblem({ ...full, FIREBASE_PROJECT_ID: "Bad Project" })!, /FIREBASE_PROJECT_ID/);
+  });
+
+  test("With Firebase configured, registration needs the texted code, and records the phone as verified", async () => {
+    const signer = await firebaseSigner();
+    const firebaseEnv: Env = { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
+    const realFetch = globalThis.fetch;
+    const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === FIREBASE_JWKS_URL ? signer.jwksResponse() : realFetch(input, init)
+    );
+    resetFirebaseKeys();
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const token = (phone: string) =>
+        signer.sign({
+          iss: "https://securetoken.google.com/labkiosk-test", aud: "labkiosk-test", sub: "uid-1",
+          iat: now, exp: now + 3600, auth_time: now, phone_number: phone, firebase: { sign_in_provider: "phone" }
+        });
+
+      // No token: refused, nothing is created.
+      const bare = await submitSignup({ email: "sms-none@example.com", subdomain: "sms-none" }, firebaseEnv);
+      assert.equal(bare.res.status, 400);
+      assert.match(bare.data.error, /Verify your phone number/);
+      assert.equal(await findTenantBySubdomain(getDatabase(mockEnv), "sms-none"), null);
+
+      // A token for another number: refused.
+      const other = await submitSignup({ email: "sms-other@example.com", subdomain: "sms-other", phoneToken: await token("+919999999999") }, firebaseEnv);
+      assert.equal(other.res.status, 400);
+      assert.match(other.data.error, /number was changed/);
+
+      // The right one: registered, and the phone is verified by SMS (no one marked it).
+      const good = await submitSignup({ email: "sms-good@example.com", subdomain: "sms-good", phoneToken: await token("+919876543210") }, firebaseEnv);
+      assert.equal(good.res.status, 200, JSON.stringify(good.data));
+      const tenant = await findTenantBySubdomain(getDatabase(mockEnv), "sms-good");
+      const profile = await getDatabase(mockEnv)
+        .prepare("SELECT phone_verified_at, phone_verified_by FROM organization_profiles WHERE tenant_id = ?")
+        .bind(tenant!.id)
+        .first<{ phone_verified_at: number | null; phone_verified_by: string | null }>();
+      assert.ok(profile!.phone_verified_at && Math.abs(profile!.phone_verified_at - now) < 60);
+      assert.equal(profile!.phone_verified_by, null);
+      assert.doesNotMatch(lastMailTo("sms-good@example.com").text, /We will confirm your phone number/);
+
+      // Half a configuration refuses rather than skip the check.
+      const half = await submitSignup({ email: "sms-half@example.com", subdomain: "sms-half" }, { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test" } as Env);
+      assert.equal(half.res.status, 503);
+
+      // The registration page carries the settings and its CSP lets Firebase and reCAPTCHA in; other pages do not.
+      const page = await worker.fetch(request("/register"), firebaseEnv);
+      const csp = page.headers.get("Content-Security-Policy") || "";
+      assert.match(csp, /script-src [^;]*https:\/\/www\.gstatic\.com\/firebasejs\//);
+      assert.match(csp, /frame-src [^;]*https:\/\/labkiosk-test\.firebaseapp\.com/);
+      assert.match(csp, /connect-src [^;]*https:\/\/identitytoolkit\.googleapis\.com/);
+      const html = await page.text();
+      assert.ok(html.includes('id="reg-sms-send"'));
+      assert.ok(html.includes('"projectId":"labkiosk-test"'));
+      const home = await worker.fetch(request("/"), firebaseEnv);
+      assert.doesNotMatch(home.headers.get("Content-Security-Policy") || "", /firebasejs|recaptcha/);
+      assert.ok(!(await home.text()).includes("labkiosk-test"));
+    } finally {
+      fetchMock.mock.restore();
+      resetFirebaseKeys();
+    }
   });
 
   test("Turnstile guards the registration code, the contact code and sign-in once it is configured", async () => {

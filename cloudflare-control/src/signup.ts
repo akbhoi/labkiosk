@@ -43,6 +43,7 @@ import {
 } from "./conversations";
 import { mailConfigProblem, MailTemplate, sendMail, supportAddress, supportMailbox } from "./mail";
 import { turnstileRefusal } from "./turnstile";
+import { firebaseConfig, firebaseConfigProblem, phoneTokenMessage, verifyPhoneToken } from "./phone_verify";
 import { STATES, cleanPostalCode, cleanTaxId, findCountry, findState, needsPostalCode, postalCodeProblem, taxIdProblem } from "./geo";
 
 /** What every handler in this module is given by the router. */
@@ -268,6 +269,8 @@ interface SignupBody {
   email?: unknown;
   emailCode?: unknown;
   phone?: unknown;
+  /** The Firebase ID token from the texted code, when phone verification is on (src/phone_verify.ts). */
+  phoneToken?: unknown;
   password?: unknown;
   subdomain?: unknown;
   addressLine1?: unknown;
@@ -360,7 +363,7 @@ function readSignup(body: SignupBody): { problem: string } | { problem: null; va
 }
 
 /** A signup's details as one readable block, for the task and the owner's notification. */
-function signupSummary(p: ProfileInput, organizationName: string, subdomain: string): string {
+function signupSummary(p: ProfileInput, organizationName: string, subdomain: string, phoneVerified: boolean): string {
   const lines = [
     `Organization: ${organizationName}`,
     p.legal_name ? `Legal / billing name: ${p.legal_name}` : null,
@@ -368,7 +371,7 @@ function signupSummary(p: ProfileInput, organizationName: string, subdomain: str
     `Requested address: ${subdomain}`,
     `Technical contact: ${p.contact_name}`,
     `Email: ${p.contact_email} (verified by code)`,
-    `Phone: ${p.contact_phone} (not yet verified)`,
+    `Phone: ${p.contact_phone} (${phoneVerified ? "verified by text message code" : "not yet verified"})`,
     `Address: ${[p.address_line1, p.address_line2, p.city, p.region, p.postal_code, p.country].filter(Boolean).join(", ")}`,
     p.tax_id ? `Tax ID: ${p.tax_id}` : null,
     p.billing_email ? `Billing email: ${p.billing_email}` : null,
@@ -381,13 +384,14 @@ function signupSummary(p: ProfileInput, organizationName: string, subdomain: str
 /**
  * POST /api/auth/register: create the organization as `pending`.
  *
- * The email is proven by the code; the phone is confirmed by the platform owner
- * before approval. No session is issued: the account cannot be used until it
+ * The email is proven by the code. The phone is proven by a texted code when
+ * Firebase is configured (src/phone_verify.ts), and confirmed by the platform
+ * owner before approval otherwise. No session is issued: the account cannot be used until it
  * is approved, and the customer is told so by email.
  */
 export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const { db, env, jsonHeaders, clientIp } = ctx;
-  const problem = mailConfigProblem(env);
+  const problem = mailConfigProblem(env) || firebaseConfigProblem(env);
   if (problem) {
     console.error("[Signup]", problem);
     return jsonError("Registration is temporarily unavailable. Please write to us instead.", 503, jsonHeaders);
@@ -412,6 +416,19 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const breached = await breachedPasswordProblem(signup.password, ctx.env);
   if (breached) return jsonError(breached, 400, jsonHeaders);
 
+  // With phone verification on, the number must come with Firebase's proof of the texted code.
+  const firebase = firebaseConfig(env);
+  let phoneVerifiedAt: number | null = null;
+  if (firebase) {
+    const checked = await verifyPhoneToken(firebase, body.phoneToken, signup.contact_phone);
+    if (!checked.ok) {
+      if (checked.reason === "unavailable") console.error("[Signup] Phone token not checked:", checked.detail);
+      const refusal = phoneTokenMessage(checked);
+      return jsonError(refusal.message, refusal.status, jsonHeaders);
+    }
+    phoneVerifiedAt = Math.floor(Date.now() / 1000);
+  }
+
   const verdict = await checkEmailCode(db, passwordPepper(env), "signup", signup.contact_email, signup.emailCode);
   if (verdict === "expired") return jsonError("That code has expired. Ask for a new one.", 400, jsonHeaders);
   if (verdict === "wrong") return jsonError("That code is not correct", 400, jsonHeaders);
@@ -431,7 +448,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   }, passwordPepper(ctx.env));
   const tenant = await createTenant(db, { userId: user.id, name: signup.name, subdomain: signup.subdomain, status: "pending" });
   const profile: ProfileInput = { ...signup, email_verified_at: Math.floor(Date.now() / 1000) };
-  await createOrganizationProfile(db, tenant.id, profile);
+  await createOrganizationProfile(db, tenant.id, profile, phoneVerifiedAt);
   await discardEmailCode(db, "signup", signup.contact_email);
   // The record of what the registrant agreed to: every document in force, at its current version.
   await recordLegalAcceptances(db, {
@@ -452,7 +469,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
     contactEmail: signup.contact_email,
     contactName: signup.contact_name
   });
-  const summary = signupSummary(profile, signup.name, `${signup.subdomain}.${ctx.baseDomain}`);
+  const summary = signupSummary(profile, signup.name, `${signup.subdomain}.${ctx.baseDomain}`, phoneVerifiedAt !== null);
   await addConversationMessage(db, {
     conversationId: conversation.id,
     direction: "event",
@@ -472,8 +489,11 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
     conversation,
     `Hello ${signup.contact_name},\n\n` +
       `Thank you for registering ${signup.name} with Lab Kiosk. Your request reference is ${conversation.reference}.\n\n` +
-      `Your account will be activated once our team has reviewed it. We will confirm your phone number (${signup.contact_phone}) ` +
-      `and may write to you about licensing first. You will receive an email as soon as the account is active, ` +
+      (phoneVerifiedAt !== null
+        ? `Your account will be activated once our team has reviewed it. We may write to you about licensing first. `
+        : `Your account will be activated once our team has reviewed it. We will confirm your phone number (${signup.contact_phone}) ` +
+          `and may write to you about licensing first. `) +
+      `You will receive an email as soon as the account is active, ` +
       `with the address of your console: ${signup.subdomain}.${ctx.baseDomain}.\n\n` +
       `Reply to this email if you have any questions.\n\nLab Kiosk`,
     {

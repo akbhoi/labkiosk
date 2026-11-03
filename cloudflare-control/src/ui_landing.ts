@@ -27,6 +27,7 @@ import { SupportStatus } from "./releases";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
+import { FIREBASE_SDK_ORIGIN, FIREBASE_SDK_VERSION, FirebaseConfig } from "./phone_verify";
 import { CONTACT_REASONS } from "./conversations";
 import { HardwareModel, PUBLIC_MODEL_MIN_ORGANIZATIONS } from "./hardware";
 
@@ -110,6 +111,8 @@ export interface LandingOptions {
   turnstileSiteKey?: string | null;
   /** False on an organization's own domain, where the sign-in form carries no check (the router says why). */
   loginTurnstile?: boolean;
+  /** Firebase's public web settings when registration proves the phone by a texted code (src/phone_verify.ts). */
+  firebase?: FirebaseConfig | null;
   /** On one organization's sign-in page: the single sign-on providers it offers (src/sso.ts). */
   sso?: { providers: ReadonlyArray<"google" | "microsoft">; tenantSlug: string };
 }
@@ -160,6 +163,26 @@ function renderPublicShell(
   const turnstileKey = data.turnstileSiteKey || null;
   const turnstileSlot = (id: string) => (turnstileKey ? `<div class="form-group turnstile-slot" id="${id}"></div>` : "");
   const loginTurnstileSlot = data.loginTurnstile === false ? "" : turnstileSlot("login-turnstile");
+  // Only the registration page texts a code, and only it is given Firebase's settings and their CSP.
+  const firebase = meta.authPage === "register" && data.firebase ? data.firebase : null;
+  const phoneHint = firebase
+    ? "Without the country code or a leading 0. We text a code to this number to confirm it."
+    : "Without the country code or a leading 0. We call or message this number to confirm it before approval.";
+  const smsHtml = firebase
+    ? `
+              <div class="code-row" style="margin-top: 8px;">
+                <button type="button" class="btn btn-ghost" id="reg-sms-send">Text me a code</button>
+              </div>
+              <div id="reg-sms-code-group" hidden style="margin-top: 8px;">
+                <label class="form-label" for="reg-sms-code">Six-digit code from the text message</label>
+                <div class="code-row">
+                  <input type="text" class="form-input" id="reg-sms-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+                  <button type="button" class="btn btn-ghost" id="reg-sms-verify">Verify</button>
+                </div>
+              </div>
+              <div class="input-hint" id="reg-sms-status" role="status" aria-live="polite"></div>
+              <div id="reg-sms-recaptcha"></div>`
+    : "";
   // Turnstile's script, and the challenge each widget runs, load only on a page whose form has a slot.
   const turnstileOnPage =
     Boolean(turnstileKey) && (meta.turnstile === true || meta.authPage === "register" || (meta.authPage === "login" && Boolean(loginTurnstileSlot)));
@@ -393,8 +416,8 @@ ${FONT_LINKS}
                 </div>
                 <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
               </div>
-              <div class="input-hint" id="reg-phone-hint">Without the country code or a leading 0. We call or message this number to confirm it before approval.</div>
-              <div class="field-error" id="reg-phone-error" role="alert"></div>
+              <div class="input-hint" id="reg-phone-hint">${phoneHint}</div>
+              <div class="field-error" id="reg-phone-error" role="alert"></div>${smsHtml}
             </div>
           </div>
           <div class="form-group">
@@ -773,6 +796,9 @@ ${FONT_LINKS}
     // the registration code, one in front of the contact form's code and one in
     // front of sign-in. A token works once, so each widget is reset after every attempt.
     const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
+    // Firebase's public web settings, on the registration page when it texts a code to the phone.
+    const FIREBASE = ${escapeJson(firebase)};
+    const FIREBASE_SDK = ${escapeJson(`${FIREBASE_SDK_ORIGIN}/firebasejs/${FIREBASE_SDK_VERSION}`)};
     const turnstileWidgets = {};
     window.lkTurnstileReady = function () {
       const actions = { 'reg-turnstile': 'signup', 'contact-turnstile': 'contact', 'login-turnstile': 'login' };
@@ -1347,7 +1373,7 @@ ${FONT_LINKS}
       dialButton.classList.remove('is-invalid');
       document.getElementById('reg-phone-hint').textContent =
         (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
-        'We call or message this number to confirm it before approval.';
+        (FIREBASE ? 'We text a code to this number to confirm it.' : 'We call or message this number to confirm it before approval.');
       checkPhone(true);
       if (!regCountry.value) {
         regCountry.value = row[0];
@@ -1508,6 +1534,102 @@ ${FONT_LINKS}
 
     loadGeo();
 
+    // ---- Registration: the phone is proved by a code Firebase texts to it
+    // (src/phone_verify.ts). Firebase hands back an ID token naming the number;
+    // the server checks it, so the token is all this page keeps. Changing the
+    // number or its country code discards it.
+    let phoneToken = '';
+    let phoneTokenFor = '';
+    let smsConfirmation = null;
+    let firebaseAuth = null;
+    let smsVerifier = null;
+    function smsStatus(message) {
+      document.getElementById('reg-sms-status').textContent = message;
+    }
+    function typedPhone() {
+      const digits = checkPhone(true);
+      return dialCountry && digits ? '+' + dialCountry[2] + digits : '';
+    }
+    async function firebaseModules() {
+      const appModule = await import(FIREBASE_SDK + '/firebase-app.js');
+      const authModule = await import(FIREBASE_SDK + '/firebase-auth.js');
+      if (!firebaseAuth) {
+        const app = appModule.initializeApp(FIREBASE);
+        // Nothing of the phone sign-in is kept in the browser: the token goes with the form.
+        firebaseAuth = authModule.initializeAuth(app, { persistence: authModule.inMemoryPersistence });
+      }
+      return authModule;
+    }
+    if (FIREBASE) {
+      const smsSend = document.getElementById('reg-sms-send');
+      const smsVerify = document.getElementById('reg-sms-verify');
+      const forget = () => {
+        if (phoneToken && typedPhone() !== phoneTokenFor) {
+          phoneToken = '';
+          phoneTokenFor = '';
+          smsStatus('The number changed. Text a code to the new number.');
+        }
+      };
+      regPhone.addEventListener('change', forget);
+      smsSend.addEventListener('click', async () => {
+        registerAlert.style.display = 'none';
+        const phone = typedPhone();
+        if (!phone) {
+          registerError('Choose the country code and enter your phone number first.');
+          regPhone.focus();
+          return;
+        }
+        if (!/^[0-9]{6}$/.test(document.getElementById('reg-code').value.trim())) {
+          registerError('Enter the six-digit code we emailed you first, then ask for the text message.');
+          document.getElementById('reg-code').focus();
+          return;
+        }
+        smsSend.disabled = true;
+        smsStatus('Sending a code to ' + phone + '...');
+        try {
+          const auth = await firebaseModules();
+          if (!smsVerifier) smsVerifier = new auth.RecaptchaVerifier(firebaseAuth, 'reg-sms-recaptcha', { size: 'invisible' });
+          smsConfirmation = await auth.signInWithPhoneNumber(firebaseAuth, phone, smsVerifier);
+          phoneTokenFor = phone;
+          document.getElementById('reg-sms-code-group').hidden = false;
+          document.getElementById('reg-sms-code').focus();
+          smsStatus('We texted a code to ' + phone + '. It can take a minute to arrive.');
+          setTimeout(() => { smsSend.disabled = false; smsSend.textContent = 'Text a new code'; }, 60000);
+          return;
+        } catch (err) {
+          const code = err && err.code ? String(err.code) : '';
+          smsStatus('');
+          registerError(
+            code === 'auth/invalid-phone-number' ? 'That phone number is not valid. Check the country code and the number.'
+            : code === 'auth/too-many-requests' ? 'Too many codes were asked for this number. Try again later, or write to us.'
+            : code === 'auth/operation-not-allowed' ? 'We cannot text numbers in this country yet. Please write to us to register.'
+            : 'The text message could not be sent. Try again in a moment.'
+          );
+          if (smsVerifier) { smsVerifier.clear(); smsVerifier = null; }
+        }
+        smsSend.disabled = false;
+      });
+      smsVerify.addEventListener('click', async () => {
+        registerAlert.style.display = 'none';
+        const code = document.getElementById('reg-sms-code').value.trim();
+        if (!smsConfirmation || !/^[0-9]{6}$/.test(code)) {
+          registerError('Enter the six-digit code from the text message.');
+          return;
+        }
+        smsVerify.disabled = true;
+        try {
+          const result = await smsConfirmation.confirm(code);
+          phoneToken = await result.user.getIdToken();
+          smsStatus('Phone number verified.');
+          document.getElementById('reg-sms-code-group').hidden = true;
+        } catch (err) {
+          const expired = err && err.code === 'auth/code-expired';
+          registerError(expired ? 'That code has expired. Text a new one.' : 'That code is not correct.');
+        }
+        smsVerify.disabled = false;
+      });
+    }
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       registerAlert.style.display = 'none';
@@ -1516,6 +1638,11 @@ ${FONT_LINKS}
         dialButton.classList.add('is-invalid');
         registerError('Choose the country code of your phone number.');
         dialButton.focus();
+        return;
+      }
+      if (FIREBASE && (!phoneToken || phoneTokenFor !== '+' + dialCountry[2] + phoneDigits)) {
+        registerError('Verify your phone number: use Text me a code, then enter the code we text you.');
+        document.getElementById('reg-sms-send').focus();
         return;
       }
       const value = (id) => document.getElementById(id).value.trim();
@@ -1528,6 +1655,7 @@ ${FONT_LINKS}
         subdomain: value('reg-subdomain').toLowerCase(),
         contactName: value('reg-contact-name'),
         phone: '+' + dialCountry[2] + phoneDigits,
+        phoneToken: FIREBASE ? phoneToken : undefined,
         email: value('reg-email'),
         emailCode: value('reg-code'),
         password: document.getElementById('reg-password').value,

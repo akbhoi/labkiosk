@@ -35,6 +35,7 @@ cloudflare-control/
 │   ├── webauthn.ts                     # Passkeys: CBOR, authenticator data, ES256/RS256 verification with crypto.subtle
 │   ├── sso.ts                          # Staff single sign-on (Google Workspace, Microsoft Entra ID): OIDC code flow + PKCE, ID tokens verified with crypto.subtle, then continueSignIn
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
+│   ├── phone_verify.ts                 # Optional Firebase SMS code at registration: the Worker verifies Firebase's ID token (RS256, crypto.subtle)
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback

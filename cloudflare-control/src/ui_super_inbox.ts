@@ -309,7 +309,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             definition(list, "Type", p.organization_type);
             definition(list, "Technical contact", p.contact_name);
             definition(list, "Email", p.contact_email, p.email_verified_at ? badge("verified", "badge-green") : badge("not verified", "badge-red"));
-            var phoneState = p.phone_verified_at ? badge("verified", "badge-green") : badge("not verified", "badge-yellow");
+            var phoneState = p.phone_verified_at ? badge(p.phone_verified_by ? "verified" : "verified by SMS", "badge-green") : badge("not verified", "badge-yellow");
             definition(list, "Phone", p.contact_phone, phoneState);
             definition(list, "Postal address", [p.address_line1, p.address_line2, p.city, p.region, p.postal_code, p.country].filter(Boolean).join(", "));
             definition(list, "Tax ID", p.tax_id);

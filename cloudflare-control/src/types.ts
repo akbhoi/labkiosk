@@ -446,6 +446,15 @@ export interface Env {
    */
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  /**
+   * Firebase Authentication, used only to text a code to the phone number a
+   * registration gives (src/phone_verify.ts). All three are the project's public
+   * web values; with all of them set every registration needs a verified phone,
+   * and with only some of them set registration refuses.
+   */
+  FIREBASE_PROJECT_ID?: string;
+  FIREBASE_API_KEY?: string;
+  FIREBASE_AUTH_DOMAIN?: string;
 }
 
 /** The one Workers AI method the Worker uses. */
