@@ -21,7 +21,7 @@ import { findTenantById, updateTenant } from "./db";
 import { entitlement, PRICING, type BillingPeriod, type Quote } from "./plans";
 import type { Env } from "./types";
 
-const RAZORPAY_API = "https://api.razorpay.com/v1";
+const RAZORPAY_ORIGIN = "https://api.razorpay.com";
 /** How long a payment link stays open. */
 const LINK_HOURS = 24;
 
@@ -91,12 +91,38 @@ export function rupees(paise: number): string {
  */
 const NEVER_REACHED_ORIGIN = new Set([522, 525, 526]);
 
-async function fetchRazorpay(url: string, init: RequestInit): Promise<Response> {
-  const first = await fetch(url, init);
+/**
+ * Where a call to Razorpay goes: straight to Razorpay, or through the relay on
+ * Google Cloud when RAZORPAY_RELAY_URL and RAZORPAY_RELAY_SECRET are set (see
+ * relay/razorpay/handler.js for what the relay checks).
+ */
+export function razorpayRoute(env: Env): { kind: "direct" } | { kind: "relay"; url: string; secret: string } {
+  const url = (env.RAZORPAY_RELAY_URL || "").trim().replace(/\/+$/, "");
+  const secret = env.RAZORPAY_RELAY_SECRET || "";
+  if (!url && !secret) return { kind: "direct" };
+  if (!url || !secret) throw new Error("Set both RAZORPAY_RELAY_URL and RAZORPAY_RELAY_SECRET, or neither");
+  if (!/^https:\/\/[^/?#]+(\/[^?#]*)?$/.test(url)) throw new Error("RAZORPAY_RELAY_URL must be an https address with no query");
+  if (secret.length < 32) throw new Error("RAZORPAY_RELAY_SECRET must be at least 32 characters");
+  return { kind: "relay", url, secret };
+}
+
+async function sendToRazorpay(env: Env, path: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<Response> {
+  const route = razorpayRoute(env);
+  if (route.kind === "direct") return fetch(`${RAZORPAY_ORIGIN}${path}`, init);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = await hmacHex(route.secret, `${timestamp}\n${init.method}\n${path}\n${init.body}`);
+  return fetch(`${route.url}${path}`, {
+    ...init,
+    headers: { ...init.headers, "X-Relay-Timestamp": timestamp, "X-Relay-Signature": signature }
+  });
+}
+
+async function fetchRazorpay(env: Env, path: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<Response> {
+  const first = await sendToRazorpay(env, path, init);
   if (!NEVER_REACHED_ORIGIN.has(first.status)) return first;
-  console.error(`[Billing] Razorpay ${url} answered ${describeHttpFailure(first)}; trying once more`);
+  console.error(`[Billing] Razorpay ${path} answered ${describeHttpFailure(first)}; trying once more`);
   await first.body?.cancel();
-  return fetch(url, init);
+  return sendToRazorpay(env, path, init);
 }
 
 /** "HTTP 525 (server cloudflare, ray abc123-MAA)": enough to tell whose edge answered, for Razorpay support. */
@@ -118,6 +144,8 @@ export async function createPaymentLink(
   input: { tenantId: string; organization: string; userId: string; email: string; name: string; quote: Quote; callbackUrl: string; nowSeconds: number }
 ): Promise<Payment> {
   if (!billingEnabled(env)) throw new Error("Online payment is not set up");
+  // A half-set relay is a setup mistake: say so before anything is written.
+  razorpayRoute(env);
   const id = `lk${crypto.randomUUID().replace(/-/g, "")}`;
   const q = input.quote;
   await db
@@ -129,26 +157,33 @@ export async function createPaymentLink(
     .run();
   const description =
     `Lab Kiosk subscription, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations, for ${input.organization}`.slice(0, 2048);
-  const res = await fetchRazorpay(`${RAZORPAY_API}/payment_links`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      amount: q.total,
-      currency: PRICING.currency,
-      reference_id: id,
-      description,
-      customer: { name: input.name.slice(0, 100), email: input.email },
-      notify: { sms: false, email: false },
-      reminder_enable: false,
-      expire_by: input.nowSeconds + LINK_HOURS * 3600,
-      callback_url: input.callbackUrl,
-      callback_method: "get",
-      notes: { tenant_id: input.tenantId, period: q.period, workstations: String(q.workstations) }
-    })
-  });
+  let res: Response;
+  try {
+    res = await fetchRazorpay(env, "/v1/payment_links", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        amount: q.total,
+        currency: PRICING.currency,
+        reference_id: id,
+        description,
+        customer: { name: input.name.slice(0, 100), email: input.email },
+        notify: { sms: false, email: false },
+        reminder_enable: false,
+        expire_by: input.nowSeconds + LINK_HOURS * 3600,
+        callback_url: input.callbackUrl,
+        callback_method: "get",
+        notes: { tenant_id: input.tenantId, period: q.period, workstations: String(q.workstations) }
+      })
+    });
+  } catch (err) {
+    await db.prepare("DELETE FROM payments WHERE id = ? AND status = 'created'").bind(id).run();
+    console.error("[Billing] Razorpay could not be reached:", err);
+    throw new Error("Razorpay could not be reached. Try again in a few minutes.");
+  }
   let data: { id?: unknown; short_url?: unknown; error?: { description?: unknown } } = {};
   try {
     data = await res.json();

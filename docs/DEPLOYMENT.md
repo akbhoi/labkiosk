@@ -403,6 +403,46 @@ To take payments online (needs a Razorpay account with KYC done and your GSTIN):
 Payments go through Payment Links: the console never loads Razorpay's script. Either the signed
 redirect back to `/api/billing/return` or the webhook records a payment, once.
 
+#### Razorpay relay on Google Cloud (when Pay fails with HTTP 525)
+
+Razorpay's API (`api.razorpay.com`, an AWS load balancer) refuses the TLS handshake from
+Cloudflare Workers, so creating a payment link fails with `HTTP 525 (server cloudflare, …)`.
+`cloudflare-control/relay/razorpay` is a small Cloud Run function that the Worker sends that one
+call through. It forwards only `POST /v1/payment_links`, only when the request is signed with a
+shared secret and less than five minutes old, keeps no state and holds no Razorpay keys (the
+Worker's own authorization is passed through). The webhook and the return redirect are inbound
+to the Worker and do not use it.
+
+Deploy it in the Google Cloud project you already use for Firebase (Cloud Run functions need the
+project on the Blaze / pay-as-you-go plan; this traffic stays inside the free tier):
+
+```sh
+openssl rand -hex 32 > relay-secret.txt          # the shared secret, 64 characters
+gcloud services enable cloudfunctions.googleapis.com run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com secretmanager.googleapis.com
+gcloud secrets create razorpay-relay-secret --data-file=relay-secret.txt
+gcloud functions deploy razorpay-relay --gen2 --runtime=nodejs22 --region=asia-south1 \
+  --source=cloudflare-control/relay/razorpay --entry-point=relay --trigger-http \
+  --allow-unauthenticated --memory=256Mi --max-instances=3 \
+  --set-secrets=RELAY_SECRET=razorpay-relay-secret:latest
+```
+
+If the deploy says the service account cannot read the secret, grant it
+**Secret Manager Secret Accessor** on `razorpay-relay-secret` (the command prints the account) and
+deploy again. `--allow-unauthenticated` is needed because the Worker cannot hold a Google identity
+token; the shared-secret signature is what keeps everyone else out.
+
+Then set the Worker's secrets, using the function URL the deploy prints
+(`https://asia-south1-<project>.cloudfunctions.net/razorpay-relay`, or its `run.app` address):
+
+| Secret | Value |
+| --- | --- |
+| `RAZORPAY_RELAY_URL` | the function URL, no trailing slash |
+| `RAZORPAY_RELAY_SECRET` | the contents of `relay-secret.txt` |
+
+Set both or neither: with only one, Pay answers that the relay is half set up. Delete
+`relay-secret.txt` once both sides have it.
+
 Education certificates are stored in the `AUDIT_ARCHIVE` bucket under `education/`; a rejected
 application's certificate is deleted 90 days after the decision.
 

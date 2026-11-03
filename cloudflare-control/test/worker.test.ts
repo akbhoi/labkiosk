@@ -56,7 +56,8 @@ import { checkComponents, componentStatuses, recordStatusChecks } from "../src/s
 import { monthlySummaryFor } from "../src/monthly_summary";
 import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
 import { PRICING, entitlement, quote, rebalanceLicences } from "../src/plans";
-import { periodEnd } from "../src/billing";
+import { periodEnd, razorpayRoute } from "../src/billing";
+import { handleRelay, relaySignature } from "../relay/razorpay/handler.js";
 import { emailMatchesWebsite } from "../src/education";
 import nodeCrypto from "node:crypto";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
@@ -10958,6 +10959,112 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
     await restorePlan();
   });
+  test("The Razorpay relay forwards only signed, fresh payment-link calls, and passes Razorpay's answer back", async () => {
+    const secret = "r".repeat(40);
+    const body = JSON.stringify({ amount: 235882 });
+    const now = 1_800_000_000;
+    const forwarded: { url: string; init: RequestInit }[] = [];
+    const razorpay = (async (url: string, init: RequestInit) => {
+      forwarded.push({ url, init });
+      return new Response(JSON.stringify({ id: "plink_x", short_url: "https://rzp.io/i/x" }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
+    }) as unknown as typeof fetch;
+    const signed = (over: Partial<Parameters<typeof handleRelay>[0]> = {}, ts = String(now)) =>
+      handleRelay({
+        method: "POST",
+        path: "/v1/payment_links",
+        headers: { "x-relay-timestamp": ts, "x-relay-signature": relaySignature(secret, ts, "POST", "/v1/payment_links", body), authorization: "Basic cnpwOnNlY3JldA==" },
+        body,
+        secret,
+        nowSeconds: now,
+        fetchImpl: razorpay,
+        ...over
+      });
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      const ok = await signed();
+      assert.equal(ok.status, 200);
+      assert.equal(JSON.parse(ok.body).short_url, "https://rzp.io/i/x");
+      assert.equal(forwarded.length, 1);
+      assert.equal(forwarded[0].url, "https://api.razorpay.com/v1/payment_links");
+      assert.equal((forwarded[0].init.headers as Record<string, string>).authorization, "Basic cnpwOnNlY3JldA==", "the Worker's own authorization goes through");
+      assert.equal(forwarded[0].init.body, body);
+
+      assert.equal((await signed({ path: "/v1/payments" })).status, 404, "only payment links");
+      assert.equal((await signed({ method: "GET" })).status, 404);
+      assert.equal((await signed({ body: body + " " })).status, 401, "a changed body breaks the signature");
+      assert.equal((await signed({}, String(now - 301))).status, 401, "an old request is refused");
+      assert.equal((await signed({ headers: { "x-relay-timestamp": String(now), "x-relay-signature": "zz", authorization: "Basic eA==" } })).status, 401);
+      assert.equal((await signed({ headers: { "x-relay-timestamp": String(now), "x-relay-signature": relaySignature(secret, String(now), "POST", "/v1/payment_links", body) } })).status, 400, "no authorization");
+      assert.equal((await signed({ secret: "short" })).status, 503, "a relay without a proper secret forwards nothing");
+      assert.equal(forwarded.length, 1, "nothing refused was forwarded");
+      const down = await signed({ fetchImpl: (async () => { throw new TypeError("network"); }) as unknown as typeof fetch });
+      assert.equal(down.status, 502);
+    } finally {
+      console.error = realError;
+    }
+
+    assert.deepEqual(razorpayRoute({ ...mockEnv }), { kind: "direct" });
+    assert.throws(() => razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "https://relay.example.run.app" }), /both/);
+    assert.throws(() => razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "http://relay.example", RAZORPAY_RELAY_SECRET: secret }), /https/);
+    assert.throws(() => razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "https://relay.example", RAZORPAY_RELAY_SECRET: "short" }), /32/);
+    assert.deepEqual(razorpayRoute({ ...mockEnv, RAZORPAY_RELAY_URL: "https://relay.example/fn/", RAZORPAY_RELAY_SECRET: secret }), { kind: "relay", url: "https://relay.example/fn", secret });
+  });
+
+  test("With the relay set, checkout creates the payment link through it, signed, and a half-set relay writes nothing", async () => {
+    const { db, tenantId } = await restorePlan();
+    const secret = "s".repeat(40);
+    const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret", RAZORPAY_RELAY_URL: "https://asia-south1-labkiosk.cloudfunctions.net/razorpay-relay", RAZORPAY_RELAY_SECRET: secret };
+    const checkout = (e: Env) => worker.fetch(request("/api/plan/checkout?tenant=greenwood", { ...json({ period: "year" }), cookie: orgSessionCookie }), e);
+    const realFetch = globalThis.fetch;
+    const realError = console.error;
+    console.error = () => {};
+    let razorpayCalls = 0;
+    try {
+      // The stub stands in for the relay itself, so the Worker's request is checked by the relay's own code.
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input instanceof Request ? input.url : input));
+        assert.equal(url.origin + url.pathname, "https://asia-south1-labkiosk.cloudfunctions.net/razorpay-relay/v1/payment_links");
+        const headers: Record<string, string> = {};
+        new Headers(init?.headers).forEach((v, k) => (headers[k] = v));
+        const result = await handleRelay({
+          method: String(init?.method),
+          path: "/v1/payment_links",
+          headers,
+          body: String(init?.body),
+          secret,
+          nowSeconds: Math.floor(Date.now() / 1000),
+          fetchImpl: (async () => (razorpayCalls++, new Response(JSON.stringify({ id: "plink_relay", short_url: "https://rzp.io/i/relay" }), { status: 200 }))) as unknown as typeof fetch
+        });
+        return new Response(result.body, { status: result.status, headers: result.headers });
+      }) as typeof fetch;
+      const res = await checkout(env);
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as any).url, "https://rzp.io/i/relay");
+      assert.equal(razorpayCalls, 1, "the relay accepted the Worker's signature and forwarded once");
+
+      globalThis.fetch = (async () => { throw new Error("must not be called"); }) as typeof fetch;
+      const half = await checkout({ ...env, RAZORPAY_RELAY_SECRET: undefined });
+      assert.equal(half.status, 502);
+      assert.match(((await half.json()) as any).error, /RAZORPAY_RELAY_URL and RAZORPAY_RELAY_SECRET/);
+
+      globalThis.fetch = (async () => { throw new TypeError("connection refused"); }) as typeof fetch;
+      const down = await checkout(env);
+      assert.equal(down.status, 502);
+      assert.match(((await down.json()) as any).error, /could not be reached/);
+      assert.equal(
+        Number((await db.prepare("SELECT COUNT(*) AS n FROM payments WHERE tenant_id = ? AND link_id IS NULL").bind(tenantId).first<{ n: number }>())!.n),
+        0,
+        "no payment is left behind without a link"
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      console.error = realError;
+    }
+    await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
+    await restorePlan();
+  });
+
   test("A Razorpay call Cloudflare could not complete TLS for is sent once more, and a second failure names the edge that answered", async () => {
     const { db, tenantId } = await restorePlan();
     const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };
