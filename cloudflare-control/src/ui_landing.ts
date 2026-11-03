@@ -594,6 +594,7 @@ ${FONT_LINKS}
         <a href="/terms">Terms of Service</a>
         <a href="/content-policy">Content Policy</a>
         <a href="/dpa">Data Processing Agreement</a>
+        <a href="/refunds">Refund &amp; Cancellation</a>
         <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
         <a href="/#security">Security</a>
       </div>
@@ -2861,6 +2862,9 @@ function pricingMainHtml(): string {
       </div>
 
       <div class="docs-callout" style="margin-top: 48px; border-left-color: var(--accent);">
+        <strong>Payments:</strong> prepaid by the month or the year through Razorpay, never renewed without you, and not refundable; see the <a href="/refunds">Refund &amp; Cancellation Policy</a>. Try the Free plan and the ${p.trialDays}-day trial first.
+      </div>
+      <div class="docs-callout" style="margin-top: 16px;">
         <strong>How the limit works:</strong> each plan covers a number of workstations. If a plan ends, the organization is back on Free: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, and nothing is deleted.
       </div>
       <div class="docs-callout" style="margin-top: 16px;">

@@ -602,6 +602,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*after verification/);
     assert.match(pricing, /href="\/contact\?reason=sales">Contact sales/);
     assert.doesNotMatch(pricing, /Education Grant|50%/, "the old grant and the discount are gone");
+    assert.match(pricing, /href="\/refunds">Refund &amp; Cancellation Policy/);
+    const refunds = await call("/refunds");
+    assert.equal(refunds.status, 200);
+    const refundsHtml = await refunds.text();
+    assert.match(refundsHtml, /<h1>Refund &amp; Cancellation Policy<\/h1>/);
+    assert.match(refundsHtml, /Every payment is final/);
+    assert.match(refundsHtml, /charged twice/, "duplicate charges are still refunded");
+    assert.match(refundsHtml, /Nothing renews by itself/);
+    assert.equal((await call("/refunds?tenant=greenwood")).status, 200, "served on any address, like the other legal pages");
 
     const download = await (await call("/download")).text();
     assert.match(download, /Download/);
@@ -8468,6 +8477,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/content-policy",
       "https://www.labkiosk.org/dpa",
+      "https://www.labkiosk.org/refunds",
       "https://www.labkiosk.org/terms/bug-reports"
     ]);
     // Every listed page really is served, indexable, on the canonical host.

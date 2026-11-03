@@ -79,7 +79,7 @@ function renderPlanPageHtml(contactHref: string): string {
         <ul class="plan-list">
           <li>${p.includedWorkstations} workstations included</li>
           <li>₹${p.extraMonthly} a month (₹${p.extraYearly} a year) for each one more, up to ${p.salesAbove}</li>
-          <li>Prices are before ${p.gstPercent}% GST</li>
+          <li>Prices are before ${p.gstPercent}% GST; payments are <a href="/refunds" target="_blank" rel="noopener">not refundable</a></li>
         </ul>
         <div class="form-group">
           <label class="form-label" for="sub-extra">Extra workstations</label>

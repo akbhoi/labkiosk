@@ -28,7 +28,7 @@ import {
   SITE_STYLESHEET_PATH,
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
-import { renderBugReportTermsHtml, renderContentPolicyHtml, renderDataProcessingAgreementHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderContentPolicyHtml, renderRefundPolicyHtml, renderDataProcessingAgreementHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
@@ -50,7 +50,7 @@ import {
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
 const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
-const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/terms/bug-reports", "/admin", "/super"]);
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/refunds", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
 import { renderVerifyPhoneHtml } from "./ui_verify_phone";
 import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
@@ -1292,7 +1292,7 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
-  if (path === "/terms/bug-reports" || path === "/content-policy" || path === "/dpa") return true;
+  if (path === "/terms/bug-reports" || path === "/content-policy" || path === "/dpa" || path === "/refunds") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   // Single sign-on starts from an organization's sign-in page, which may be the platform host with ?tenant=.
   if (path === "/api/auth/sso/start" && method === "GET") return true;
@@ -5530,6 +5530,9 @@ export default {
     }
     if (path === "/dpa") {
       return new Response(renderDataProcessingAgreementHtml({ canonicalUrl }), { headers: htmlHeaders });
+    }
+    if (path === "/refunds") {
+      return new Response(renderRefundPolicyHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
     if (path === "/terms/bug-reports") {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
