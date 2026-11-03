@@ -106,6 +106,7 @@ export function requiredBindingsProblem(env: Env): string | null {
   if (!env.AUDIT_ARCHIVE) missing.push("AUDIT_ARCHIVE (R2 bucket)");
   if (!env.FLEET_METRICS) missing.push("FLEET_METRICS (Analytics Engine dataset)");
   if (!env.AUTH_RATE_LIMITER) missing.push("AUTH_RATE_LIMITER (rate limiting)");
+  if (!env.ACCOUNT_RATE_LIMITER) missing.push("ACCOUNT_RATE_LIMITER (rate limiting)");
   if (!env.CUSTOM_HOSTNAMES) missing.push("CUSTOM_HOSTNAMES (Workflow)");
   if (!env.CF_API_TOKEN) missing.push("CF_API_TOKEN (secret)");
   if (!env.CF_ZONE_ID) missing.push("CF_ZONE_ID (secret)");

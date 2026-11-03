@@ -171,6 +171,16 @@
 				"limit": 20,
 				"period": 60
 			}
+		},
+		// The same routes per email address the request names, whatever address
+		// it comes from (sign-in, registration and the contact form's codes).
+		{
+			"name": "ACCOUNT_RATE_LIMITER",
+			"namespace_id": "1002",
+			"simple": {
+				"limit": 10,
+				"period": 60
+			}
 		}
 	],
 	// Custom domains through Cloudflare for SaaS (src/custom_hostnames.ts). Needs

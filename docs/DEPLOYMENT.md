@@ -172,6 +172,7 @@ provisioned by a Workflow. **A production worker refuses to start without every 
 | `AUDIT_ARCHIVE` | R2 bucket `labkiosk-audit-archive` (audit entries older than 180 days, as NDJSON) | `npx wrangler r2 bucket create labkiosk-audit-archive` |
 | `FLEET_METRICS` | Analytics Engine dataset `labkiosk_fleet` (connects and disconnects) | Nothing: it is created on first write. |
 | `AUTH_RATE_LIMITER` | Rate limit, namespace `1001`, 20 requests per 60 s per address | Nothing; change `namespace_id` if your account already uses `1001`. |
+| `ACCOUNT_RATE_LIMITER` | Rate limit, namespace `1002`, 10 requests per 60 s per email address on sign-in, registration and the contact form | Nothing; change `namespace_id` if your account already uses `1002`. |
 | `CUSTOM_HOSTNAMES` | Workflow `labkiosk-custom-hostnames` | Nothing: created on deploy. |
 | `CF_API_TOKEN` | Secret: an API token for the zone with **SSL and Certificates: Edit** (custom hostnames) | `npx wrangler secret put CF_API_TOKEN` |
 | `CF_ZONE_ID` | Secret: the zone id of your platform domain | `npx wrangler secret put CF_ZONE_ID` |

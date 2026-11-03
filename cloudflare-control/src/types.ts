@@ -361,6 +361,8 @@ export interface Env {
   FLEET_METRICS?: AnalyticsEngineDataset;
   /** Coarse per-address throttle in front of sign-in, registration and enrolment. */
   AUTH_RATE_LIMITER?: RateLimit;
+  /** The same routes, limited per email address the request names (src/index.ts). */
+  ACCOUNT_RATE_LIMITER?: RateLimit;
   /** Provisions and removes Cloudflare for SaaS custom hostnames. */
   CUSTOM_HOSTNAMES?: Workflow<CustomHostnameParams>;
   /** API token with SSL and Certificates: Edit on the zone (Cloudflare for SaaS). */

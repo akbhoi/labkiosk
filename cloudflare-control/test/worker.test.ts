@@ -5747,6 +5747,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 401, "a broken limiter does not take sign-in down");
   });
 
+  test("Sign-in, registration and the contact form are limited per email address too", async () => {
+    const keys: string[] = [];
+    const perAccount = {
+      ...mockEnv,
+      ACCOUNT_RATE_LIMITER: { limit: async ({ key }: { key: string }) => { keys.push(key); return { success: !key.endsWith("|sprayed@example.org") }; } } as RateLimit
+    };
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/contact/email-code"]) {
+      const res = await worker.fetch(request(path, json({ email: " Sprayed@Example.org ", password: "x" })), perAccount as Env);
+      assert.equal(res.status, 429, `${path} is throttled for that account`);
+    }
+    assert.ok(keys.every((k) => k.endsWith("|sprayed@example.org")), "keyed by the address, trimmed and lower-cased");
+    // Another account goes on to the route, which still reads the body.
+    const other = await worker.fetch(request("/api/auth/login", json({ email: "nobody@example.org", password: "wrong" })), perAccount as Env);
+    assert.equal(other.status, 401);
+    // A body without an address, or a limiter that fails, leaves it to the route and the D1 lockouts.
+    assert.equal((await worker.fetch(request("/api/auth/login", json({})), perAccount as Env)).status, 400);
+    const broken = { ...mockEnv, ACCOUNT_RATE_LIMITER: { limit: async () => { throw new Error("internal error"); } } as RateLimit };
+    assert.equal((await worker.fetch(request("/api/auth/login", json({ email: "nobody@example.org", password: "wrong" })), broken as Env)).status, 401);
+  });
+
   test("Audit entries go through the queue, and a redelivered batch is written once", async () => {
     const sent: AuditEntryMessage[] = [];
     useAuditQueue({ send: async (m: AuditEntryMessage) => { sent.push(m); } } as unknown as Queue<AuditEntryMessage>);
@@ -6438,6 +6458,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       AUDIT_ARCHIVE: {} as R2Bucket,
       FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
       AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      ACCOUNT_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
       CUSTOM_HOSTNAMES: {} as Workflow,
       CF_API_TOKEN: "test-token",
       CF_ZONE_ID: "test-zone"
@@ -6492,7 +6513,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await assert.rejects(
       () => worker.fetch(request("/"), secrets as Env),
       (err: Error) =>
-        ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
+        ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "ACCOUNT_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
           .every((name) => err.message.includes(name))
     );
     const bindings = {
@@ -6504,6 +6525,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       AUDIT_ARCHIVE: {} as R2Bucket,
       FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
       AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      ACCOUNT_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
       CUSTOM_HOSTNAMES: {} as Workflow,
       CF_API_TOKEN: "test-token",
       CF_ZONE_ID: "test-zone"

@@ -1319,6 +1319,30 @@ function buildHtmlHeaders(
   return headers;
 }
 
+/** Routes that name an account in their JSON body, limited per account by ACCOUNT_RATE_LIMITER. */
+const ACCOUNT_LIMITED_PATHS = new Set([
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/auth/register/email-code",
+  "/api/contact",
+  "/api/contact/email-code"
+]);
+
+/**
+ * The email address a JSON request body names, lower-cased, or null. Reads a
+ * clone, so the route still gets the body; a body that is not JSON is the
+ * route's to refuse.
+ */
+async function requestEmail(request: Request): Promise<string | null> {
+  try {
+    const body = await request.clone().json<{ email?: unknown }>();
+    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    return email && email.length <= 254 ? email : null;
+  } catch {
+    return null;
+  }
+}
+
 export default {
   /**
    * Hourly housekeeping (see `triggers.crons` in wrangler.jsonc). Expired
@@ -1647,6 +1671,23 @@ export default {
       }
       if (!success) {
         return jsonError("Too many attempts from this address. Wait a minute and try again.", 429, jsonHeaders);
+      }
+    }
+
+    // The same, per account: a spray at one email address from many addresses
+    // stops here too, before it reaches the D1 lockouts.
+    if (env.ACCOUNT_RATE_LIMITER && method === "POST" && ACCOUNT_LIMITED_PATHS.has(path)) {
+      const email = await requestEmail(request);
+      if (email) {
+        let success = true;
+        try {
+          ({ success } = await env.ACCOUNT_RATE_LIMITER.limit({ key: `${path}|${email}` }));
+        } catch (err) {
+          console.error("[Worker] The per-account rate limiter failed; relying on the D1 lockouts:", err);
+        }
+        if (!success) {
+          return jsonError("Too many attempts for this account. Wait a minute and try again.", 429, jsonHeaders);
+        }
       }
     }
 
