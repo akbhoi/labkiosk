@@ -28,6 +28,8 @@ import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASE
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
 import { FIREBASE_SDK_ORIGIN, FIREBASE_SDK_VERSION, FirebaseConfig } from "./phone_verify";
+import { ComponentStatus, Incident } from "./status";
+import { statusMainHtml } from "./ui_status_public";
 import { CONTACT_REASONS } from "./conversations";
 import { HardwareModel, PUBLIC_MODEL_MIN_ORGANIZATIONS } from "./hardware";
 
@@ -566,6 +568,7 @@ ${FONT_LINKS}
           <li><a href="/docs">Documentation</a></li>
           <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
           <li><a href="/#faq">FAQ</a></li>
+          <li><a href="/status">System status</a></li>
         </ul>
       </div>
 
@@ -2672,6 +2675,17 @@ function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): s
       </div>
       <p class="docs-source">${updated ? `Counted on ${escapeHtml(updated)}, from each workstation's latest start. ` : ""}The minimum and recommended hardware are on the <a href="/specs">specifications page</a>.</p>
     </section>`;
+}
+
+/** /status: the platform's checks and incidents (src/status.ts). */
+export function renderPlatformStatusHtml(data: LandingOptions, components: ComponentStatus[], incidents: Incident[], nowSeconds: number): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk Status",
+    description: "Whether the Lab Kiosk console, workstation connections, email and updates are working, and the incidents of the last 90 days.",
+    // Not in the top navigation; naming a page keeps Home from being marked as the current one.
+    activeNav: "status",
+    mainHtml: statusMainHtml(components, incidents, nowSeconds)
+  });
 }
 
 /** /hardware: the models enough organizations run, from their workstations' own reports (src/hardware.ts). */

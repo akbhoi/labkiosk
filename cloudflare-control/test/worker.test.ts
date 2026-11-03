@@ -52,6 +52,7 @@ import {
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
 import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhoneToken } from "../src/phone_verify";
+import { checkComponents, componentStatuses, recordStatusChecks } from "../src/status";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -6636,6 +6637,90 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   // ------------------------------------------------------------ housekeeping
+
+  test("Status checks: each component is checked, and a failure is a result, not an error", async () => {
+    const db = getDatabase(mockEnv);
+    const hub = (ok: boolean) =>
+      ({
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async (url: string) => (ok && url.endsWith("/ping") ? new Response("{}") : new Response("no", { status: 500 })) })
+      }) as unknown as DurableObjectNamespace;
+    const releases = (ok: boolean) =>
+      ({ list: async () => { if (!ok) throw new Error("bucket gone"); return { objects: [] }; } }) as unknown as R2Bucket;
+    const good = await checkComponents({ ...mockEnv, ORG_HUB: hub(true), RELEASES: releases(true) }, db);
+    assert.deepEqual(good.map((r) => [r.component, r.ok]), [["console", true], ["workstations", true], ["email", true], ["updates", true]]);
+    const bad = await checkComponents({ ...mockEnv, ORG_HUB: hub(false), RELEASES: releases(false) }, db);
+    assert.equal(bad.find((r) => r.component === "workstations")!.ok, false);
+    assert.match(bad.find((r) => r.component === "updates")!.detail!, /bucket gone/);
+    assert.equal((await checkComponents(mockEnv, db)).some((r) => r.component === "updates"), false, "no releases bucket, no Updates row");
+
+    // Counted per day: two rounds today, one of them failing.
+    const at = Math.floor(Date.now() / 1000);
+    await recordStatusChecks(db, good, at);
+    await recordStatusChecks(db, bad, at);
+    const env = { ...mockEnv, RELEASES: releases(true) };
+    const updates = (await componentStatuses(env, db, at)).find((c) => c.component === "updates")!;
+    assert.equal(updates.ok, false, "the latest round decides the state");
+    assert.equal(updates.days.length, 90);
+    assert.deepEqual(updates.days[89], { day: new Date(at * 1000).toISOString().slice(0, 10), checks: 2, failures: 1 });
+    assert.equal(updates.days[0], null);
+
+    // The 5-minute cron runs only the checks.
+    await worker.scheduled({ cron: "*/5 * * * *" } as ScheduledEvent, mockEnv);
+    const latest = await db.prepare("SELECT ok FROM status_latest WHERE component = 'console'").first<{ ok: number }>();
+    assert.equal(latest!.ok, 1);
+    const page = await call("/status", { headers: { Accept: "text/html" } });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Console and sign-in/);
+    assert.match(html, /No incidents in the last 90 days/);
+    assert.match(html, /href="\/status"/, "the footer links it");
+
+    const health = await call("/api/health");
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: "ok" });
+    assert.equal(health.headers.get("Cache-Control"), "no-store");
+  });
+
+  test("A super admin posts incidents; an open one shows on /status and in every console until resolved", async () => {
+    const admin = await superCookie();
+    const open = (body: unknown, cookie?: string) => call("/api/super/status/incidents", { ...json(body), ...(cookie ? { cookie } : {}) });
+    const incident = { title: "Workstations cannot connect", impact: "major", body: "We are looking into it." };
+    assert.equal((await open(incident)).status, 401);
+    assert.equal((await open(incident, orgSessionCookie)).status, 403);
+    assert.equal((await open({ ...incident, title: " " }, admin)).status, 400);
+    assert.equal((await open({ ...incident, impact: "total" }, admin)).status, 400);
+    assert.equal((await open({ ...incident, body: "" }, admin)).status, 400);
+    const created = await callJson("/api/super/status/incidents", { ...json(incident), cookie: admin });
+    assert.equal(created.res.status, 200);
+    const id = created.data.id as string;
+    assert.equal(created.data.incidents[0].status, "investigating");
+
+    const console1 = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(console1.includes('id="incident-banner"') && console1.includes("Workstations cannot connect"));
+    assert.ok(console1.includes("callout-danger"), "a major incident is red");
+    const page = await (await call("/status", { headers: { Accept: "text/html" } })).text();
+    assert.match(page, /A major incident is under way/);
+    assert.match(page, /We are looking into it\./);
+
+    const update = (body: unknown) => callJson(`/api/super/status/incidents/${id}`, { ...json(body), cookie: admin });
+    assert.equal((await update({ status: "fixed", body: "x" })).res.status, 400);
+    assert.equal((await update({ status: "identified", body: "" })).res.status, 400);
+    assert.equal((await callJson(`/api/super/status/incidents/${crypto.randomUUID()}`, { ...json({ status: "identified", body: "x" }), cookie: admin })).res.status, 404);
+    assert.equal((await update({ status: "identified", body: "A certificate expired." })).res.status, 200);
+    const resolved = await update({ status: "resolved", body: "Renewed; everything is back." });
+    assert.equal(resolved.res.status, 200);
+    assert.ok(resolved.data.incidents.find((i: any) => i.id === id).resolved_at);
+    assert.equal((await update({ status: "monitoring", body: "Late." })).res.status, 409, "a resolved incident takes no more updates");
+
+    const console2 = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(!console2.includes('id="incident-banner"'));
+    const after = await (await call("/status", { headers: { Accept: "text/html" } })).text();
+    assert.match(after, /Renewed; everything is back\./);
+    assert.doesNotMatch(after, /A major incident is under way/);
+    const listed = await callJson("/api/super/status", { cookie: admin });
+    assert.equal(listed.data.incidents[0].updates.length, 3);
+  });
 
   test("Runs the scheduled housekeeping handler", async () => {
     await worker.scheduled({} as ScheduledEvent, mockEnv);

@@ -17,6 +17,7 @@ import {
   renderFeaturesHtml,
   renderSpecsHtml,
   renderHardwareHtml,
+  renderPlatformStatusHtml,
   renderPricingHtml,
   renderDownloadHtml,
   renderDocsHtml,
@@ -54,6 +55,7 @@ import { renderStatusPageHtml } from "./ui_status";
 import { renderVerifyPhoneHtml } from "./ui_verify_phone";
 import { findPhoneLink, handleVerifyPhone, maskPhone } from "./phone_link";
 import { consoleSubdomain, featureTipFor, showsHomepage } from "./addresses";
+import { componentStatuses, createIncident, listIncidents, openIncident, purgeOldStatus, runStatusChecks, updateIncident } from "./status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -1341,6 +1343,9 @@ function buildHtmlHeaders(
   return headers;
 }
 
+/** The cron that runs the status checks; wrangler.jsonc names it beside the hourly one. */
+export const STATUS_CRON = "*/5 * * * *";
+
 /** The registration page: /register, or the public landing routes opened with ?register. */
 function isRegistrationPage(path: string, url: URL): boolean {
   return path === "/register" || ((path === "/" || path === "/login" || path === "/iso") && url.searchParams.has("register"));
@@ -1376,10 +1381,17 @@ export default {
    * sessions, delivered commands and stale throttle rows would otherwise only
    * be purged as a side effect of unrelated requests.
    */
-  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     const db = getDatabase(env);
     await bootstrap(db, env);
     useAuditQueue(env.AUDIT_QUEUE);
+    // Every five minutes: the status page's checks (src/status.ts), and nothing else.
+    if (event.cron === STATUS_CRON) {
+      const failed = (await runStatusChecks(env, db)).filter((r) => !r.ok);
+      if (failed.length) console.warn(`[Status] Failing: ${failed.map((r) => `${r.component} (${r.detail})`).join(", ")}`);
+      return;
+    }
+    await purgeOldStatus(db);
     await deleteExpiredSessions(db);
     const rehashed = await hashLegacySessions(db);
     if (rehashed) console.log(`[Worker] Stored ${rehashed} sessions under the hash of their token.`);
@@ -1814,6 +1826,19 @@ export default {
       } catch (err: any) {
         console.error("[Worker] Registration failed:", err);
         return jsonError("Registration failed. Please try again.", 500, jsonHeaders);
+      }
+    }
+
+    // GET /api/health: for an outside uptime monitor (docs/DEPLOYMENT.md). 200 while
+    // the Worker and its database answer, 503 when the database does not.
+    if (path === "/api/health" && (method === "GET" || method === "HEAD")) {
+      const headers = { ...jsonHeaders, "Cache-Control": "no-store" };
+      try {
+        await db.prepare("SELECT 1").first();
+        return new Response(JSON.stringify({ status: "ok" }), { headers });
+      } catch (err) {
+        console.error("[Health] The database did not answer:", err);
+        return new Response(JSON.stringify({ status: "unavailable" }), { status: 503, headers });
       }
     }
 
@@ -2704,6 +2729,43 @@ export default {
     // POST /api/super/notifications { tenantId | null, title, body, email }: tell one
     // organization (tenantId) or every organization (null) in its console, and
     // with email, email its owner too.
+    // /api/super/status...: the status page's checks and incidents (src/status.ts).
+    if (path === "/api/super/status" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const [components, incidents] = await Promise.all([componentStatuses(env, db), listIncidents(db)]);
+      return new Response(JSON.stringify({ components, incidents }), { headers: jsonHeaders });
+    }
+    if (path === "/api/super/status/incidents" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { title?: unknown; impact?: unknown; body?: unknown };
+      try {
+        body = await request.json<{ title?: unknown; impact?: unknown; body?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const created = await createIncident(db, body, session!.user_id);
+      if ("problem" in created) return jsonError(created.problem, 400, jsonHeaders);
+      await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "status.incident_open", details: `incident=${created.id}` });
+      return new Response(JSON.stringify({ status: "ok", id: created.id, incidents: await listIncidents(db) }), { headers: jsonHeaders });
+    }
+    const incidentMatch = path.match(/^\/api\/super\/status\/incidents\/([0-9a-f-]{36})$/);
+    if (incidentMatch && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { status?: unknown; body?: unknown };
+      try {
+        body = await request.json<{ status?: unknown; body?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const updated = await updateIncident(db, incidentMatch[1], body);
+      if ("problem" in updated) return jsonError(updated.problem, updated.status, jsonHeaders);
+      await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "status.incident_update", details: `incident=${incidentMatch[1]} status=${String(body.status)}` });
+      return new Response(JSON.stringify({ status: "ok", incidents: await listIncidents(db) }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/super/notifications") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -5233,6 +5295,14 @@ export default {
         { headers: htmlHeaders }
       );
     }
+    if (path === "/status") {
+      const at = Math.floor(Date.now() / 1000);
+      const [components, incidents] = await Promise.all([componentStatuses(env, db, at), listIncidents(db, at)]);
+      return new Response(
+        renderPlatformStatusHtml({ baseDomain, contactEmail: "contact@labkiosk.org", ...formChecks, canonicalUrl, nonce }, components, incidents, at),
+        { headers: htmlHeaders }
+      );
+    }
     if (path === "/hardware") {
       const [models, computedAt] = await Promise.all([listPublicHardwareModels(db), hardwareModelsComputedAt(db)]);
       return new Response(
@@ -5516,6 +5586,7 @@ export default {
           legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
           license: isDemoTenant(tenant, session.user_id) ? undefined : licenseState(tenant),
           notifications: await listNotificationsFor(db, tenant.id, session.user_id, { unreadOnly: true, limit: 50 }),
+          incident: await openIncident(db),
           takedowns: {
             homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
             cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))

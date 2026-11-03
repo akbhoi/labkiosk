@@ -392,6 +392,9 @@ export class OrgHub {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // The status page's probe (src/status.ts): answers before binding, so the
+    // probe's own hub never belongs to an organization or stores anything.
+    if (url.pathname === "/ping") return json({ status: "ok" });
     const tenantId = request.headers.get("x-labkiosk-tenant") || "";
     if (!this.bind(tenantId)) {
       return json({ error: "This organization hub belongs to another organization" }, 409);

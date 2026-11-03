@@ -16,6 +16,7 @@ import {
 } from "./ui_admin_legal";
 import type { LicenseState } from "./license";
 import type { NotificationRow } from "./notifications";
+import { escapeAttr, escapeHtml } from "./escape";
 import { renderNotificationsHtml, renderNotificationsScript } from "./ui_admin_notifications";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
@@ -73,6 +74,8 @@ export interface DashboardOptions {
   license?: LicenseState;
   /** The platform's notifications this user has not dismissed, newest first. */
   notifications?: NotificationRow[];
+  /** An open platform incident (src/status.ts), shown above every console page. */
+  incident?: { title: string; impact: "minor" | "major"; status: string } | null;
   nonce: string;
 }
 
@@ -206,7 +209,14 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     (legal ? renderLegalNoticeHtml(legal, labName) : "") +
     (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "") +
     (options.license ? renderLicenseNoticeHtml(options.license, labName) : "") +
-    renderNotificationsHtml(options.notifications ?? []);
+    renderNotificationsHtml(options.notifications ?? []) +
+    (options.incident
+      ? `
+      <div class="callout ${options.incident.impact === "major" ? "callout-danger" : "callout-warning"}" id="incident-banner" role="status">
+        <div><strong>${escapeHtml(options.incident.title)}</strong>
+        <div>We are working on it. Follow the updates on the <a href="${escapeAttr(isDev ? "/status" : `https://${baseDomain}/status`)}" target="_blank" rel="noopener">status page</a>.</div></div>
+      </div>`
+      : "");
   const gated = Boolean(legal?.gated);
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +

@@ -647,6 +647,42 @@ CREATE INDEX IF NOT EXISTS idx_sso_states_expires ON sso_states(expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_states_handoff ON sso_states(handoff_hash);
 CREATE INDEX IF NOT EXISTS idx_power_schedules_tenant ON power_schedules(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_printers_tenant ON printers(tenant_id, position);
+
+CREATE TABLE IF NOT EXISTS status_latest (
+  component TEXT PRIMARY KEY,
+  ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
+  detail TEXT,
+  checked_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS status_daily (
+  component TEXT NOT NULL,
+  day TEXT NOT NULL,
+  checks INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (component, day)
+);
+
+CREATE TABLE IF NOT EXISTS status_incidents (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  impact TEXT NOT NULL CHECK (impact IN ('minor', 'major')),
+  status TEXT NOT NULL CHECK (status IN ('investigating', 'identified', 'monitoring', 'resolved')),
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS status_incident_updates (
+  id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES status_incidents(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('investigating', 'identified', 'monitoring', 'resolved')),
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_incidents_created ON status_incidents(created_at);
+CREATE INDEX IF NOT EXISTS idx_status_incident_updates_incident ON status_incident_updates(incident_id, created_at);
 `;
 
 /**
@@ -861,7 +897,12 @@ const SCHEMA_PROBES: readonly string[] = [
   // 0052: the emailed link that asks an organization to verify its phone by text message.
   "SELECT phone_link_hash, phone_link_expires_at FROM organization_profiles LIMIT 1",
   // 0053: generated console addresses, a chosen one on request, and the dashboard's feature tip.
-  "SELECT address_generated, chosen_subdomain, feature_tip_dismissed_at FROM tenants LIMIT 1"
+  "SELECT address_generated, chosen_subdomain, feature_tip_dismissed_at FROM tenants LIMIT 1",
+  // 0054: the public status page.
+  "SELECT component, ok, checked_at FROM status_latest LIMIT 1",
+  "SELECT component, day, checks, failures FROM status_daily LIMIT 1",
+  "SELECT id, impact, status, resolved_at FROM status_incidents LIMIT 1",
+  "SELECT incident_id, body FROM status_incident_updates LIMIT 1"
 ];
 
 /**

@@ -37,6 +37,7 @@ cloudflare-control/
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── phone_verify.ts                 # Optional Firebase SMS code at registration: the Worker verifies Firebase's ID token (RS256, crypto.subtle)
 │   ├── phone_link.ts                   # Emailed one-time link that verifies an existing organization's phone by SMS (/verify-phone)
+│   ├── status.ts                       # Status checks (5-minute cron), daily counts, incidents; /status, /api/health
 │   ├── addresses.ts                    # Generated console addresses; a chosen one (and the homepage) on request, kept beside it; the feature tip
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
@@ -70,6 +71,8 @@ cloudflare-control/
 │   ├── ui_super_releases.ts            # Its Releases pane (/super/releases): classify, withdraw, revoke
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /content-policy, /dpa, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
+│   ├── ui_status_public.ts             # /status body: component strips and incidents
+│   ├── ui_super_status.ts              # Super Admin -> System -> Status & incidents
 │   ├── ui_verify_phone.ts              # /verify-phone: texts the number on record and sends Firebase's token
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/

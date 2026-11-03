@@ -45,9 +45,10 @@
 	// unless both secrets are set. There is no default super admin account in production.
 	// Hourly housekeeping handled by the `scheduled` export in src/index.ts:
 	// expired sessions, stale sign-in throttle rows, and audit entries older than
-	// 180 days moved to R2.
+	// 180 days moved to R2. Every five minutes: the checks behind /status
+	// (src/status.ts, STATUS_CRON in src/index.ts), and nothing else.
 	"triggers": {
-		"crons": ["0 * * * *"]
+		"crons": ["0 * * * *", "*/5 * * * *"]
 	},
 	// Outbound email (signup codes, approval decisions, Super Admin replies) through
 	// Cloudflare Email Service; src/mail.ts. Sending also needs, in the dashboard:

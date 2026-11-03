@@ -378,6 +378,18 @@ verification link**: the contact gets a one-time link, valid for 7 days, to `/ve
 texts the number on record and records it as verified (`src/phone_link.ts`). The page loads
 Firebase the same way, and only the SHA-256 of the link's token is stored.
 
+### Status page and outside monitoring
+
+`/status` shows whether the console, workstation connections, email and updates are working,
+from checks a 5-minute cron runs (`"*/5 * * * *"` in `wrangler.jsonc`, `src/status.ts`), and the
+incidents posted under Super Admin → System → Status & incidents. An open incident is also shown
+as a banner in every organization's console. Nothing is emailed.
+
+The Worker cannot report its own outage, so point an outside uptime monitor at
+`https://<platform domain>/api/health`. It answers `200 {"status":"ok"}` while the Worker and D1
+answer, and `503` when D1 does not. Any free HTTP monitor that checks every few minutes works;
+link its public page from your support documents if it has one.
+
 ### Staff sign-in with Google or Microsoft (optional)
 
 Organizations can let their staff sign in with Google Workspace or Microsoft Entra ID (OpenID
