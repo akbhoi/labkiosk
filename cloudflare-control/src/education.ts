@@ -16,6 +16,7 @@
  */
 
 import { sha256Hex, timingSafeEqual } from "./auth";
+import { uniformBelow } from "./conversations";
 import { isLocalEnvironment } from "./database";
 import { safeHttpUrl } from "./escape";
 import type { Env } from "./types";
@@ -217,8 +218,7 @@ async function deleteCertificate(env: Env, key: string): Promise<void> {
 // ----------------------------------------------------------------- the flow
 
 function sixDigits(): string {
-  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
-  return String(n).padStart(6, "0");
+  return String(uniformBelow(1_000_000)).padStart(6, "0");
 }
 
 async function codeHash(id: string, code: string): Promise<string> {
