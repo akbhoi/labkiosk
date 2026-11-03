@@ -117,6 +117,8 @@ export interface Tenant {
   license_plan?: LicensePlan | null;
   /** Unix seconds the license ends; NULL: no end date (0037). */
   license_expires_at?: number | null;
+  /** When the organization started its one free trial (0058, src/plans.ts). */
+  trial_started_at?: number | null;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
@@ -463,6 +465,15 @@ export interface Env {
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_API_KEY?: string;
   FIREBASE_AUTH_DOMAIN?: string;
+  /**
+   * Razorpay, for paying for a subscription online (src/billing.ts). The key id
+   * and secret create Payment Links and check their redirect's signature; the
+   * webhook secret checks Razorpay's webhook. Without the key id and secret,
+   * subscribing asks sales instead.
+   */
+  RAZORPAY_KEY_ID?: string;
+  RAZORPAY_KEY_SECRET?: string;
+  RAZORPAY_WEBHOOK_SECRET?: string;
 }
 
 /** The one Workers AI method the Worker uses. */

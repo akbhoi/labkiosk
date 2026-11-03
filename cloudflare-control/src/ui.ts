@@ -21,7 +21,8 @@ import type { MonthlySummary } from "./monthly_summary";
 import { renderNotificationsHtml, renderNotificationsScript } from "./ui_admin_notifications";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
-import { DEFAULT_WORKSTATION_LIMIT } from "./db";
+import { entitlement } from "./plans";
+import { buildPlanPage } from "./ui_admin_plan";
 import {
   AdminPageInput,
   AdminPageParts,
@@ -39,6 +40,7 @@ export type AdminPageId =
   | "exams"
   | "apps-web"
   | "staff"
+  | "plan"
   | "settings";
 
 export interface DashboardOptions {
@@ -89,6 +91,7 @@ const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPagePar
   exams: buildExamsPage,
   "apps-web": buildAppsWebPage,
   staff: buildStaffPage,
+  plan: buildPlanPage,
   settings: buildSettingsPage
 };
 
@@ -155,6 +158,12 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       badge: staff.length
     },
     {
+      id: "plan",
+      label: "Plan",
+      href: `/admin/plan${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
+    },
+    {
       id: "settings",
       label: "Settings",
       href: `/admin/settings${tenantParam}`,
@@ -176,6 +185,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
         }
         // Exams are run by whoever runs the workstations.
         if (item.id === "exams") return userPermissions.includes("workstations");
+        // The plan is the organization's, like its settings.
+        if (item.id === "plan") return userPermissions.includes("settings");
         // Everyone opens Settings: without the permission it holds only their own sign-in.
         return item.id === "settings" || userPermissions.includes(item.id);
       });
@@ -187,7 +198,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   ];
   if (tenant) {
     const enrolled = options.enrolledWorkstations ?? 0;
-    const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
+    const limit = entitlement(tenant).limit;
     stats.push({
       label: "Enrolled",
       value: `${enrolled} of ${limit}`,
@@ -223,7 +234,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const legalHtml =
     (legal ? renderLegalNoticeHtml(legal, labName) : "") +
     (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "") +
-    (options.license ? renderLicenseNoticeHtml(options.license, labName) : "") +
+    (options.license ? renderLicenseNoticeHtml(options.license, labName, `/admin/plan${tenantParam}`) : "") +
     renderNotificationsHtml(options.notifications ?? []) +
     (options.incident
       ? `

@@ -42,6 +42,11 @@ cloudflare-control/
 │   ├── monthly_summary.ts              # Last month in numbers on Workstations, from recorded usage; never emailed
 │   ├── exams.ts                        # Exam mode: schedule, hold a group on the exam site, events, report, purge
 │   ├── partners.ts                     # Certified hardware and the reseller directory on /hardware
+│   ├── plans.ts                        # Plans and prices, the workstation limit, licensed and unlicensed workstations
+│   ├── plan_sync.ts                    # Apply a plan to the workstations (rebalance, reset, notify the hub)
+│   ├── plan_routes.ts                  # /api/plan, /api/billing (Razorpay), /api/super/education
+│   ├── education.ts                    # Education applications: emailed code, certificate in R2, review
+│   ├── billing.ts                      # Razorpay Payment Links, signatures, recording a payment
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback
@@ -77,6 +82,8 @@ cloudflare-control/
 │   ├── ui_status_public.ts             # /status body: component strips and incidents
 │   ├── ui_super_status.ts              # Super Admin -> System -> Status & incidents
 │   ├── ui_admin_exams.ts               # Admin -> Exams: schedule, live board, CSV report
+│   ├── ui_admin_plan.ts                # Admin -> Plan: trial, subscribe, apply for Education, move licences
+│   ├── ui_super_education.ts           # Super Admin -> Tasks -> Education: review applications
 │   ├── ui_verify_phone.ts              # /verify-phone: texts the number on record and sends Firebase's token
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/

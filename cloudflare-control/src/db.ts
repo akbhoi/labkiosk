@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   CHECK (address_generated IN (0, 1)),
   chosen_subdomain TEXT,
   feature_tip_dismissed_at INTEGER,
-  summary_dismissed_month TEXT
+  summary_dismissed_month TEXT,
+  trial_started_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -743,6 +744,62 @@ CREATE TABLE IF NOT EXISTS resellers (
 
 CREATE INDEX IF NOT EXISTS idx_resellers_status ON resellers(status, state, city);
 CREATE INDEX IF NOT EXISTS idx_resellers_email ON resellers(email);
+
+CREATE TABLE IF NOT EXISTS unlicensed_workstations (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  since INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, client_id)
+);
+
+CREATE TABLE IF NOT EXISTS education_applications (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  institution TEXT NOT NULL,
+  board TEXT NOT NULL,
+  affiliation_number TEXT NOT NULL,
+  website TEXT NOT NULL,
+  email TEXT NOT NULL,
+  code_hash TEXT,
+  code_expires_at INTEGER,
+  code_attempts INTEGER NOT NULL DEFAULT 0,
+  email_verified_at INTEGER,
+  certificate_key TEXT,
+  certificate_name TEXT NOT NULL,
+  certificate_type TEXT NOT NULL,
+  certificate_size INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'verifying'
+  CHECK (status IN ('verifying', 'pending', 'approved', 'rejected')),
+  decision_reason TEXT,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  submitted_at INTEGER,
+  decided_at INTEGER,
+  decided_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_education_applications_tenant ON education_applications(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_education_applications_status ON education_applications(status, submitted_at);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  link_id TEXT UNIQUE,
+  short_url TEXT,
+  period TEXT NOT NULL CHECK (period IN ('month', 'year')),
+  extra_workstations INTEGER NOT NULL CHECK (extra_workstations >= 0),
+  subtotal_paise INTEGER NOT NULL,
+  gst_paise INTEGER NOT NULL,
+  total_paise INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paid')),
+  razorpay_payment_id TEXT,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  paid_at INTEGER,
+  period_ends_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_tenant ON payments(tenant_id, created_at);
 `;
 
 /**
@@ -970,7 +1027,12 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT exam_id, client_id, event, at FROM exam_events LIMIT 1",
   // 0057: certified hardware and resellers.
   "SELECT vendor_key, model_key, note, certified_at FROM certified_hardware LIMIT 1",
-  "SELECT id, company, phone, state, city, stocks, status, conversation_id FROM resellers LIMIT 1"
+  "SELECT id, company, phone, state, city, stocks, status, conversation_id FROM resellers LIMIT 1",
+  // 0058: plans, education applications and payments.
+  "SELECT trial_started_at FROM tenants LIMIT 1",
+  "SELECT tenant_id, client_id, since FROM unlicensed_workstations LIMIT 1",
+  "SELECT id, board, affiliation_number, code_hash, certificate_key, status, decision_reason FROM education_applications LIMIT 1",
+  "SELECT id, link_id, period, extra_workstations, total_paise, status, period_ends_at FROM payments LIMIT 1"
 ];
 
 /**
@@ -1351,7 +1413,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_takedown_reason",
   "license_plan",
   "license_expires_at",
-  "remote_control_revoked_at"
+  "remote_control_revoked_at",
+  "trial_started_at"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */
@@ -2193,12 +2256,12 @@ export async function countEnrolledWorkstations(db: D1Database, tenantId: string
  * workstation limit. A workstation that still holds a valid token is always
  * let back in, so lowering the limit never strands one already enrolled.
  * The limit check and the insert are one statement: two workstations enrolling
- * at once cannot both take the last place. `existingOnly` (an expired license)
- * lets only such a workstation back in.
+ * at once cannot both take the last place. `limit` is what the plan allows
+ * now (src/plans.ts entitlement), not necessarily tenants.workstation_limit.
  */
 export async function createDeviceToken(
   db: D1Database,
-  data: { tenantId: string; clientId: string; existingOnly?: boolean }
+  data: { tenantId: string; clientId: string; limit: number }
 ): Promise<{ token: string; device: DeviceToken } | null> {
   const token = generateDeviceToken();
   const tokenHash = await sha256Hex(token);
@@ -2210,8 +2273,7 @@ export async function createDeviceToken(
       `INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked)
        SELECT ?, ?, ?, ?, ?, ?, 0
        WHERE EXISTS (SELECT 1 FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0)
-          OR (? = 0 AND (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0)
-             < (SELECT workstation_limit FROM tenants WHERE id = ?))`
+          OR (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0) < ?`
     )
     .bind(
       id,
@@ -2222,9 +2284,8 @@ export async function createDeviceToken(
       now,
       data.tenantId,
       data.clientId,
-      data.existingOnly ? 1 : 0,
       data.tenantId,
-      data.tenantId
+      data.limit
     )
     .run();
   if (Number(inserted.meta?.changes ?? 0) === 0) return null;

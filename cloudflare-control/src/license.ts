@@ -2,19 +2,18 @@
  * The license an organization runs under (tenants.license_plan and
  * license_expires_at, migration 0037), as the platform recorded it.
  *
- * Once the license has expired the organization enrols no new workstation and
- * opens no Remote Control session. Enrolled workstations keep booting into the
- * kiosk and getting updates, a workstation that still holds its token enrols
- * again, and the console says why, so nothing is stranded.
+ * Once the license has expired the organization is on the Free plan
+ * (src/plans.ts): its workstations beyond the Free limit show a notice instead
+ * of the portal, and it opens no Remote Control session until it renews.
  */
 
 import type { LicensePlan, Tenant } from "./types";
 
 export const LICENSE_PLANS: ReadonlyArray<{ id: LicensePlan; label: string }> = [
   { id: "education", label: "Education" },
-  { id: "evaluation", label: "Evaluation" },
-  { id: "subscriber", label: "Subscriber" },
-  { id: "commercial", label: "Commercial" }
+  { id: "evaluation", label: "Trial" },
+  { id: "subscriber", label: "Subscription" },
+  { id: "commercial", label: "Custom" }
 ];
 
 /** Days before the end date from which the console reminds the organization. */
@@ -26,7 +25,7 @@ export function isLicensePlan(value: unknown): value is LicensePlan {
 }
 
 export function licensePlanLabel(plan: LicensePlan | null | undefined): string {
-  return LICENSE_PLANS.find((p) => p.id === plan)?.label ?? "Not recorded";
+  return LICENSE_PLANS.find((p) => p.id === plan)?.label ?? "Free";
 }
 
 /** "2027-06-30" to Unix seconds at 00:00 UTC that day; null for anything that is not a real date. */
@@ -65,5 +64,5 @@ export function licenseState(tenant: Pick<Tenant, "license_plan" | "license_expi
 export function licenseExpiredMessage(tenant: Pick<Tenant, "name" | "license_plan" | "license_expires_at">, now?: number): string | null {
   const state = licenseState(tenant, now);
   if (!state.expired || state.expiresAt === null) return null;
-  return `The Lab Kiosk license of ${tenant.name} ended on ${licenseDate(state.expiresAt)}. Enrolled workstations keep working; ask Lab Kiosk to renew it to enrol more or use Remote Control.`;
+  return `The ${licensePlanLabel(state.plan)} plan of ${tenant.name} ended on ${licenseDate(state.expiresAt)}, and it is on the Free plan now. Renew it under Plan in the console to use Remote Control again.`;
 }

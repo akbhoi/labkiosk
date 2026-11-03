@@ -55,6 +55,10 @@ import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhon
 import { checkComponents, componentStatuses, recordStatusChecks } from "../src/status";
 import { monthlySummaryFor } from "../src/monthly_summary";
 import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
+import { PRICING, entitlement, quote, rebalanceLicences } from "../src/plans";
+import { periodEnd } from "../src/billing";
+import { emailMatchesWebsite } from "../src/education";
+import nodeCrypto from "node:crypto";
 import { hostSubdomain, isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -590,9 +594,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(specs, /class="specs-table-container"/);
 
     const pricing = await (await call("/pricing")).text();
-    assert.match(pricing, /Transparent Licensing/);
-    assert.match(pricing, /Accredited Education Grant/);
-    assert.match(pricing, /Commercial &amp; Large Fleet/);
+    assert.match(pricing, /Plans &amp; Pricing/);
+    assert.match(pricing, /<h2 class="pricing-tier">Free<\/h2>[\s\S]*Up to 5 workstations/);
+    assert.match(pricing, /&#8377;1,999 <small>a month<\/small>[\s\S]*&#8377;19,990 a year/);
+    assert.match(pricing, /&#8377;39 a month \(&#8377;390 a year\) for each one more, up to 200/);
+    assert.match(pricing, /15 days free/);
+    assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*after verification/);
+    assert.match(pricing, /href="\/contact\?reason=sales">Contact sales/);
+    assert.doesNotMatch(pricing, /Education Grant|50%/, "the old grant and the discount are gone");
 
     const download = await (await call("/download")).text();
     assert.match(download, /Download/);
@@ -3147,6 +3156,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/admin/plan?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
@@ -3318,7 +3328,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // The allowlist tab called /api/settings/whitelist, which never existed: add,
     // remove and every preset pack answered 404, and the markup tests were happy.
     const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
-    const router = fs.readFileSync(path.join(srcDir, "index.ts"), "utf8");
+    const router = ["index.ts", "plan_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
     const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
     const called = new Set<string>();
     for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
@@ -3689,7 +3699,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-OVER" }));
     assert.equal(refused.res.status, 403, "one more workstation is refused");
-    assert.match(refused.data.error, new RegExp(`all ${enrolled} workstations`));
+    assert.match(refused.data.error, new RegExp(`all ${enrolled} workstations? its`));
     assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
 
     const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-01" }));
@@ -6469,17 +6479,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
   });
 
-  test("An ended license stops new enrolments and Remote Control, and the consoles say so", async () => {
+  test("An ended plan drops to Free: workstations beyond it show a notice, Remote Control stops, and the consoles say so", async () => {
     const db = getDatabase(mockEnv);
     const tenantId = await greenwoodId();
     const admin = await superCookie();
     const license = (body: Record<string, unknown>, cookie?: string) => call("/api/super/tenants/license", { ...json(body), cookie });
     const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const before = await findTenantBySubdomain(db, "greenwood");
 
     assert.ok([401, 403].includes((await license({ tenantId, plan: "commercial", expiresOn: null })).status), "an anonymous caller is refused");
-    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: null }, orgSessionCookie)).status, 403, "an organization cannot set its own license");
+    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: null }, orgSessionCookie)).status, 403, "an organization cannot set its own plan");
     for (const body of [
-      { tenantId, plan: "free", expiresOn: null },
+      { tenantId, plan: "gold", expiresOn: null },
       { tenantId, plan: null, expiresOn: null },
       { tenantId, plan: "commercial", expiresOn: "2027-02-30" },
       { tenantId, plan: "commercial", expiresOn: "2027/01/01" },
@@ -6491,52 +6502,91 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/super/tenants/license", { ...json(null), cookie: admin })).status, 404, "a null body is an empty request");
     assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
 
-    const first = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
-    assert.equal(first.res.status, 200);
+    // Room for more workstations than Free covers; those from earlier tests count as seen long ago.
+    await updateTenant(db, tenantId, { workstation_limit: 200 });
+    await db.prepare("UPDATE client_devices SET last_seen = 0 WHERE tenant_id = ?").bind(tenantId).run();
+    const tokens = new Map<string, string>();
+    for (let i = 1; i <= PRICING.freeWorkstations + 2; i++) {
+      const clientId = `PC-PLAN-${i}`;
+      const enrolled = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
+      assert.equal(enrolled.res.status, 200, clientId);
+      tokens.set(clientId, enrolled.data.deviceToken);
+      // Seen in order: PC-PLAN-1 least recently.
+      await call("/api/telemetry?tenant=greenwood", { ...json({ clientId }), bearer: enrolled.data.deviceToken });
+      await db.prepare("UPDATE client_devices SET last_seen = ? WHERE tenant_id = ? AND client_id = ?").bind(1_000 + i, tenantId, clientId).run();
+    }
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    assert.ok(enrolled > PRICING.freeWorkstations);
+
     const ended = day(-1);
     assert.equal((await license({ tenantId, plan: "subscriber", expiresOn: ended }, admin)).status, 200);
-    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    const unlicensed = await db.prepare("SELECT client_id FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).all<{ client_id: string }>();
+    assert.equal(unlicensed.results.length, enrolled - PRICING.freeWorkstations, "Free covers five; the rest wait");
+    const waiting = new Set(unlicensed.results.map((r) => r.client_id));
+    assert.ok(!waiting.has(`PC-PLAN-${PRICING.freeWorkstations + 2}`), "the workstation seen most recently keeps its licence");
+
     const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
     assert.equal(refused.res.status, 403, "no new workstation");
-    assert.match(refused.data.error, new RegExp(`ended on ${ended}\\. Enrolled workstations keep working`));
-    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
-    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
+    assert.match(refused.data.error, /its Free plan allows/);
+    const paused = [...waiting].find((id) => tokens.has(id))!;
+    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: paused }));
     assert.equal(again.res.status, 200, "a workstation that is already enrolled can enrol again");
-    const telemetry = await call("/api/telemetry?tenant=greenwood", { ...json({ clientId: "PC-LICENSED" }), bearer: again.data.deviceToken });
-    assert.equal(telemetry.status, 200, "and keeps working");
+    const notice = await callJson("/api/telemetry?tenant=greenwood", { ...json({ clientId: paused }), bearer: again.data.deviceToken });
+    assert.equal(notice.res.status, 200);
+    assert.match(notice.data.targetUrl, /\/licence-needed\?tenant=greenwood$/, "a workstation beyond the plan shows the notice");
+    assert.equal(notice.data.broadcastUrl, notice.data.targetUrl);
+    assert.deepEqual(notice.data.whitelist, [new URL(notice.data.targetUrl).hostname], "and nothing else");
+    const page = await call(`/licence-needed?tenant=greenwood`);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /<strong>Greenwood Holdings<\/strong> has more workstations enrolled than its Lab Kiosk plan covers/);
 
     const viewer = await callJson("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie });
     assert.equal(viewer.res.status, 403, "no Remote Control session");
-    assert.match(viewer.data.error, /license of .* ended on/);
+    assert.match(viewer.data.error, /Subscription plan of .* ended on/);
     const opened = await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "WS-R" }), cookie: orgSessionCookie });
     assert.equal(opened.status, 403);
 
     const consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(consolePage, /id="license-notice"[\s\S]*License ended/);
+    assert.match(consolePage, /id="license-notice"[\s\S]*Plan ended/);
     const superPage = await (await call("/super/organizations", { cookie: admin })).text();
-    assert.match(superPage, new RegExp(`Subscriber, ended ${ended}`));
+    assert.match(superPage, new RegExp(`Subscription, ended ${ended}`));
     assert.match(superPage, /class="menu-item btn-license"/);
+
+    // The administrator chooses which workstations keep their licence.
+    const moved = await callJson("/api/plan/licence?tenant=greenwood", { ...json({ clientId: paused }), cookie: orgSessionCookie });
+    assert.equal(moved.res.status, 200, JSON.stringify(moved.data));
+    assert.equal(moved.data.displaced, "PC-PLAN-" + [...Array(PRICING.freeWorkstations + 2).keys()].map((i) => i + 1).find((i) => !waiting.has(`PC-PLAN-${i}`)));
+    const back = await callJson("/api/telemetry?tenant=greenwood", { ...json({ clientId: paused }), bearer: again.data.deviceToken });
+    assert.doesNotMatch(back.data.targetUrl, /licence-needed/, "the workstation given the licence leaves the notice");
+    assert.equal((await callJson("/api/plan/licence?tenant=greenwood", { ...json({ clientId: paused }), cookie: orgSessionCookie })).res.status, 409);
 
     const soon = day(10);
     assert.equal((await license({ tenantId, plan: "commercial", expiresOn: soon }, admin)).status, 200);
+    const left = await db.prepare("SELECT COUNT(*) AS n FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).first<{ n: number }>();
+    assert.equal(Number(left!.n), 0, "a plan in force licenses them all again");
     const reminded = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(reminded, new RegExp(`License ending soon[\\s\\S]*ends on ${soon}`));
+    assert.match(reminded, new RegExp(`Plan ending soon[\\s\\S]*ends on ${soon}`));
     const allowed = await call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
-    assert.equal(allowed.status, 200, "a license in force enrols as before");
-    for (const clientId of ["PC-LAPSED", "PC-LICENSED"]) {
-      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
-    }
+    assert.equal(allowed.status, 200, "a plan in force enrols as before");
 
     assert.equal((await license({ tenantId, plan: "education", expiresOn: null }, admin)).status, 200);
     const quiet = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.doesNotMatch(quiet, /id="license-notice"/, "no end date, no notice");
     assert.equal((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie })).status, 200);
 
+    assert.equal((await license({ tenantId, plan: "free", expiresOn: "2030-01-01" }, admin)).status, 200, "free takes no end date");
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null);
+
     const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
     const entries = logs.logs as any[];
-    assert.ok(entries.some((l) => l.action === "device.enroll_license" && /client=PC-LAPSED/.test(l.details)));
+    assert.ok(entries.some((l) => l.action === "device.enroll_limit" && /client=PC-LAPSED .*plan=free/.test(l.details)));
     assert.ok(entries.some((l) => l.action === "tenant.license" && /plan=subscriber expires=/.test(l.details)));
-    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null });
+    assert.ok(entries.some((l) => l.action === "plan.licence_move"));
+    for (const clientId of [...tokens.keys(), "PC-LAPSED"]) {
+      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    }
+    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null, workstation_limit: before!.workstation_limit });
+    await db.prepare("DELETE FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).run();
   });
 
   test("Only the organization's administrators use Remote Control, never other staff", async () => {
@@ -8339,6 +8389,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/admin/plan?tenant=greenwood", orgSessionCookie],
       ["/super", superSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
@@ -10616,6 +10667,286 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     assert.equal((await decide("reject")).res.status, 200, "taken off the directory");
     assert.doesNotMatch(await (await call("/hardware")).text(), /Where to buy/);
+  });
+
+  // ------------------------------------------------------- plans and billing
+
+  const restorePlan = async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null, workstation_limit: 45, trial_started_at: null });
+    await db.prepare("DELETE FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).run();
+    return { db, tenantId };
+  };
+  const hmac = (secret: string, message: string) => nodeCrypto.createHmac("sha256", secret).update(message).digest("hex");
+
+  test("A plan's limit, a lapsed plan, prices with GST and the paid period are worked out exactly", () => {
+    const now = 1_800_000_000;
+    assert.deepEqual(
+      { ...entitlement({ license_plan: null, license_expires_at: null, workstation_limit: 5 }, now) },
+      { kind: "free", label: "Free", limit: 5, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
+    );
+    const trial = entitlement({ license_plan: "evaluation", license_expires_at: now + 86_400, workstation_limit: 45 }, now);
+    assert.equal(trial.kind, "trial");
+    assert.equal(trial.limit, 45);
+    assert.equal(trial.endingSoon, true);
+    const lapsed = entitlement({ license_plan: "subscriber", license_expires_at: now - 1, workstation_limit: 60 }, now);
+    assert.deepEqual([lapsed.kind, lapsed.limit, lapsed.lapsed, lapsed.lapsedFrom], ["free", PRICING.freeWorkstations, true, "subscription"]);
+    assert.equal(entitlement({ license_plan: "commercial", license_expires_at: now - 1, workstation_limit: 3 }, now).limit, 3, "Free never raises a lower limit");
+
+    assert.deepEqual(quote("month", 0), { period: "month", extraWorkstations: 0, workstations: 45, base: 199_900, extras: 0, subtotal: 199_900, gst: 35_982, total: 235_882 });
+    const yearly = quote("year", 10);
+    assert.deepEqual([yearly.workstations, yearly.subtotal, yearly.gst, yearly.total], [55, 1_999_000 + 390_000, 430_020, 2_819_020]);
+
+    const jan31 = Date.UTC(2027, 0, 31, 10, 0, 0) / 1000;
+    assert.equal(new Date(periodEnd(jan31, "month") * 1000).toISOString(), "2027-02-28T10:00:00.000Z", "a month from 31 January is the end of February");
+    assert.equal(new Date(periodEnd(Date.UTC(2028, 1, 29) / 1000, "year") * 1000).toISOString(), "2029-02-28T00:00:00.000Z");
+    assert.equal(new Date(periodEnd(Date.UTC(2027, 4, 15) / 1000, "month") * 1000).toISOString(), "2027-06-15T00:00:00.000Z");
+
+    assert.ok(emailMatchesWebsite("office@greenwoodacademy.in", "https://www.greenwoodacademy.in/"));
+    assert.ok(emailMatchesWebsite("it@mail.greenwoodacademy.in", "https://greenwoodacademy.in"));
+    assert.ok(!emailMatchesWebsite("office@greenwoodacademy.in", "https://greenwood.example"), "another domain");
+    assert.ok(!emailMatchesWebsite("someone@gmail.com", "https://gmail.com"), "a free mail service proves nothing");
+    assert.ok(!emailMatchesWebsite("office@evilgreenwoodacademy.in", "https://greenwoodacademy.in"), "a lookalike is not a subdomain");
+  });
+
+  test("Licences fit the limit: the workstations seen least recently wait, and get theirs back first in, most recent first", async () => {
+    const { db, tenantId } = await restorePlan();
+    const ids = ["PL-A", "PL-B", "PL-C"];
+    await withRoom(3, async () => {
+      for (const [i, clientId] of ids.entries()) {
+        await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
+        await call("/api/telemetry?tenant=greenwood", { ...json({ clientId }), bearer: (await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }))).data.deviceToken });
+        await db.prepare("UPDATE client_devices SET last_seen = ? WHERE tenant_id = ? AND client_id = ?").bind(2_000_000_000 + i, tenantId, clientId).run();
+      }
+      const enrolled = await countEnrolledWorkstations(db, tenantId);
+      const now = 1_900_000_000;
+      const down = await rebalanceLicences(db, tenantId, enrolled - 2, now);
+      assert.equal(down.unlicensed.length, 2);
+      assert.ok(!down.unlicensed.includes("PL-C") && !down.unlicensed.includes("PL-B"), "the two seen most recently keep theirs");
+      assert.deepEqual(await rebalanceLicences(db, tenantId, enrolled - 2, now + 60), { unlicensed: [], relicensed: [] }, "sticky while nothing changes");
+      const up = await rebalanceLicences(db, tenantId, enrolled - 1, now + 120);
+      assert.equal(up.relicensed.length, 1);
+      const all = await rebalanceLicences(db, tenantId, enrolled, now + 180);
+      assert.equal(all.relicensed.length, 1);
+      for (const clientId of ids) await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    });
+    await restorePlan();
+  });
+
+  test("An organization on Free starts its one 15-day trial of 45 workstations; staff without settings cannot", async () => {
+    const { db, tenantId } = await restorePlan();
+    await updateTenant(db, tenantId, { workstation_limit: PRICING.freeWorkstations });
+    assert.ok([401, 403].includes((await call("/api/plan/trial?tenant=greenwood", json({}))).status), "an anonymous caller is refused");
+    const { data: staffData } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Plan operator", email: "plan-operator@greenwood.example", password: "StaffPassword123!", role: "operator", permissions: ["workstations"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(staffData.status, "ok", JSON.stringify(staffData));
+    const operator = await sessionOf(await signIn({ email: "plan-operator@greenwood.example", password: "StaffPassword123!" }));
+    assert.equal((await call("/api/plan?tenant=greenwood", { cookie: operator })).status, 403, "the plan needs the settings permission");
+    assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: operator })).status, 403);
+    assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status, 403, "a cross-site request is refused");
+
+    const before = (await callJson("/api/plan?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.equal(before.plan.kind, "free");
+    assert.equal(before.plan.limit, PRICING.freeWorkstations);
+    assert.equal(before.trial.refusal, null);
+    assert.equal(before.online, false, "Razorpay is off without its keys");
+
+    const started = await callJson("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(started.res.status, 200, JSON.stringify(started.data));
+    const tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+    assert.equal(tenant.license_plan, "evaluation");
+    assert.equal(Number(tenant.workstation_limit), PRICING.includedWorkstations);
+    const days = (Number(tenant.license_expires_at) - Math.floor(Date.now() / 1000)) / 86_400;
+    assert.ok(days > 14.99 && days <= 15, `ends in 15 days, not ${days}`);
+    const after = (await callJson("/api/plan?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.equal(after.plan.label, "Trial");
+    assert.match(after.trial.refusal, /already had its free trial/);
+    const again = await callJson("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(again.res.status, 409);
+
+    // Once it ends, Free again, and still no second trial.
+    await updateTenant(db, tenantId, { license_expires_at: Math.floor(Date.now() / 1000) - 1 });
+    assert.equal((await callJson("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).res.status, 409);
+
+    const page = await call("/admin/plan?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /<h1 class="page-title">Plan<\/h1>/);
+    assert.match(html, /href="\/admin\/plan[^"]*"[^>]*data-nav="plan"/, "Plan is in the navigation");
+    assert.match(html, /Start the 15-day trial/);
+    assert.match(html, /&#8377;|₹/);
+    const operatorPage = await call("/admin/plan?tenant=greenwood", { cookie: operator, redirect: "manual" });
+    assert.notEqual(operatorPage.status, 200, "staff without settings are sent elsewhere");
+    await restorePlan();
+  });
+
+  test("An education application proves the institution's address with a code; the platform reads the certificate and decides", async () => {
+    const { db, tenantId } = await restorePlan();
+    await updateTenant(db, tenantId, { workstation_limit: PRICING.freeWorkstations });
+    const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46]);
+    const apply = async (fields: Record<string, string>, file: { bytes: Uint8Array; type: string; name: string } | null, cookie = orgSessionCookie) => {
+      const form = new FormData();
+      for (const [k, v] of Object.entries({
+        institution: "Greenwood Academy",
+        board: "CBSE",
+        affiliationNumber: "1530123",
+        website: "https://www.greenwoodacademy.in",
+        email: "office@greenwoodacademy.in",
+        ...fields
+      })) form.set(k, v);
+      if (file) form.set("certificate", new File([file.bytes], file.name, { type: file.type }));
+      const res = await worker.fetch(new Request(`${BASE}/api/plan/education?tenant=greenwood`, { method: "POST", body: form, headers: { Cookie: cookie } }), mockEnv);
+      return { res, data: (await res.json()) as any };
+    };
+    const cert = { bytes: pdf, type: "application/pdf", name: "affiliation.pdf" };
+    for (const [fields, file, pattern] of [
+      [{ email: "principal@gmail.com" }, cert, /own domain/],
+      [{ email: "office@other.example" }, cert, /own domain/],
+      [{ website: "not a site" }, cert, /website/],
+      [{ affiliationNumber: "" }, cert, /affiliation/],
+      [{}, null, /certificate/],
+      [{}, { bytes: new Uint8Array([1, 2, 3, 4]), type: "application/pdf", name: "fake.pdf" }, /not a real PDF/],
+      [{}, { bytes: pdf, type: "text/html", name: "x.html" }, /PDF, JPEG or PNG/]
+    ] as const) {
+      const { res, data } = await apply(fields as Record<string, string>, file as any);
+      assert.equal(res.status, 400, JSON.stringify(fields));
+      assert.match(data.error, pattern);
+    }
+
+    const sent = await apply({}, cert);
+    assert.equal(sent.res.status, 200, JSON.stringify(sent.data));
+    assert.equal(sent.data.application.status, "verifying");
+    const code = /(\d{6}) is the code/.exec(lastMailTo("office@greenwoodacademy.in").text)![1];
+    const verify = (body: Record<string, unknown>) => callJson("/api/plan/education/verify?tenant=greenwood", { ...json(body), cookie: orgSessionCookie });
+    const wrong = await verify({ id: sent.data.application.id, code: code === "000000" ? "111111" : "000000" });
+    assert.equal(wrong.res.status, 400);
+    const confirmed = await verify({ id: sent.data.application.id, code });
+    assert.equal(confirmed.res.status, 200, JSON.stringify(confirmed.data));
+    assert.equal(confirmed.data.application.status, "pending");
+    assert.equal((await verify({ id: sent.data.application.id, code })).res.status, 409, "a code works once");
+    assert.equal((await apply({}, cert)).res.status, 409, "one application waits at a time");
+
+    const id = sent.data.application.id as string;
+    assert.equal((await call("/api/super/education", { cookie: orgSessionCookie })).status, 403);
+    const list = await callJson("/api/super/education", { cookie: superSessionCookie });
+    const row = (list.data.applications as any[]).find((a) => a.id === id);
+    assert.ok(row && row.status === "pending" && row.organization === "Greenwood Holdings" && row.hasCertificate);
+    const tasks = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
+    assert.match(tasks, /id="pane-education"/);
+    assert.match(tasks, /data-action="tab-education"[\s\S]*?>1</, "the waiting application is counted");
+
+    const file = await call(`/api/super/education/${id}/certificate`, { cookie: superSessionCookie });
+    assert.equal(file.status, 200);
+    assert.equal(file.headers.get("content-type"), "application/pdf");
+    assert.match(file.headers.get("content-security-policy") || "", /^sandbox/);
+    assert.deepEqual(new Uint8Array(await file.arrayBuffer()), pdf);
+    assert.equal((await call(`/api/super/education/${id}/certificate`, { cookie: orgSessionCookie })).status, 403);
+
+    const decide = (body: Record<string, unknown>, cookie = superSessionCookie) => callJson("/api/super/education/decide", { ...json(body), cookie });
+    assert.equal((await decide({ id, decision: "approve" }, orgSessionCookie)).res.status, 403);
+    assert.equal((await decide({ id, decision: "reject" })).res.status, 400, "a rejection says why");
+    const approved = await decide({ id, decision: "approve" });
+    assert.equal(approved.res.status, 200, JSON.stringify(approved.data));
+    const tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+    assert.equal(tenant.license_plan, "education");
+    assert.equal(Number(tenant.workstation_limit), PRICING.educationWorkstations);
+    const days = (Number(tenant.license_expires_at) - Math.floor(Date.now() / 1000)) / 86_400;
+    assert.ok(days > 364.99 && days <= 365);
+    assert.ok(localOutbox().some((m) => m.subject === "Your Education plan is approved"), "the owner is emailed");
+    assert.equal((await decide({ id, decision: "reject", reason: "Too late now" })).res.status, 409);
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    for (const action of ["plan.education_apply", "plan.education_submit", "plan.education_approve"]) {
+      assert.ok((logs.logs as any[]).some((l) => l.action === action), action);
+    }
+    await db.prepare("DELETE FROM education_applications WHERE tenant_id = ?").bind(tenantId).run();
+    await restorePlan();
+  });
+
+  test("A subscription is paid through a Razorpay link: the signed return or webhook extends the plan once", async () => {
+    const { db, tenantId } = await restorePlan();
+    const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };
+    const send = (path: string, init: RequestInit & { cookie?: string } = {}) => worker.fetch(request(path, init), env);
+
+    const off = await callJson("/api/plan/checkout?tenant=greenwood", { ...json({ period: "month" }), cookie: orgSessionCookie });
+    assert.equal(off.res.status, 503);
+    assert.equal(off.data.contactSales, true, "without keys, sales");
+
+    const created: any[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      assert.equal(url, "https://api.razorpay.com/v1/payment_links");
+      assert.equal(new Headers(init?.headers).get("authorization"), `Basic ${btoa("rzp_test_key:key-secret")}`);
+      const body = JSON.parse(String(init?.body));
+      created.push(body);
+      return new Response(JSON.stringify({ id: `plink_${created.length}`, short_url: `https://rzp.io/i/${created.length}`, status: "created" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      for (const body of [{ period: "week" }, { period: "month", extraWorkstations: -1 }, { period: "month", extraWorkstations: 1.5 }, { period: "year", extraWorkstations: 156 }]) {
+        const res = await send("/api/plan/checkout?tenant=greenwood", { ...json(body), cookie: orgSessionCookie });
+        assert.equal(res.status, 400, JSON.stringify(body));
+      }
+      const monthly = (await (await send("/api/plan/checkout?tenant=greenwood", { ...json({ period: "month", extraWorkstations: 5 }), cookie: orgSessionCookie })).json()) as any;
+      assert.equal(monthly.url, "https://rzp.io/i/1");
+      assert.equal(created[0].amount, quote("month", 5).total, "the price is worked out on the server");
+      assert.equal(created[0].currency, "INR");
+      assert.equal(created[0].callback_url, "https://labkiosk.org/api/billing/return");
+      assert.equal(created[0].callback_method, "get");
+      const reference = created[0].reference_id as string;
+      assert.ok(reference.length <= 40);
+
+      const returned = (q: Record<string, string>) =>
+        send(`/api/billing/return?${new URLSearchParams(q).toString()}`, { redirect: "manual" });
+      const params = { razorpay_payment_id: "pay_1", razorpay_payment_link_id: "plink_1", razorpay_payment_link_reference_id: reference, razorpay_payment_link_status: "paid" };
+      const forged = await returned({ ...params, razorpay_signature: "0".repeat(64) });
+      assert.equal(forged.status, 302);
+      assert.match(forged.headers.get("location") || "", /payment=unverified/);
+      assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "a forged return pays nothing");
+
+      const signature = hmac("key-secret", `plink_1|${reference}|paid|pay_1`);
+      const paid = await returned({ ...params, razorpay_signature: signature });
+      assert.equal(paid.status, 302);
+      assert.equal(paid.headers.get("location"), "https://greenwood.labkiosk.org/admin/plan?payment=paid");
+      let tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+      assert.equal(tenant.license_plan, "subscriber");
+      assert.equal(Number(tenant.workstation_limit), PRICING.includedWorkstations + 5);
+      const firstEnd = Number(tenant.license_expires_at);
+      assert.ok(firstEnd - Date.now() / 1000 > 27 * 86_400 && firstEnd - Date.now() / 1000 < 32 * 86_400, "about a month");
+      await returned({ ...params, razorpay_signature: signature });
+      assert.equal(Number((await findTenantBySubdomain(db, "greenwood"))!.license_expires_at), firstEnd, "a repeated return pays once");
+
+      // A year more, through the webhook, from the end of the month already paid.
+      await (await send("/api/plan/checkout?tenant=greenwood", { ...json({ period: "year" }), cookie: orgSessionCookie })).json();
+      const yearRef = created[1].reference_id as string;
+      const event = JSON.stringify({
+        event: "payment_link.paid",
+        payload: { payment_link: { entity: { id: "plink_2", reference_id: yearRef, status: "paid" } }, payment: { entity: { id: "pay_2" } } }
+      });
+      const hook = (body: string, signature: string) =>
+        send("/api/billing/razorpay/webhook", { method: "POST", body, headers: { "X-Razorpay-Signature": signature } });
+      assert.equal((await hook(event, hmac("wrong", event))).status, 401);
+      assert.equal((await hook(event, hmac("hook-secret", event))).status, 200);
+      tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+      assert.equal(Number(tenant.license_expires_at), periodEnd(firstEnd, "year"), "extended from the end of the paid month");
+      assert.equal(Number(tenant.workstation_limit), PRICING.includedWorkstations);
+      assert.equal((await hook(event, hmac("hook-secret", event))).status, 200);
+      assert.equal(Number((await findTenantBySubdomain(db, "greenwood"))!.license_expires_at), periodEnd(firstEnd, "year"), "a redelivered webhook pays once");
+      const other = JSON.stringify({ event: "payment.failed", payload: {} });
+      assert.equal((await hook(other, hmac("hook-secret", other))).status, 200, "other events are acknowledged");
+
+      const plan = (await (await send("/api/plan?tenant=greenwood", { cookie: orgSessionCookie })).json()) as any;
+      assert.equal(plan.online, true);
+      assert.equal(plan.payments.length, 2);
+      assert.equal(plan.payments[0].paymentId, "pay_2");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
+    await restorePlan();
   });
 });
 

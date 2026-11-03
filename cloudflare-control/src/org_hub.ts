@@ -29,6 +29,7 @@
  *   naming another one is refused.
  */
 
+import { listUnlicensed } from "./plans";
 import { Env, Tenant } from "./types";
 import { getDatabase } from "./database";
 import {
@@ -251,6 +252,8 @@ interface HubConfig {
   /** Exams not yet ended or ended in the last day (src/exams.ts), and the group of each workstation in a group one is for. */
   exams: ExamWindow[];
   examGroups: Map<string, string>;
+  /** Enrolled workstations the plan does not cover, and since when (src/plans.ts): they show the licence notice. */
+  unlicensed: Map<string, number>;
   loadedAt: number;
 }
 
@@ -546,13 +549,14 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts, releases, power, printers, exams] = await Promise.all([
+    const [whitelist, broadcasts, releases, power, printers, exams, unlicensed] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
       offeredReleases(db, tenant.update_channel, tenant.id),
       loadPowerRules(db, tenant.id),
       tenant.printing_enabled === 1 ? listPrinters(db, tenant.id) : Promise.resolve([]),
-      hubExams(db, tenant.id, Math.floor(Date.now() / 1000))
+      hubExams(db, tenant.id, Math.floor(Date.now() / 1000)),
+      listUnlicensed(db, tenant.id)
     ]);
     const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
     const printerGroupNames = [...new Set(printers.flatMap((p) => (p.groupName ? [p.groupName] : [])))];
@@ -573,6 +577,7 @@ export class OrgHub {
       printerGroups,
       exams,
       examGroups,
+      unlicensed,
       loadedAt: Date.now()
     };
     return this.config;
@@ -616,6 +621,32 @@ export class OrgHub {
       }
     }
     whitelist.sort();
+    const unlicensedSince = config.unlicensed.get(clientId);
+    if (unlicensedSince !== undefined) {
+      // Beyond the plan's limit (src/plans.ts): the kiosk shows why, and nothing
+      // else. The epoch is newer than any broadcast it has followed, and stays
+      // put while nothing changes, so the workstation moves to the notice once.
+      const notice = `${portal.origin}/licence-needed?tenant=${encodeURIComponent(tenant.subdomain)}`;
+      let noticeHost = "";
+      try {
+        noticeHost = new URL(notice).hostname.toLowerCase();
+      } catch (err) {
+        console.error(`[OrgHub] The licence notice address does not parse: ${notice}`, err);
+      }
+      return {
+        whitelist: noticeHost ? [noticeHost] : [],
+        mode: tenant.mode,
+        targetUrl: notice,
+        broadcastUrl: notice,
+        broadcastEpoch: Math.max(unlicensedSince * 1000, organizationEpoch, own.epoch) + 1,
+        lanSharing: tenant.lan_sharing === 1,
+        usageSites: tenant.usage_sites !== 0,
+        power: effectivePower(config.power.rules, config.power.groupOf.get(clientId)),
+        printing: { enabled: false, printers: [] },
+        homeReset: false,
+        portalUrl
+      };
+    }
     const exam = this.examFor(config, clientId, Math.floor(Date.now() / 1000));
     if (exam) {
       // During an exam (src/exams.ts) the exam is the broadcast and its sites

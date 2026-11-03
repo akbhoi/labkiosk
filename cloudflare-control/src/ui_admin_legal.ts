@@ -7,7 +7,8 @@
 
 import { escapeAttr, escapeHtml } from "./escape";
 import type { LegalStatus } from "./legal";
-import { licenseDate, type LicenseState } from "./license";
+import { licenseDate, licensePlanLabel, type LicenseState } from "./license";
+import { PRICING } from "./plans";
 
 export interface ConsoleLegal extends LegalStatus {
   /** This account is the owner or an org_admin. */
@@ -109,16 +110,19 @@ export function renderTakedownNoticeHtml(takedowns: ConsoleTakedowns): string {
       </div>`;
 }
 
-/** The organization's license is ending within LICENSE_REMINDER_DAYS, or has ended. */
-export function renderLicenseNoticeHtml(license: LicenseState, organization: string): string {
+/** The organization's plan is ending within LICENSE_REMINDER_DAYS, or has ended (src/plans.ts). */
+export function renderLicenseNoticeHtml(license: LicenseState, organization: string, planHref = "/admin/plan"): string {
   if (license.expiresAt === null || (!license.expired && !license.endingSoon)) return "";
   const date = escapeHtml(licenseDate(license.expiresAt));
+  const plan = escapeHtml(licensePlanLabel(license.plan));
+  const org = escapeHtml(organization);
+  const free = `${PRICING.freeWorkstations} workstations`;
   const lead = license.expired
-    ? `The Lab Kiosk license of ${escapeHtml(organization)} ended on ${date}. Enrolled workstations, the homepage and the User Portal keep working, but no new workstation can be enrolled and Remote Control is off until it is renewed.`
-    : `The Lab Kiosk license of ${escapeHtml(organization)} ends on ${date}. After that no new workstation can be enrolled and Remote Control is off until it is renewed; enrolled workstations keep working.`;
+    ? `The ${plan} plan of ${org} ended on ${date}, and it is on the Free plan now. Free covers ${free}: the others stay enrolled but show a licence notice instead of your portal, and Remote Control is off.`
+    : `The ${plan} plan of ${org} ends on ${date}. After that it moves to the Free plan, which covers ${free}; the others will show a licence notice instead of your portal.`;
   return `
-      <div class="card" id="license-notice" role="region" aria-label="License">
-        <h2 class="card-title">${license.expired ? "License ended" : "License ending soon"}</h2>
-        <p class="card-sub mb-0">${lead} To renew, write to <a href="mailto:sales@labkiosk.org">sales@labkiosk.org</a>.</p>
+      <div class="card" id="license-notice" role="region" aria-label="Plan">
+        <h2 class="card-title">${license.expired ? "Plan ended" : "Plan ending soon"}</h2>
+        <p class="card-sub mb-0">${lead} <a href="${escapeAttr(planHref)}">Renew or change the plan</a>, or write to <a href="mailto:sales@labkiosk.org">sales@labkiosk.org</a>.</p>
       </div>`;
 }

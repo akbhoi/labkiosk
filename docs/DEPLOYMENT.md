@@ -378,6 +378,34 @@ verification link**: the contact gets a one-time link, valid for 7 days, to `/ve
 texts the number on record and records it as verified (`src/phone_link.ts`). The page loads
 Firebase the same way, and only the SHA-256 of the link's token is stored.
 
+### Online payment (Razorpay, optional)
+
+Plans (`src/plans.ts`): Free (5 workstations), a one-time 15-day trial (45), a subscription
+(₹1,999 a month or ₹19,990 a year plus 18% GST, 45 workstations, ₹39 / ₹390 per extra one up to
+200), Education (free, 45, verified by hand in Super Admin → Tasks → Education) and Custom (set
+by hand). Without Razorpay, Plan in the console sends customers to sales and the super admin
+records a subscription with **License** and **Workstation Limit** on the organization.
+
+To take payments online (needs a Razorpay account with KYC done and your GSTIN):
+
+1. Razorpay Dashboard → Account & Settings → **API Keys**: generate a key pair.
+2. Razorpay Dashboard → Account & Settings → **Webhooks**: add
+   `https://<your domain>/api/billing/razorpay/webhook` with the event **payment_link.paid**
+   and a secret of your choice.
+3. Set the Worker's secrets:
+
+| Secret | Value |
+| --- | --- |
+| `RAZORPAY_KEY_ID` | `rzp_live_…` |
+| `RAZORPAY_KEY_SECRET` | the key secret |
+| `RAZORPAY_WEBHOOK_SECRET` | the webhook secret from step 2 |
+
+Payments go through Payment Links: the console never loads Razorpay's script. Either the signed
+redirect back to `/api/billing/return` or the webhook records a payment, once.
+
+Education certificates are stored in the `AUDIT_ARCHIVE` bucket under `education/`; a rejected
+application's certificate is deleted 90 days after the decision.
+
 ### Status page and outside monitoring
 
 `/status` shows whether the console, workstation connections, email and updates are working,

@@ -7,7 +7,7 @@
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, UpdateChannel } from "./types";
+import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, UpdateChannel, LicensePlan } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -224,6 +224,10 @@ import {
   type EmailOutcome
 } from "./notifications";
 import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
+import { handlePlanRoutes } from "./plan_routes";
+import { syncLicences } from "./plan_sync";
+import { entitlement, PRICING } from "./plans";
+import { purgeEducationApplications } from "./education";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -1437,6 +1441,26 @@ export default {
       return;
     }
     await purgeOldStatus(db);
+    // Plans that ended this hour drop to Free, and what Free does not cover
+    // shows the licence notice (src/plans.ts); one organization failing does not stop the rest.
+    {
+      const { results: planTenants } = await db
+        .prepare("SELECT id FROM tenants WHERE status = 'active'")
+        .all<{ id: string }>();
+      for (const t of planTenants ?? []) {
+        try {
+          await syncLicences(env, db, t.id);
+        } catch (err) {
+          console.error(`[Worker] Applying the plan of organization ${t.id} failed:`, err);
+        }
+      }
+      try {
+        const purged = await purgeEducationApplications(env, db, Math.floor(Date.now() / 1000));
+        if (purged) console.log(`[Worker] Education applications: ${purged} unconfirmed or old certificates removed.`);
+      } catch (err) {
+        console.error("[Worker] Removing old education applications failed:", err);
+      }
+    }
     const purgedExams = await purgeOldExams(db, Math.floor(Date.now() / 1000));
     if (purgedExams) console.log(`[Worker] Deleted ${purgedExams} exams that ended more than ${EXAM_RETENTION_DAYS} days ago.`);
     await deleteExpiredSessions(db);
@@ -1860,6 +1884,10 @@ export default {
     };
     const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
 
+    // Plan, education applications and Razorpay (src/plan_routes.ts).
+    const planResponse = await handlePlanRoutes({ ...routeContext, method, path, tenant: currentTenant });
+    if (planResponse) return planResponse;
+
     // POST /api/auth/register/email-code: prove the email address before signing up.
     if (path === "/api/auth/register/email-code" && method === "POST") {
       return handleSignupEmailCode(routeContext);
@@ -1887,6 +1915,28 @@ export default {
         console.error("[Health] The database did not answer:", err);
         return new Response(JSON.stringify({ status: "unavailable" }), { status: 503, headers });
       }
+    }
+
+    // /licence-needed?tenant=…: what a workstation beyond its organization's
+    // plan shows instead of the portal (src/plans.ts, OrgHub.configFor).
+    if (path === "/licence-needed" && (method === "GET" || method === "HEAD")) {
+      const slug = (url.searchParams.get("tenant") || "").toLowerCase();
+      const named = slug ? await findTenantBySubdomain(db, slug) : null;
+      const organization = named && named.status === "active" ? named.name : null;
+      return new Response(
+        renderStatusPageHtml({
+          title: "Licence Needed",
+          heading: "This workstation is not covered by a licence",
+          messageHtml:
+            `${organization ? `<strong>${escapeHtml(organization)}</strong> has` : "This organization has"} more workstations enrolled than its Lab Kiosk plan covers, ` +
+            "so this one is paused. Ask your administrator to move a licence to it, remove a workstation that is not used, or change the plan under Plan in the console. " +
+            "This page goes away by itself once a licence is free.",
+          homeHref: `${url.pathname}${url.search}`,
+          homeLabel: "Check again",
+          tone: "warning"
+        }),
+        { headers: { ...htmlHeaders, "Cache-Control": "no-store" } }
+      );
     }
 
     // /verify-phone?t=…, POST /api/verify-phone: the emailed link that verifies an
@@ -2223,6 +2273,9 @@ export default {
           baseDomain,
           activeTab,
           inbox: counts,
+          pendingEducation: Number(
+            (await db.prepare("SELECT COUNT(*) AS n FROM education_applications WHERE status = 'pending'").first<{ n: number }>())?.n ?? 0
+          ),
           nonce
         }),
         { headers: htmlHeaders }
@@ -2323,7 +2376,8 @@ export default {
         action: "tenant.workstation_limit",
         details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
       });
-      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now enrol up to ${limit} workstation${limit === 1 ? "" : "s"}; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations already enrolled are never cut off.`, createdBy: session!.user_id });
+      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now use up to ${limit} workstation${limit === 1 ? "" : "s"} while its plan is in force; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations beyond the limit stay enrolled but show a licence notice.`, createdBy: session!.user_id });
+      await syncLicences(env, db, target.id);
       return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
     }
 
@@ -2342,24 +2396,28 @@ export default {
       }
       const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
       if (!target) return jsonError("Organization not found", 404, jsonHeaders);
-      if (!isLicensePlan(body.plan)) {
-        return jsonError("The plan must be education, evaluation, subscriber or commercial", 400, jsonHeaders);
+      // "free" records no plan: the organization is on Free (src/plans.ts).
+      const free = body.plan === "free";
+      if (!free && !isLicensePlan(body.plan)) {
+        return jsonError("The plan must be free, education, evaluation (trial), subscriber or commercial (custom)", 400, jsonHeaders);
       }
+      const plan = free ? null : (body.plan as LicensePlan);
       let expiresAt: number | null = null;
-      if (body.expiresOn !== null && body.expiresOn !== undefined) {
+      if (!free && body.expiresOn !== null && body.expiresOn !== undefined) {
         expiresAt = typeof body.expiresOn === "string" ? parseLicenseDate(body.expiresOn) : null;
         if (expiresAt === null) return jsonError("The end date must be a date as YYYY-MM-DD, or null for none", 400, jsonHeaders);
       }
-      await updateTenant(db, target.id, { license_plan: body.plan, license_expires_at: expiresAt });
+      await updateTenant(db, target.id, { license_plan: plan, license_expires_at: expiresAt });
       const was = target.license_expires_at ? licenseDate(Number(target.license_expires_at)) : "none";
       await writeAuditLog(db, {
         tenantId: target.id,
         userId: session!.user_id,
         action: "tenant.license",
-        details: `plan=${body.plan} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
+        details: `plan=${plan ?? "free"} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
       });
-      await createNotification(db, { tenantId: target.id, kind: "license", title: "License updated", body: `Lab Kiosk recorded the license of ${target.name}: ${licensePlanLabel(body.plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
-      return new Response(JSON.stringify({ status: "ok", plan: body.plan, expiresAt }), { headers: jsonHeaders });
+      await createNotification(db, { tenantId: target.id, kind: "license", title: "Plan updated", body: `Lab Kiosk recorded the plan of ${target.name}: ${licensePlanLabel(plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
+      await syncLicences(env, db, target.id);
+      return new Response(JSON.stringify({ status: "ok", plan: plan ?? "free", expiresAt }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/remote-control { tenantId, action, seats? }: the platform's
@@ -4256,26 +4314,19 @@ export default {
           return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
         }
 
-        const licenseEnded = licenseExpiredMessage(tenant);
-        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId, existingOnly: licenseEnded !== null });
-        if (!issued && licenseEnded) {
-          await writeAuditLog(db, {
-            tenantId: tenant.id,
-            action: "device.enroll_license",
-            details: `client=${clientId}`
-          });
-          return jsonError(licenseEnded, 403, jsonHeaders);
-        }
+        const plan = entitlement(tenant);
+        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId, limit: plan.limit });
         if (!issued) {
-          const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
           await writeAuditLog(db, {
             tenantId: tenant.id,
             action: "device.enroll_limit",
-            details: `client=${clientId} limit=${limit}`
+            details: `client=${clientId} limit=${plan.limit} plan=${plan.kind}`
           });
           return jsonError(
-            `${tenant.name} has enrolled all ${limit} workstations its plan allows. ` +
-              "Remove a workstation in the console, or ask Lab Kiosk to raise the limit.",
+            `${tenant.name} has enrolled all ${plan.limit} workstation${plan.limit === 1 ? "" : "s"} its ${plan.label} plan allows. ` +
+              (plan.kind === "free"
+                ? "An administrator can start a free trial, subscribe or apply for Education under Plan in the console, or remove a workstation."
+                : "Remove a workstation in the console, or add workstations under Plan."),
             403,
             jsonHeaders
           );
@@ -5136,6 +5187,8 @@ export default {
         await revokeDeviceTokensForClient(db, tenantId, clientId);
         forgetDeviceToken(tenantId, clientId);
         await hubJson(env, tenantId, "/remove-device", { clientId });
+        // Its licence goes to a workstation waiting for one (src/plans.ts).
+        await syncLicences(env, db, tenantId);
         await writeAuditLog(db, {
           tenantId,
           userId: session!.user_id,
@@ -5752,6 +5805,7 @@ export default {
       if (path === "/admin/apps-web") activePage = "apps-web";
       else if (path === "/admin/exams") activePage = "exams";
       else if (path === "/admin/staff") activePage = "staff";
+      else if (path === "/admin/plan") activePage = "plan";
       else if (path === "/admin/settings") activePage = "settings";
 
       const userPerms = session.role === "super_admin"
@@ -5761,6 +5815,7 @@ export default {
       const checkPermission = (page: AdminPageId) => {
         if (userPerms.includes("*") || userPerms.includes(page)) return true;
         if (page === "exams") return userPerms.includes("workstations");
+        if (page === "plan") return userPerms.includes("settings");
         if (page === "apps-web") {
           return (
             userPerms.includes("broadcast") ||
@@ -5776,7 +5831,7 @@ export default {
       const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
-        const pages: AdminPageId[] = ["workstations", "exams", "apps-web", "staff", "settings"];
+        const pages: AdminPageId[] = ["workstations", "exams", "apps-web", "staff", "plan", "settings"];
         const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
           const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;

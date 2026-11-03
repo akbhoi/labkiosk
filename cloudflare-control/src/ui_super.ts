@@ -12,12 +12,14 @@ import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
 import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
 import { LICENSE_PLANS, licenseDate, licensePlanLabel, licenseState } from "./license";
+import { PRICING } from "./plans";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { CUSTOM_HOSTNAMES_INCLUDED, CUSTOM_HOSTNAMES_MAX, CUSTOM_HOSTNAME_MONTHLY_USD, customHostnameBudget } from "./custom_hostnames";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
 import { renderStatusPaneHtml, renderStatusPaneScript } from "./ui_super_status";
+import { renderEducationPaneHtml, renderEducationScript } from "./ui_super_education";
 import { renderPartnersScript, renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
@@ -51,6 +53,8 @@ export interface SuperAdminOptions {
   activeTab?: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system";
   /** Open tasks and mail, and unread and deleted mail, for the badges (src/conversations.ts). */
   inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
+  /** Education applications waiting for a decision (src/education.ts). */
+  pendingEducation?: number;
   nonce: string;
 }
 
@@ -368,6 +372,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     tasks: [
       { id: "requests", label: "Requests", count: inbox.openTasks, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>` },
       { id: "subdomains", label: "Subdomain changes", count: pendingList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>` },
+      { id: "education", label: "Education", count: data.pendingEducation ?? 0, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/></svg>` },
       { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
     ],
     support: [],
@@ -621,6 +626,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="tab-pane" id="pane-subdomains">
         ${subdomainRequestsCardHtml}
       </div>
+      <div class="tab-pane" id="pane-education">
+        ${renderEducationPaneHtml()}
+      </div>
       <div class="tab-pane" id="pane-custom-domains">
         ${customDomainsCardHtml}
       </div>
@@ -734,6 +742,7 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
 ${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
+${activeTab === "tasks" ? renderEducationScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.
@@ -1022,33 +1031,38 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
       document.querySelectorAll(".btn-license").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const organization = btn.closest("tr").querySelector(".cell-title").textContent;
+          const WORDS = { free: "free", trial: "evaluation", subscription: "subscriber", education: "education", custom: "commercial" };
+          const NAMES = { evaluation: "trial", subscriber: "subscription", education: "education", commercial: "custom" };
           const plan = await lkPrompt({
-            title: "License of " + organization,
-            message: "Which grant of the license this organization runs under.",
+            title: "Plan of " + organization,
+            message: "Free covers ${PRICING.freeWorkstations} workstations. Trial, subscription, education and custom use the workstation limit until their end date, then the organization drops to Free. Custom is for contracts and complimentary licences.",
             label: "Plan",
-            value: btn.dataset.plan,
-            hint: "education, evaluation, subscriber or commercial.",
+            value: NAMES[btn.dataset.plan] || "free",
+            hint: "free, trial, subscription, education or custom.",
             confirmLabel: "Next"
           });
           if (!plan) return;
-          const planId = plan.toLowerCase();
-          if (!${JSON.stringify(LICENSE_PLANS.map((p) => p.id))}.includes(planId)) {
-            lkToast("The plan must be education, evaluation, subscriber or commercial.", "error");
+          const planId = WORDS[plan.trim().toLowerCase()] || plan.trim().toLowerCase();
+          if (!${JSON.stringify(["free", ...LICENSE_PLANS.map((p) => p.id)])}.includes(planId)) {
+            lkToast("The plan must be free, trial, subscription, education or custom.", "error");
             return;
           }
-          const ends = await lkPrompt({
-            title: "License of " + organization,
-            message: "Once this date has passed the organization enrols no new workstation and opens no Remote Control session. Enrolled workstations keep working.",
-            label: "End date",
-            value: btn.dataset.expires || "never",
-            hint: "A date as YYYY-MM-DD (00:00 UTC), or never.",
-            confirmLabel: "Save"
-          });
-          if (!ends) return;
-          const expiresOn = ends.toLowerCase() === "never" ? null : ends;
-          if (expiresOn !== null && !/^\\d{4}-\\d{2}-\\d{2}$/.test(expiresOn)) {
-            lkToast("Enter a date as YYYY-MM-DD, or never.", "error");
-            return;
+          let expiresOn = null;
+          if (planId !== "free") {
+            const ends = await lkPrompt({
+              title: "Plan of " + organization,
+              message: "After this date the organization is on Free: workstations beyond ${PRICING.freeWorkstations} show a licence notice and Remote Control stops. Set the workstation limit separately.",
+              label: "End date",
+              value: btn.dataset.expires || "never",
+              hint: "A date as YYYY-MM-DD (00:00 UTC), or never.",
+              confirmLabel: "Save"
+            });
+            if (!ends) return;
+            expiresOn = ends.toLowerCase() === "never" ? null : ends;
+            if (expiresOn !== null && !/^\\d{4}-\\d{2}-\\d{2}$/.test(expiresOn)) {
+              lkToast("Enter a date as YYYY-MM-DD, or never.", "error");
+              return;
+            }
           }
           try {
             const res = await fetch("/api/super/tenants/license", {
@@ -1072,7 +1086,7 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         btn.addEventListener("click", async () => {
           const value = await lkPrompt({
             title: "Workstation limit for " + btn.closest("tr").querySelector(".cell-title").textContent,
-            message: btn.dataset.enrolled + " workstations are enrolled now. A lower limit stops new enrolments only; nothing enrolled is cut off.",
+            message: btn.dataset.enrolled + " workstations are enrolled now. Those beyond a lower limit stay enrolled but show a licence notice, the ones seen least recently first.",
             label: "Workstations",
             value: btn.dataset.limit,
             hint: "A whole number from 1 to ${MAX_WORKSTATION_LIMIT}.",

@@ -18,6 +18,7 @@
  */
 
 import { CertifiedModel, PublicReseller, certifiedLookup } from "./partners";
+import { PRICING } from "./plans";
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { fnv1a } from "./ui_layout";
 import { GEO_DATA_PATH } from "./geo";
@@ -585,7 +586,7 @@ ${FONT_LINKS}
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Free only for accredited educational institutions and non-commercial evaluation up to 45 computers • Commercial or subscriber license for everyone else</div>
+      <div>&copy; 2026 Lab Kiosk OS • Free on ${PRICING.freeWorkstations} workstations • ${PRICING.trialDays}-day free trial • Free for verified education institutions • <a href="/pricing">Plans &amp; pricing</a></div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login">Sign In</a>
         <a href="/register">Register Organization</a>
@@ -1880,7 +1881,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="audience-info">
             <span class="badge badge-blue" style="margin-bottom: 12px;">Schools, Colleges &amp; Universities</span>
             <h3>Computer Labs and Secure Assessments</h3>
-            <p>Run school computer labs, coding practicals and invigilated assessments on the same locked-down image, across one room or hundreds of campus workstations. Free for accredited educational institutions up to 45 computers.</p>
+            <p>Run school computer labs, coding practicals and invigilated assessments on the same locked-down image, across one room or hundreds of campus workstations. Free for verified education institutions, on up to ${PRICING.educationWorkstations} computers.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
@@ -1952,7 +1953,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; font-weight: 700; color: var(--text-main);">Lab Kiosk</td>
-                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free for education &le; 45 PCs; commercial license otherwise</td>
+                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free on ${PRICING.freeWorkstations} PCs; &#8377;${PRICING.monthly.toLocaleString("en-IN")}/month for ${PRICING.includedWorkstations}</td>
               </tr>
             </table>
             <a class="btn btn-primary btn-block" href="/register">Register Your Organization</a>
@@ -2300,7 +2301,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 13 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free for non-profit, accredited schools, colleges and universities, and for non-commercial evaluation and research, on up to 45 computers. Any deployment with more than 45 computers, or by a business, needs a commercial or subscriber license.
+            Yes, on up to ${PRICING.freeWorkstations} workstations, with no end date. For a whole site, try the subscription free for ${PRICING.trialDays} days, then it is &#8377;${PRICING.monthly.toLocaleString("en-IN")} a month or &#8377;${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. See <a href="/pricing">Plans &amp; pricing</a>. To host it yourself, the source is available under the LabKiosk Software License: free for accredited educational institutions and non-commercial evaluation on up to 45 computers, and a commercial license for everyone else.
           </div>
         </div>
 
@@ -2785,111 +2786,85 @@ export function renderHardwareHtml(
 }
 
 function pricingMainHtml(): string {
+  const p = PRICING;
+  const tick = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
+  const list = (items: string[]) => `<ul class="pricing-features">${items.map((i) => `<li>${tick}<span>${i}</span></li>`).join("")}</ul>`;
+  const inr = (n: number) => `&#8377;${n.toLocaleString("en-IN")}`;
   return `
     <section class="page-hero">
       <div class="hero-badge-container">
-        <span class="badge badge-blue">Licensing &amp; Deployment</span>
-        <span class="badge badge-green">Accredited Education Grant</span>
+        <span class="badge badge-blue">Plans &amp; Pricing</span>
+        <span class="badge badge-green">${p.trialDays}-day free trial</span>
       </div>
-      <h1 class="page-hero-title">Transparent Licensing &amp; <span>Deployment Tiers</span></h1>
+      <h1 class="page-hero-title">Simple plans, <span>priced per site</span></h1>
       <p class="page-hero-desc">
-        Source-available software with grants for accredited education and transparent commercial terms for enterprise fleets.
+        Start free on ${p.freeWorkstations} workstations, try the full subscription for ${p.trialDays} days, and pay only when you are sure. Verified education institutions use it free.
       </p>
     </section>
 
     <section class="section-wrap" style="padding-top: 0;">
-      <div class="pricing-grid">
+      <div class="pricing-grid pricing-grid-4">
         <div class="pricing-card">
-          <h2 class="pricing-tier">Accredited Education Grant</h2>
-          <div class="pricing-sub">For accredited educational institutions and non-commercial evaluation.</div>
-          <div class="pricing-price">Grant / Free <small>up to 45 computers</small></div>
-          <ul class="pricing-features">
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Up to 45 managed workstations</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Accredited educational institutions &amp; non-commercial evaluation</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Tamper-proof OS &amp; managed Chromium</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Central web management console</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Dedicated console address</span>
-            </li>
-          </ul>
-          <a class="btn btn-primary btn-block" href="/register">Apply for Education Grant</a>
+          <h2 class="pricing-tier">Free</h2>
+          <div class="pricing-sub">For trying Lab Kiosk on a few computers, for as long as you like.</div>
+          <div class="pricing-price">${inr(0)} <small>forever</small></div>
+          ${list([
+            `Up to ${p.freeWorkstations} workstations`,
+            "Tamper-proof OS and managed Chromium",
+            "Central web console and User Portal",
+            "Your own console address"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/register">Create a free account</a>
         </div>
 
         <div class="pricing-card featured">
-          <div class="pricing-card-badge">Production Standard</div>
-          <h2 class="pricing-tier">Commercial &amp; Large Fleet</h2>
-          <div class="pricing-sub">For companies, public services, libraries, and deployments of 46+ computers.</div>
-          <div class="pricing-price">Commercial License <small>per workstation fleet</small></div>
-          <ul class="pricing-features">
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Unlimited workstations across multiple facilities</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Real-time thumbnail grid &amp; VNC remote control</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Granular staff delegation &amp; audit logging</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Custom domain support (e.g. kiosk.yourdomain.com)</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Priority onboarding &amp; dedicated support SLA</span>
-            </li>
-          </ul>
-          <a class="btn btn-primary btn-block" href="/contact">Contact Sales &amp; Licensing</a>
+          <div class="pricing-card-badge">${p.trialDays} days free</div>
+          <h2 class="pricing-tier">Subscription</h2>
+          <div class="pricing-sub">For a site of up to ${p.includedWorkstations} computers, and more when you need them.</div>
+          <div class="pricing-price">${inr(p.monthly)} <small>a month</small></div>
+          <p class="pricing-sub" style="min-height: 0; margin-top: -16px;">or ${inr(p.yearly)} a year, two months free. Plus ${p.gstPercent}% GST.</p>
+          ${list([
+            `${p.includedWorkstations} workstations included`,
+            `${inr(p.extraMonthly)} a month (${inr(p.extraYearly)} a year) for each one more, up to ${p.salesAbove}`,
+            "Live screens, exam mode and Remote Control",
+            "Staff roles, audit log and custom domain",
+            `Try it all free for ${p.trialDays} days, no card needed`
+          ])}
+          <a class="btn btn-primary btn-block" href="/register">Start the free trial</a>
         </div>
 
         <div class="pricing-card">
-          <h2 class="pricing-tier">Self-Hosted Infrastructure</h2>
-          <div class="pricing-sub">For air-gapped facilities or internal infrastructure mandates.</div>
-          <div class="pricing-price">Source-Available <small>self-deployed</small></div>
-          <ul class="pricing-features">
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Deploy control plane on your Cloudflare account</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Build customized Debian 13 ISOs via Docker, for your own platform</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Full control over D1 data and telemetry retention</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Commercial or subscriber license required for commercial use</span>
-            </li>
-            <li>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Technical architecture documentation &amp; guides</span>
-            </li>
-          </ul>
-          <a href="/docs" class="btn btn-ghost btn-block">Read Self-Host Docs</a>
+          <h2 class="pricing-tier">Education</h2>
+          <div class="pricing-sub">For institutions recognised by an education board, university or regulator.</div>
+          <div class="pricing-price">${inr(0)} <small>after verification</small></div>
+          ${list([
+            `${p.educationWorkstations} workstations, everything in the subscription`,
+            "Apply from Plan in your console with your affiliation certificate",
+            "An official email on your institution's own domain",
+            "Checked by hand, renewed every year"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/register">Register, then apply</a>
+        </div>
+
+        <div class="pricing-card">
+          <h2 class="pricing-tier">Large deployments</h2>
+          <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
+          <div class="pricing-price">Custom <small>quote</small></div>
+          ${list([
+            "Any number of workstations and sites",
+            "Volume pricing and annual invoicing",
+            "Priority onboarding and support",
+            "Help with certified hardware and resellers"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/contact?reason=sales">Contact sales</a>
         </div>
       </div>
 
       <div class="docs-callout" style="margin-top: 48px; border-left-color: var(--accent);">
-        <strong>Licensing Notice:</strong> Free only for accredited educational institutions and non-commercial evaluation up to 45 computers; commercial or subscriber license for everyone else. Any deployment with 46 or more computers, or utilized by commercial entities, requires a commercial or subscriber license.
+        <strong>How the limit works:</strong> each plan covers a number of workstations. If a plan ends, the organization is back on Free: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, and nothing is deleted.
+      </div>
+      <div class="docs-callout" style="margin-top: 16px;">
+        <strong>Self-hosting:</strong> the source is available to run the control plane on your own Cloudflare account. Self-hosted use is free only for accredited educational institutions and non-commercial evaluation on up to 45 computers, under the <a href="/terms">LabKiosk Software License</a>; everyone else needs a commercial license. <a href="/docs">Read the self-host docs</a>.
       </div>
     </section>`;
 }
@@ -3279,8 +3254,8 @@ export function renderSpecsHtml(data: LandingOptions): string {
 
 export function renderPricingHtml(data: LandingOptions): string {
   return renderPublicShell(data, {
-    title: "Lab Kiosk OS - Transparent Licensing & Deployment Tiers",
-    description: "Transparent licensing: grants for accredited educational institutions and non-commercial evaluation up to 45 computers; commercial and subscriber licensing for organizations.",
+    title: "Lab Kiosk OS - Plans & Pricing",
+    description: `Free on ${PRICING.freeWorkstations} workstations, a ${PRICING.trialDays}-day free trial, and a subscription of ₹${PRICING.monthly.toLocaleString("en-IN")} a month or ₹${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Free for verified education institutions.`,
     activeNav: "pricing",
     mainHtml: pricingMainHtml()
   });
@@ -4392,6 +4367,8 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       align-items: stretch;
       margin-top: 36px;
     }
+    .pricing-grid-4 { grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 20px; }
+    .pricing-grid-4 .pricing-card { padding: 32px 22px; }
     .pricing-card {
       background: var(--bg-surface);
       border: 1px solid var(--border);
