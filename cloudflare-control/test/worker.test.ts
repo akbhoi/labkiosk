@@ -10456,7 +10456,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(after.targetUrl, portal);
     assert.equal(after.broadcastUrl, "");
     assert.equal(after.broadcastEpoch, 0, "a reset, as after an operator's Reset to portal");
-    assert.ok((after.whitelist as string[]).includes("khanacademy.org"), "the organization's allowlist is back");
+    assert.ok(allowlistHas(after.whitelist as string[], "khanacademy.org"), "the organization's allowlist is back");
     assert.equal(cleared(inRoom), 1, "the reconnected socket was cleared at the end");
     assert.equal((await callJson(`/api/exams/${exam.id}/end?tenant=greenwood`, { method: "POST", cookie: orgSessionCookie })).res.status, 409);
     assert.equal((await send("EX-IN")).status, 200, "after the exam broadcasts work again");
