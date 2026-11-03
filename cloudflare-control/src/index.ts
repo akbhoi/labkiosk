@@ -218,6 +218,7 @@ import {
   getSession,
   deleteSession,
   deleteExpiredSessions,
+  hashLegacySessions,
   listPortalSites,
   findTakenDownPortalSite,
   listTakenDownPortalSites,
@@ -1329,6 +1330,8 @@ export default {
     await bootstrap(db, env);
     useAuditQueue(env.AUDIT_QUEUE);
     await deleteExpiredSessions(db);
+    const rehashed = await hashLegacySessions(db);
+    if (rehashed) console.log(`[Worker] Stored ${rehashed} sessions under the hash of their token.`);
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);

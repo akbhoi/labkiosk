@@ -30,7 +30,7 @@ import { Env, Session, User, UserRole } from "./types";
 import { jsonError } from "./guard";
 import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword, passwordPepper } from "./auth";
 import { clearSessionCookies, sessionSecondsFor, signInDestination } from "./session_handoff";
-import { clearLoginFailures, createSession, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
+import { clearLoginFailures, createSession, deleteSessionsForUser, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
 import { uniformBelow } from "./conversations";
 import { mailConfigProblem, sendMail } from "./mail";
 import { RouteContext } from "./signup";
@@ -756,7 +756,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       await db.prepare("UPDATE users SET two_factor_email = ? WHERE id = ?").bind(enable ? 1 : 0, user.id).run();
       if (enable) {
         // Other browsers signed in with the password alone are signed out.
-        await db.prepare("DELETE FROM sessions WHERE user_id = ? AND token <> ?").bind(user.id, sessionToken || "").run();
+        await deleteSessionsForUser(db, user.id, sessionToken || undefined);
       } else if (!state.app && !state.passkeys.length) {
         // Nothing is asked after the password any more: trusted browsers mean nothing.
         await db.batch([
@@ -818,7 +818,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       .run();
     if ((inserted.meta?.changes ?? 0) === 0) return jsonError("This passkey is already registered.", 409, jsonHeaders);
     // Other browsers signed in without it are signed out, as when an app is turned on.
-    await db.prepare("DELETE FROM sessions WHERE user_id = ? AND token <> ?").bind(user.id, sessionToken || "").run();
+    await deleteSessionsForUser(db, user.id, sessionToken || undefined);
     await audit("auth.passkey_add");
     return json({ status: "ok", id: registered.credentialId, name });
   }
@@ -874,7 +874,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       .run();
     if ((enabled.meta?.changes ?? 0) === 0) return jsonError("Two-factor sign-in is already on", 409, jsonHeaders);
     // Other browsers signed in with the password alone are signed out.
-    await db.prepare("DELETE FROM sessions WHERE user_id = ? AND token <> ?").bind(user.id, sessionToken || "").run();
+    await deleteSessionsForUser(db, user.id, sessionToken || undefined);
     await audit("auth.two_factor_enable");
     return json({ status: "ok", recoveryCodes: codes });
   }

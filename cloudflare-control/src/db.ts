@@ -109,7 +109,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  hashed INTEGER NOT NULL DEFAULT 0
+  CHECK (hashed IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS portal_sites (
@@ -846,7 +848,9 @@ const SCHEMA_PROBES: readonly string[] = [
   // 0049: the architectures a release is built for.
   "SELECT architectures FROM releases LIMIT 1",
   // 0050: a release's arm64 ISO, for /download.
-  "SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1"
+  "SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1",
+  // 0051: sessions stored by the hash of their token.
+  "SELECT hashed FROM sessions LIMIT 1"
 ];
 
 /**
@@ -1585,12 +1589,25 @@ export async function listAllTenants(
   return res.results || [];
 }
 
+/**
+ * The key a session is stored under: the SHA-256 of the browser's token, so a
+ * copy of the database holds no token a browser could present. Rows written
+ * before 0051 still hold the token itself (`hashed = 0`) until the hourly job
+ * or their next use rewrites them.
+ */
+export async function sessionKey(token: string): Promise<string> {
+  return sha256Hex(`session:${token}`);
+}
+
+/** Matches the row of one token, hashed or not yet. Binds the key, then the token. */
+const SESSION_MATCH = "((token = ? AND hashed = 1) OR (token = ? AND hashed = 0))";
+
 export async function createSession(db: D1Database, session: Session): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO sessions (token, user_id, tenant_id, role, expires_at, hashed) VALUES (?, ?, ?, ?, ?, 1)"
     )
-    .bind(session.token, session.user_id, session.tenant_id || null, session.role, session.expires_at)
+    .bind(await sessionKey(session.token), session.user_id, session.tenant_id || null, session.role, session.expires_at)
     .run();
 }
 
@@ -1633,26 +1650,50 @@ export async function pepperLegacyPasswordHashes(db: D1Database, pepper: string)
 export async function deleteSessionsForUser(db: D1Database, userId: string, keepToken?: string): Promise<void> {
   if (keepToken) {
     await db
-      .prepare("DELETE FROM sessions WHERE user_id = ? AND token != ?")
-      .bind(userId, keepToken)
+      .prepare(`DELETE FROM sessions WHERE user_id = ? AND NOT ${SESSION_MATCH}`)
+      .bind(userId, await sessionKey(keepToken), keepToken)
       .run();
     return;
   }
   await db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
 }
 
+/** The live session for a browser's token. `token` in the result is the token itself, never the stored key. */
 export async function getSession(db: D1Database, token: string): Promise<Session | null> {
   const now = Math.floor(Date.now() / 1000);
-  const session = await db
-    .prepare("SELECT * FROM sessions WHERE token = ? AND expires_at > ?")
-    .bind(token, now)
-    .first<Session>();
-
-  return session;
+  const key = await sessionKey(token);
+  const row = await db
+    .prepare(`SELECT token, user_id, tenant_id, role, expires_at, hashed FROM sessions WHERE ${SESSION_MATCH} AND expires_at > ?`)
+    .bind(key, token, now)
+    .first<Session & { hashed: number }>();
+  if (!row) return null;
+  if (!row.hashed) {
+    await db.prepare("UPDATE sessions SET token = ?, hashed = 1 WHERE token = ? AND hashed = 0").bind(key, token).run();
+  }
+  return { token, user_id: row.user_id, tenant_id: row.tenant_id, role: row.role, expires_at: row.expires_at };
 }
 
 export async function deleteSession(db: D1Database, token: string): Promise<void> {
-  await db.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
+  await db.prepare(`DELETE FROM sessions WHERE ${SESSION_MATCH}`).bind(await sessionKey(token), token).run();
+}
+
+/**
+ * Rewrite sessions stored before 0051 under the hash of their token. Hourly, a
+ * few hundred at a time; returns how many it rewrote.
+ */
+export async function hashLegacySessions(db: D1Database, limit = 500): Promise<number> {
+  const { results } = await db
+    .prepare("SELECT token FROM sessions WHERE hashed = 0 LIMIT ?")
+    .bind(limit)
+    .all<{ token: string }>();
+  if (!results.length) return 0;
+  const updates = await Promise.all(
+    results.map(async (r) =>
+      db.prepare("UPDATE sessions SET token = ?, hashed = 1 WHERE token = ? AND hashed = 0").bind(await sessionKey(r.token), r.token)
+    )
+  );
+  await db.batch(updates);
+  return results.length;
 }
 
 export async function listPortalSites(db: D1Database, tenantId: string): Promise<PortalSite[]> {

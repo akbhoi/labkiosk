@@ -23,7 +23,10 @@ import {
   writeAuditLog,
   insertAuditEntries,
   archiveOldAuditLogs,
-  AUDIT_RETENTION_DAYS
+  AUDIT_RETENTION_DAYS,
+  getSession,
+  hashLegacySessions,
+  sessionKey
 } from "../src/db";
 import { DEMO_SLUGS } from "../src/demo";
 import { listHardwareModels, listPublicHardwareModels, rebuildHardwareModels } from "../src/hardware";
@@ -5082,7 +5085,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(set, /Max-Age=43200/, "twelve hours, not seven days");
     assert.doesNotMatch(set, /Domain=/);
     const token = set.split(";")[0].split("=")[1];
-    const row = await getDatabase(mockEnv).prepare("SELECT expires_at FROM sessions WHERE token = ?").bind(token).first<{ expires_at: number }>();
+    const row = await getDatabase(mockEnv).prepare("SELECT expires_at FROM sessions WHERE token = ? AND hashed = 1").bind(await sessionKey(token)).first<{ expires_at: number }>();
     assert.ok(row && Math.abs(row.expires_at - (Math.floor(Date.now() / 1000) + 43200)) < 60);
 
     // The same token under the old parent-domain cookie name is ignored on HTTPS.
@@ -5094,6 +5097,32 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const cleared = out.headers.getSetCookie();
     assert.ok(cleared.some((c) => c.startsWith("__Host-labkiosk_session=;") && /Max-Age=0/.test(c)));
     assert.ok(cleared.some((c) => c.startsWith("labkiosk_session=;") && /Domain=\.labkiosk\.org/.test(c)));
+  });
+
+  test("Sessions are stored under the hash of their token, and rows from before 0051 are rewritten", async () => {
+    const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! });
+    const token = res.headers.getSetCookie().find((c) => c.startsWith("__Host-labkiosk_session="))!.split(";")[0].split("=")[1];
+    const db = getDatabase(mockEnv);
+    assert.equal(await db.prepare("SELECT 1 FROM sessions WHERE token = ?").bind(token).first(), null, "the token itself is never stored");
+    assert.ok(await db.prepare("SELECT 1 FROM sessions WHERE token = ? AND hashed = 1").bind(await sessionKey(token)).first());
+    // The stored key is not a token: presented as a cookie, it opens nothing.
+    assert.equal((await callJson("/api/auth/me", { cookie: `__Host-labkiosk_session=${await sessionKey(token)}` })).data.user, null);
+
+    // A row written before 0051 holds the token itself and still works; its first use rewrites it.
+    const owner = await db.prepare("SELECT user_id, role FROM sessions WHERE token = ?").bind(await sessionKey(token)).first<{ user_id: string; role: string }>();
+    const legacy = "a".repeat(64), other = "b".repeat(64), expires = Math.floor(Date.now() / 1000) + 3600;
+    for (const t of [legacy, other]) {
+      await db.prepare("INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES (?, ?, NULL, ?, ?)").bind(t, owner!.user_id, owner!.role, expires).run();
+    }
+    assert.equal((await getSession(db, legacy))?.token, legacy, "the caller gets the token back, not the key");
+    assert.ok(await db.prepare("SELECT 1 FROM sessions WHERE token = ? AND hashed = 1").bind(await sessionKey(legacy)).first());
+    assert.equal(await db.prepare("SELECT 1 FROM sessions WHERE token = ?").bind(legacy).first(), null);
+
+    // The hourly job rewrites the rest, and a rewritten session still signs in.
+    assert.equal(await hashLegacySessions(db), 1);
+    assert.equal(await hashLegacySessions(db), 0);
+    assert.ok((await callJson("/api/auth/me", { cookie: `__Host-labkiosk_session=${other}` })).data.user);
+    for (const t of [legacy, other]) await db.prepare("DELETE FROM sessions WHERE token = ?").bind(await sessionKey(t)).run();
   });
 
   test("Signs out only on POST, never on a GET link", async () => {
