@@ -507,12 +507,29 @@ jobs:
             echo "::error::Could not check R2 for $prefix: $found"
             exit 1
           fi
+          # R2 now and then fails a large multipart upload as it completes
+          # (InvalidPart: "One or more of the specified parts could not be
+          # found"). The whole file is sent again; nothing is visible to a
+          # workstation until its manifest, which goes last, is there.
+          upload() {
+            local attempt
+            for attempt in 1 2 3; do
+              if aws s3 cp --no-progress --endpoint-url "$endpoint" "$1" "$2"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "::warning::Upload of $2 failed (attempt $attempt of 3); trying again in $((attempt * 15))s."
+                sleep $((attempt * 15))
+              fi
+            done
+            echo "::error::Upload of $2 failed 3 times."
+            return 1
+          }
           for arch in arm64 amd64; do
             folder="$prefix"
             [ "$arch" = amd64 ] || folder="$prefix/$arch"
             for name in vmlinuz initrd.img filesystem.squashfs manifest.json.sig manifest.json; do
-              aws s3 cp --no-progress --endpoint-url "$endpoint" \
-                "$RUNNER_TEMP/release/$arch/$name" "s3://$R2_RELEASES_BUCKET/$folder/$name"
+              upload "$RUNNER_TEMP/release/$arch/$name" "s3://$R2_RELEASES_BUCKET/$folder/$name"
             done
           done
 
