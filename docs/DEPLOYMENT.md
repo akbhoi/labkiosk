@@ -400,6 +400,21 @@ To take payments online (needs a Razorpay account with KYC done and your GSTIN):
 | `RAZORPAY_KEY_SECRET` | the key secret |
 | `RAZORPAY_WEBHOOK_SECRET` | the webhook secret from step 2 |
 
+4. Set the seller details printed on every invoice and proforma (plain variables, not secrets).
+   GST is charged, and an invoice is a tax invoice, only while `SELLER_GSTIN` holds a valid GSTIN;
+   without one, invoices are receipts with no GST.
+
+| Variable | Value |
+| --- | --- |
+| `SELLER_LEGAL_NAME` | the name on the GST registration, e.g. `LABKIOSK` |
+| `SELLER_ADDRESS` | the principal place of business; a line break starts a new line |
+| `SELLER_STATE` | the two-digit GST state code, e.g. `21` (Odisha) |
+| `SELLER_GSTIN` | the 15-character GSTIN |
+| `SELLER_SAC` | the services accounting code, e.g. `998315` |
+
+Invoices and proformas are computer generated and carry no signature. Super Admin → Billing
+exports each month's GSTR-1 as CSV for the GST portal's offline tool.
+
 Payments go through Payment Links: the console never loads Razorpay's script. Either the signed
 redirect back to `/api/billing/return` or the webhook records a payment, once.
 

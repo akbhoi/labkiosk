@@ -30,3 +30,11 @@ ALLOW_LOCAL_DB=1
 # GOOGLE_CLIENT_SECRET=
 # MICROSOFT_CLIENT_ID=
 # MICROSOFT_CLIENT_SECRET=
+
+# The seller printed on invoices and proformas (src/invoices.ts). GST is charged only
+# while SELLER_GSTIN is a valid GSTIN; SELLER_STATE is its two-digit state code.
+# SELLER_LEGAL_NAME="LABKIOSK"
+# SELLER_ADDRESS="Balangir, Odisha, India"
+# SELLER_STATE=21
+# SELLER_GSTIN=21CWZPB0039H2ZO
+# SELLER_SAC=998315
