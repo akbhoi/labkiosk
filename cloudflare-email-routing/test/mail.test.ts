@@ -226,6 +226,7 @@ test("An invoice shows its figures, and a proforma a QR code for its payment lin
   assert.ok(html.includes('aria-label="QR code for the payment link"'), "the proforma carries the QR code");
   // Version 3 and its quiet zone: 37 rows of 4px.
   assert.equal((html.match(/<tr style="height:4px">/g) || []).length, 37);
+  assert.equal((html.match(/<col width="4"/g) || []).length, 37, "every column is declared before the first row");
   assert.ok(html.length < 60_000, `a proforma stays well under Gmail's clipping size (${html.length} bytes)`);
 
   const tax = SAMPLES.find((s) => s.file === "invoice-tax")!;

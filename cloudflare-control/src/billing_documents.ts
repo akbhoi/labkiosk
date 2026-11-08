@@ -107,9 +107,20 @@ export async function resolveDocumentLink(db: D1Database, token: string, now: nu
   return { tenantId: row.tenant_id, kind: row.kind, documentId: row.document_id };
 }
 
-/** Where a private link opens: the platform's own host, or the dev host it was made on. */
+/**
+ * The platform's address for links in an email: its own host, or the dev host
+ * the request came from. Null when neither is known (a cron run without
+ * DEFAULT_DOMAIN): a relative link in an email would go nowhere.
+ */
+export function platformBase(env: Env, origin: string | null): string | null {
+  if (env.DEFAULT_DOMAIN && !isDevOrigin(origin)) return `https://${env.DEFAULT_DOMAIN}`;
+  return origin || null;
+}
+
+/** Where a private link opens; throws when there is no absolute address to give. */
 export function documentUrl(env: Env, origin: string | null, token: string): string {
-  const base = env.DEFAULT_DOMAIN && !isDevOrigin(origin) ? `https://${env.DEFAULT_DOMAIN}` : origin || "";
+  const base = platformBase(env, origin);
+  if (!base) throw new Error("DEFAULT_DOMAIN is not set, so a document link would not be absolute");
   return `${base}/billing/document/${token}`;
 }
 
@@ -611,6 +622,10 @@ export async function emailDocument(
   const owner = tenant.user_id ? await findUserById(db, tenant.user_id) : null;
   const view = await documentView(db, tenant.id, kind, documentId);
   if (!owner || !view) return false;
+  if (!platformBase(env, origin)) {
+    console.error(`[Billing] Not emailing ${kind} ${documentId}: DEFAULT_DOMAIN is not set, so its link would not be absolute`);
+    return false;
+  }
   const seller = sellerFrom(env);
   const link = documentUrl(env, origin, await createDocumentLink(db, tenant.id, kind, documentId, now));
   const fields = documentMailFields(view, seller);
@@ -720,6 +735,12 @@ function periodAfter(from: number, period: BillingPeriod): number {
 export async function runProformas(env: Env, db: D1Database, now: number, origin: string | null): Promise<number> {
   let sent = 0;
   await db.prepare("UPDATE proformas SET status = 'expired' WHERE status = 'open' AND valid_until <= ?").bind(now).run();
+  const base = platformBase(env, origin);
+  if (!base) {
+    // Razorpay's return address and the emailed links must be absolute.
+    console.error("[Billing] No proformas sent: DEFAULT_DOMAIN is not set");
+    return 0;
+  }
   for (const c of await proformaCandidates(db, now)) {
     try {
       // Education plans renew by application, not by payment: they get no proforma.
@@ -732,7 +753,7 @@ export async function runProformas(env: Env, db: D1Database, now: number, origin
         coversFrom: c.endsAt,
         coversTo: periodAfter(c.endsAt, c.input.period),
         userId: null,
-        callbackUrl: `${origin || (env.DEFAULT_DOMAIN ? `https://${env.DEFAULT_DOMAIN}` : "")}/api/billing/return`,
+        callbackUrl: `${base}/api/billing/return`,
         now
       });
       const ok = await emailDocument(env, db, c.tenant, "proforma", proforma.id, now, origin, {

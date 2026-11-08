@@ -63,9 +63,14 @@ function qrRowsOf(value: unknown): boolean[][] | null {
   return value as boolean[][];
 }
 
-/** The code as a table; its runs of one colour are one cell each. */
+/**
+ * The code as a table; its runs of one colour are one cell each. A fixed
+ * table lays its columns out from the first row, which is all quiet zone (one
+ * cell), so a colgroup declares every column first.
+ */
 function qrTable(rows: boolean[][]): string {
   const side = rows.length * QR_CELL_PX;
+  const cols = `<colgroup>${`<col width="${QR_CELL_PX}" style="width:${QR_CELL_PX}px">`.repeat(rows.length)}</colgroup>`;
   const body = rows
     .map((row) => {
       let cells = "";
@@ -82,7 +87,7 @@ function qrTable(rows: boolean[][]): string {
       return `<tr style="height:${QR_CELL_PX}px">${cells}</tr>`;
     })
     .join("");
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="${side}" bgcolor="#ffffff" style="width:${side}px;height:${side}px;border-collapse:collapse;table-layout:fixed;background:#ffffff;font-size:0;line-height:0" aria-label="QR code for the payment link">${body}</table>`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="${side}" bgcolor="#ffffff" style="width:${side}px;height:${side}px;border-collapse:collapse;table-layout:fixed;background:#ffffff;font-size:0;line-height:0" aria-label="QR code for the payment link">${cols}${body}</table>`;
 }
 
 function party(heading: string, p: InvoiceParty | undefined, unregistered: string): string {

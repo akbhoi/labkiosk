@@ -582,7 +582,7 @@ export function planChange(
   now: number,
   gstPercent: number
 ): { startsAt: number | null; upfront: { subtotal: number; gst: number; total: number } | null; immediate: boolean } {
-  if (!current || isFinal(current.status) && (current.current_end ?? 0) <= now) return { startsAt: null, upfront: null, immediate: true };
+  if (!current || (isFinal(current.status) && (current.current_end ?? 0) <= now)) return { startsAt: null, upfront: null, immediate: true };
   const end = current.current_end ?? now;
   const start = current.current_start ?? now;
   if (end <= now + MIN_START_LEAD) return { startsAt: null, upfront: null, immediate: true };

@@ -519,8 +519,8 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
     assert.ok(!page.includes("Legal name:"), "no second line without a trade name");
     assert.equal(await invoiceView(db, "another-tenant", invoice.id), null, "another organization's id finds nothing");
     const pfPage = renderDocumentPage((await proformaView(db, tenant.id, (await proforma()).id))!, sellerFrom(env), "n0nce");
-    assert.ok(pfPage.includes("Proforma Invoice") && pfPage.includes("not a tax invoice") && pfPage.includes('class="qr-code"') && pfPage.includes("https://rzp.io/rzp/"));
-    for (const tag of pfPage.match(/<(script|style)\b[^>]*>/g) ?? []) assert.ok(tag.includes('nonce="n0nce"'), `${tag} carries the nonce`);
+    assert.ok(pfPage.includes("Proforma Invoice") && pfPage.includes("not a tax invoice") && pfPage.includes('class="qr-code"') && /<a class="doc-btn is-primary" href="https:\/\/rzp\.io\/rzp\/[A-Za-z0-9]+"/.test(pfPage));
+    for (const tag of pfPage.match(/<(script|style)\b[^>]*>/gi) ?? []) assert.ok(tag.includes('nonce="n0nce"'), `${tag} carries the nonce`);
   });
 
   test("Organization data on a document is escaped", async () => {
@@ -543,6 +543,7 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
     assert.equal(await resolveDocumentLink(db, "' OR 1=1 --", now), null);
     assert.equal(documentUrl({ DEFAULT_DOMAIN: "labkiosk.org" } as Env, "https://riverside.labkiosk.org", token), `https://labkiosk.org/billing/document/${token}`);
     assert.equal(documentUrl({ DEFAULT_DOMAIN: "labkiosk.org" } as Env, "http://localhost:8787", token), `http://localhost:8787/billing/document/${token}`);
+    assert.throws(() => documentUrl({} as Env, null, token), /DEFAULT_DOMAIN/, "never a relative link in an email");
   });
 
   test("The hourly run sends one proforma for a plan that will not renew by itself, and closes it when its date passes", async () => {
@@ -566,7 +567,10 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
       .run();
 
     await runProformas(env, db, now, null);
-    await runProformas(env, db, now + 3600, null);
+    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM proformas").first("n"), 0, "no proforma without an absolute address for its links");
+    const cronEnv = { ...env, DEFAULT_DOMAIN: "labkiosk.org" } as Env;
+    await runProformas(cronEnv, db, now, null);
+    await runProformas(cronEnv, db, now + 3600, null);
     const rows = (await db.prepare("SELECT * FROM proformas").all<any>()).results ?? [];
     assert.equal(rows.length, 1, "one proforma, for the organization that pays by link");
     assert.deepEqual([rows[0].tenant_id, rows[0].reason, rows[0].period, Number(rows[0].extra_workstations), Number(rows[0].remote_seats)], [tenant.id, "renewal", "year", 5, 1], "it renews what was paid last");
@@ -574,7 +578,7 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
     assert.equal(Number(rows[0].covers_from), now + 3 * DAY);
     assert.ok(Number(rows[0].covers_to) >= now + 3 * DAY + 365 * DAY, "it covers the next year");
 
-    await runProformas(env, db, now + 3 * DAY + 1, null);
+    await runProformas(cronEnv, db, now + 3 * DAY + 1, null);
     assert.equal((await db.prepare("SELECT status FROM proformas").first<{ status: string }>())!.status, "expired");
   });
 
