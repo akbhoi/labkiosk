@@ -233,7 +233,7 @@ ${FONT_LINKS}
     <nav class="nav-links" aria-label="Main Navigation">
       <a href="/"${meta.activeNav ? "" : ' class="active"'}>Home</a>
       <a href="/features"${meta.activeNav === "features" ? ' class="active"' : ""}>Features</a>
-      <a href="/specs"${meta.activeNav === "specs" ? ' class="active"' : ""}>Specs</a>
+      <a href="/specs"${meta.activeNav === "specs" ? ' class="active"' : ""}>Hardware</a>
       <a href="/pricing"${meta.activeNav === "pricing" ? ' class="active"' : ""}>Pricing</a>
       <a href="/download"${meta.activeNav === "download" ? ' class="active"' : ""}>Download</a>
       <a href="/docs"${meta.activeNav === "docs" ? ' class="active"' : ""}>Docs</a>
@@ -1956,7 +1956,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; font-weight: 700; color: var(--text-main);">Lab Kiosk</td>
-                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free on ${PRICING.freeWorkstations} PCs; &#8377;${PRICING.monthly.toLocaleString("en-IN")}/month for ${PRICING.includedWorkstations}</td>
+                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free on ${PRICING.freeWorkstations} PCs; plans from &#8377;${CATALOGUE.starter.monthly.toLocaleString("en-IN")}/month</td>
               </tr>
             </table>
             <a class="btn btn-primary btn-block" href="/register">Register Your Organization</a>
@@ -2175,58 +2175,70 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <h3 class="feature-title">A Record of Every Change</h3>
           <p class="feature-desc">Subdomain changes, staff accounts, allowlist edits and key rotations are recorded and readable from your console, including anything the platform did to your organization.</p>
         </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <h3 class="feature-title">Exam Mode</h3>
+          <p class="feature-desc">Hold a group of workstations on one exam site for a set time, with printing blocked and the browser cleared before and after. Watch it live and download a report.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          </div>
+          <h3 class="feature-title">Power Schedules</h3>
+          <p class="feature-desc">Workstations switch themselves off at the end of the day after an on-screen warning, and on again in the morning, per group or for every workstation.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </div>
+          <h3 class="feature-title">Usage Reports</h3>
+          <p class="feature-desc">How long each workstation is switched on and in use, and which sites it spends that time on, by host name only. Export any report as CSV.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          </div>
+          <h3 class="feature-title">Managed Printing</h3>
+          <p class="feature-desc">Off until you turn it on; then workstations print to the network printers you list, for every workstation or per group. Printing stays off during an exam.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+          </div>
+          <h3 class="feature-title">Single Sign-On for Staff</h3>
+          <p class="feature-desc">Staff sign in to the console with their Google Workspace or Microsoft Entra ID account, followed by the second factor your organization requires. On every plan.</p>
+        </div>
       </div>
     </section>
 
-    <!-- Hardware Compatibility & Specs Section -->
+    <!-- Hardware: the short version; /specs and /hardware have the detail -->
     <section class="section-wrap" id="specs">
       <div class="section-header">
-        <h2 class="section-title">Hardware Specs &amp; Compatibility</h2>
+        <h2 class="section-title">Runs on the Computers You Have</h2>
         <p class="section-sub">Bring older desktops back into service or run on modern thin clients, without hardware upgrades.</p>
       </div>
-
-      <div class="specs-table-container">
-        <table class="specs-table">
-          <thead>
-            <tr>
-              <th>Component</th>
-              <th>Minimum Requirement</th>
-              <th>Recommended Specification</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Processor (CPU)</strong></td>
-              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer), or 64-bit ARM that boots with UEFI</td>
-              <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
-            </tr>
-            <tr>
-              <td><strong>System Memory (RAM)</strong></td>
-              <td>2 GB RAM (the system and the browser run from RAM)</td>
-              <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
-            </tr>
-            <tr>
-              <td><strong>Storage Drive</strong></td>
-              <td>2 GB+ USB flash drive (USB 2.0 or 3.0); internal disk not required</td>
-              <td>Fast USB 3.0/3.1 Thumb Drive or Internal M.2 / SATA SSD</td>
-            </tr>
-            <tr>
-              <td><strong>Network</strong></td>
-              <td>10/100 Mbps Fast Ethernet or 802.11n Wi-Fi</td>
-              <td>Gigabit Ethernet (1000 Mbps) or 802.11ac Wi-Fi</td>
-            </tr>
-            <tr>
-              <td><strong>Display Output</strong></td>
-              <td>VGA / DVI / HDMI supporting 1024x768 resolution</td>
-              <td>1080p Full HD (1920x1080) or higher via HDMI/DisplayPort</td>
-            </tr>
-            <tr>
-              <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported); a 64-bit ARM computer with UEFI firmware; or a Raspberry Pi 4, Pi 400 or Compute Module 4 from its own card image. <a href="/hardware">The models organizations run it on</a></td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="teaser-grid">
+        <div class="teaser-card"><strong>64-bit PC or ARM</strong><span>Any 64-bit x86 desktop, laptop or thin client, a 64-bit ARM computer with UEFI, or a Raspberry Pi 4.</span></div>
+        <div class="teaser-card"><strong>2 GB RAM</strong><span>The system and the browser run from RAM; 4 GB or more for heavier sites.</span></div>
+        <div class="teaser-card"><strong>A 2 GB+ USB drive</strong><span>Start from the stick, or install to the internal disk. No hard disk needed.</span></div>
       </div>
+      <p class="teaser-links"><a href="/specs">Full requirements</a> &middot; <a href="/hardware">Models organizations run it on</a> &middot; <a href="/download">Download the ISO</a></p>
+    </section>
+
+    <!-- Pricing: the short version -->
+    <section class="section-wrap" id="pricing-teaser">
+      <div class="section-header">
+        <h2 class="section-title">Start Free, Pay as You Grow</h2>
+        <p class="section-sub">Free on ${PRICING.freeWorkstations} workstations with no end date, a ${PRICING.trialDays}-day free trial of ${CATALOGUE.standard.label}, then plans from &#8377;${CATALOGUE.starter.monthly.toLocaleString("en-IN")} a month. Free for verified education institutions.</p>
+      </div>
+      <p class="teaser-links"><a class="btn btn-primary" href="/pricing">See plans and pricing</a></p>
     </section>
 
     <!-- Security & Architecture Section -->
@@ -2304,7 +2316,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Yes, on up to ${PRICING.freeWorkstations} workstations, with no end date. For a whole site, try the subscription free for ${PRICING.trialDays} days, then it is &#8377;${PRICING.monthly.toLocaleString("en-IN")} a month or &#8377;${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. See <a href="/pricing">Plans &amp; pricing</a>. To host it yourself, the source is available under the LabKiosk Software License: free for accredited educational institutions and non-commercial evaluation on up to 45 computers, and a commercial license for everyone else.
+            Yes, on up to ${PRICING.freeWorkstations} workstations, with no end date. For more, try ${CATALOGUE.standard.label} free for ${PRICING.trialDays} days; paid plans start at &#8377;${CATALOGUE.starter.monthly.toLocaleString("en-IN")} a month for ${CATALOGUE.starter.includedWorkstations} workstations (${CATALOGUE.standard.label}: &#8377;${CATALOGUE.standard.monthly.toLocaleString("en-IN")} a month for ${CATALOGUE.standard.includedWorkstations}), renew monthly or yearly, and can be cancelled any time. Institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. See <a href="/pricing">Plans &amp; pricing</a>. To host it yourself, the source is available under the LabKiosk Software License: free for accredited educational institutions and non-commercial evaluation on up to 45 computers, and a commercial license for everyone else.
           </div>
         </div>
 
@@ -3197,7 +3209,7 @@ function downloadMainHtml(
       </div>
       <h1 class="page-hero-title">Download <span>Lab Kiosk OS</span></h1>
       <p class="page-hero-desc">
-        Lightweight, immutable ${escapeHtml(debian)} live-build image for x86-64 and ARM64. Flash to a USB flash drive and turn any computer into a managed browser workstation.
+        Lightweight, immutable ${escapeHtml(debian)} live-build image for ${arm64 ? "x86-64 and ARM64 computers" : "Intel and AMD (x86-64) computers"}. Flash it to a USB drive and turn any computer into a managed browser workstation.
       </p>
     </section>
 
@@ -3277,6 +3289,7 @@ ${arm64}
             </p>
           </div>
         </div>
+        <p class="download-next">The enrollment key is in your console, under <strong>Overview &rarr; Enrol a workstation</strong> (Settings &rarr; Security). No account yet? <a href="/register">Register your organization</a>, free on ${PRICING.freeWorkstations} workstations. Not sure your computers will run it? Check the <a href="/specs">requirements</a> and the <a href="/hardware">models organizations run it on</a>.</p>
       </div>
 
       <div style="max-width: 840px; margin: 0 auto;">
@@ -4563,6 +4576,12 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .pricing-features li { display: flex; align-items: flex-start; gap: 10px; font-size: 0.875rem; color: var(--text-main); line-height: 1.5; }
     .pricing-features li svg { color: var(--success-text); flex-shrink: 0; margin-top: 2px; }
 
+    .teaser-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); max-width: 960px; margin: 0 auto; }
+    .teaser-card { display: grid; gap: 6px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); }
+    .teaser-card strong { font-size: 1.125rem; color: var(--text-main); }
+    .teaser-card span { font-size: 0.875rem; color: var(--text-muted); line-height: 1.5; }
+    .teaser-links { text-align: center; margin-top: 20px; color: var(--text-muted); }
+    .download-next { margin-top: 20px; font-size: 0.9375rem; color: var(--text-muted); line-height: 1.6; }
     .pricing-billed { font-size: 0.8125rem; color: var(--text-muted); margin: -16px 0 20px; }
     .pricing-footnote { font-size: 0.875rem; color: var(--text-muted); text-align: center; margin-top: 20px; }
     .pricing-grid-2 { grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 20px; }

@@ -577,7 +577,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /Register Your Organization/);
     assert.match(html, /id="mobile-toggle"/);
     assert.match(html, /id="mobile-drawer"/);
-    assert.match(html, /class="specs-table-container"/);
+    // The home page keeps hardware short and links to the full requirements.
+    assert.match(html, /Runs on the Computers You Have[\s\S]*href="\/specs">Full requirements/);
+    assert.match(html, /id="pricing-teaser"[\s\S]*href="\/pricing"/);
+    for (const feature of ["Exam Mode", "Power Schedules", "Usage Reports", "Managed Printing", "Single Sign-On for Staff"]) {
+      assert.ok(html.includes(feature), `the home page names ${feature}`);
+    }
   });
 
   test("Opens the sign-in dialog when redirected with ?login=1", async () => {

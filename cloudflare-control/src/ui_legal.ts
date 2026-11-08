@@ -134,6 +134,7 @@ ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
     }
     .legal-card a { color: var(--accent-text); text-underline-offset: 2px; }
     footer a { color: var(--accent-text); text-decoration: none; }
+    .legal-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-bottom: 10px; }
     footer a:hover { text-decoration: underline; }
     @media (max-width: 640px) {
       header { padding: 12px 16px; }
@@ -149,17 +150,22 @@ ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
       </div>
       <div class="brand-title">Lab Kiosk OS</div>
     </a>
-    <nav class="nav-links">
+    <nav class="nav-links" aria-label="Main Navigation">
       <a href="/">Home</a>
-      ${links}
-      <a href="/login">Operator Sign In</a>
+      <a href="/features">Features</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/download">Download</a>
+      <a href="/docs">Docs</a>
+      <a href="/contact">Contact</a>
+      <a href="/login">Sign In</a>
     </nav>
   </header>
 
 ${mainHtml}
 
   <footer>
-    &copy; 2026 Lab Kiosk OS • ${LEGAL_PAGES.map((page) => `<a href="${escapeAttr(page.path)}">${escapeHtml(page.label)}</a>`).join(" • ")} • <a href="/">Return to Platform Home</a>
+    <nav class="legal-links" aria-label="Legal documents">${links}</nav>
+    &copy; 2026 Lab Kiosk OS • <a href="/">Return to Platform Home</a>
   </footer>
 </body>
 </html>`;
