@@ -9,6 +9,7 @@
  */
 
 import { LabConfig, Tenant, HomepageBlock } from "./types";
+import { CATALOGUE, entitlement } from "./plans";
 import { parseHomepageBlocks } from "./db";
 import { consoleSubdomain, showsHomepage } from "./addresses";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
@@ -187,7 +188,7 @@ function renderSettingsPageHtml(
           </form>
         </div>
       </div>
-${renderRemoteControlCard(tenant)}
+${renderRemoteControlCard(tenant, tenantParam)}
     </div>
 
     <!-- ============================================================== -->
@@ -429,48 +430,48 @@ ${renderPrintingPaneHtml()}
 }
 
 /**
- * Remote Control is an add-on the platform approves per organization. This card
- * says where the organization stands and, until it is on, lets it ask.
+ * Remote Control is sold per workstation (src/limits.ts): this card says how
+ * many seats the plan has and sends the organization to Plan & billing for
+ * them. An organization that cannot pay online may still ask Lab Kiosk.
  */
-function renderRemoteControlCard(tenant: Tenant | undefined): string {
+function renderRemoteControlCard(tenant: Tenant | undefined, tenantParam: string): string {
   const revoked = tenant?.remote_control_status === "rejected" && Boolean(tenant?.remote_control_revoked_at);
-  const status = revoked ? "revoked" : tenant?.remote_control_status || "none";
-  const seats = Number(tenant?.remote_control_seats) || 1;
+  const seats = tenant ? entitlement(tenant).remoteSeats : 0;
+  const pending = tenant?.remote_control_status === "pending";
+  const status = revoked ? "revoked" : pending ? "pending" : seats > 0 ? "seats" : "none";
   const badges: Record<string, string> = {
-    none: `<span class="badge badge-neutral">Not enabled</span>`,
+    none: `<span class="badge badge-neutral">Add-on</span>`,
     pending: `<span class="badge badge-yellow">Requested</span>`,
-    approved: `<span class="badge badge-green">Enabled</span>`,
-    rejected: `<span class="badge badge-red">Not approved</span>`,
+    seats: `<span class="badge badge-green">Enabled</span>`,
     revoked: `<span class="badge badge-red">Turned off</span>`
   };
   const revokedOn = revoked ? new Date(Number(tenant!.remote_control_revoked_at) * 1000).toISOString().slice(0, 10) : "";
   const explanation: Record<string, string> = {
-    none: "See and control a workstation's screen from this console. It is enabled for each organization on request; we will email you the outcome, and licensing may need to be arranged first.",
+    none: `See and control a workstation's screen from this console. Each workstation you want to reach needs a Remote Control seat: ${escapeHtml(`₹${CATALOGUE.standard.remoteMonthly}`)} a month, and ${CATALOGUE.pro.label} includes ${CATALOGUE.pro.includedRemoteSeats}.`,
     pending: "Your request is being reviewed. We will email you as soon as it has been decided.",
-    approved: `Operators with the Workstations permission can open Remote Control on any connected workstation, on up to ${seats} ${seats === 1 ? "workstation" : "workstations"} at once.`,
-    rejected: "Your last request was not approved. You can ask again, ideally with a note on what you need it for.",
-    revoked: `Lab Kiosk turned Remote Control off for this organization on ${escapeHtml(revokedOn)}. You can ask for it again.`
+    seats: `Your plan has ${seats} Remote Control ${seats === 1 ? "seat" : "seats"}. A workstation takes a free seat the first time an administrator opens it; choose which workstations hold them, or buy more, on Plan &amp; billing.`,
+    revoked: `Lab Kiosk turned Remote Control off for this organization on ${escapeHtml(revokedOn)}. Write to support, or ask below, to have it turned on again.`
   };
-  const canRequest = status === "none" || status === "rejected" || status === "revoked";
+  const canRequest = status === "none" || status === "revoked";
   return `
       <div class="card mt-lg" id="section-remote-control">
         <div class="row-between">
           <h2 class="card-title">Remote Control</h2>
-          ${badges[status] || badges.none}
+          ${badges[status]}
         </div>
-        <p class="card-sub">${explanation[status] || explanation.none}</p>
+        <p class="card-sub">${explanation[status]}</p>
+        ${status === "revoked" || status === "pending" ? "" : `<div class="form-actions"><a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}">${status === "seats" ? "Manage seats" : "Buy seats"} on Plan &amp; billing</a></div>`}
         ${
           canRequest
-            ? `<form id="form-remote-control-request" class="form-narrow">
+            ? `<details class="mt-lg"><summary class="text-muted">Cannot pay online? Ask Lab Kiosk instead</summary>
+        <form id="form-remote-control-request" class="form-narrow mt-lg">
           <div class="form-group">
             <label class="form-label" for="remote-control-reason">What will you use it for? (optional)</label>
             <textarea class="form-textarea" id="remote-control-reason" rows="3" maxlength="2000" placeholder="For example: helping users at 30 workstations across two sites."></textarea>
           </div>
-          <button type="submit" class="btn btn-primary">Request Remote Control</button>
-        </form>`
-            : status === "approved"
-              ? `<div class="form-actions"><button type="button" class="btn btn-secondary" id="btn-remote-control-disable">Turn off Remote Control</button></div>`
-              : ""
+          <button type="submit" class="btn btn-secondary">Ask for Remote Control</button>
+        </form></details>`
+            : ""
         }
       </div>`;
 }

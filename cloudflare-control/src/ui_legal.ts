@@ -317,7 +317,7 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
   <main>
     <div class="legal-card">
       <h1>Terms of Service</h1>
-      <div class="updated-date">Last updated: October 20, 2026 &bull; Version 2026-10-20</div>
+      <div class="updated-date">Last updated: November 8, 2026 &bull; Version 2026-11-08</div>
 
       <div class="highlight-box">
         <strong>In short</strong>
@@ -350,10 +350,10 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
         <li><strong>Every other organization</strong>, including businesses and for-profit training centers, needs a commercial license or an active subscriber license, whatever the number of computers.</li>
         <li>You may not resell, sublicense, white-label or offer the software as a hosted or managed service.</li>
       </ul>
-      <p>We record the license your organization holds (education, evaluation, subscriber or commercial) and its end date. When a license end date passes, new workstations can no longer be enrolled and Remote Control stops until the license is renewed; workstations already enrolled keep working. Your organization may enroll up to the number of workstations its account allows, which is 45 unless we set a different limit for your license. To ask for a license or a higher limit, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
+      <p>We record the license your organization holds (education, evaluation, subscriber or commercial) and its end date. When a license end date passes, the organization moves to the Free plan: workstations beyond its limit stay enrolled but show a notice until a licence is free for them, and Remote Control stops. Each plan sets how many workstations may be enrolled and licensed, how many staff accounts the organization may have besides its owner, and how many workstations may carry a Remote Control seat, as listed on our <a href="/pricing">pricing page</a> or in the agreement for your license. Staff accounts beyond the limit are suspended, not deleted, until the plan allows them again. To ask for a license or a higher limit, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
 
       <h2>5. Subscriber License</h2>
-      <p>This section is the Subscriber License the LabKiosk Software License refers to. While your organization holds an active subscription, we grant it a non-exclusive, non-transferable right to use the hosted control plane for its own workstations, up to its workstation limit, for the subscription term. Fees, the term and any service commitments are those in the order, quote or invoice we agree with you in writing; if that document conflicts with these Terms, that document prevails for the subscription. The subscription ends at the end of its term unless renewed, and does not allow you to provide the Platform to others as a service.</p>
+      <p>This section is the Subscriber License the LabKiosk Software License refers to. While your organization holds an active subscription, we grant it a non-exclusive, non-transferable right to use the hosted control plane for its own workstations, up to its workstation limit, for the subscription term. Fees and limits are those of the plan you choose on our <a href="/pricing">pricing page</a>, or those in an order, quote or invoice we agree with you in writing; if such a document conflicts with these Terms, that document prevails for the subscription. A subscription bought online renews automatically for another period of the same length, at the price you authorised, until your organization's owner cancels it under Plan &amp; billing; cancelling takes effect at the end of the period already paid for. Refunds and cancellation are governed by our <a href="/refunds">Refund &amp; Cancellation Policy</a>. A subscription does not allow you to provide the Platform to others as a service.</p>
 
       <h2>6. Using the Platform Responsibly</h2>
       <p>Your organization decides how its workstations are used, and is responsible for that use. In particular, you agree to:</p>
@@ -437,7 +437,7 @@ export function renderDataProcessingAgreementHtml(options: LegalPageOptions = {}
   <main>
     <div class="legal-card">
       <h1>Data Processing Agreement</h1>
-      <div class="updated-date">Last updated: October 20, 2026 &bull; Part of the Terms of Service, Version 2026-10-20</div>
+      <div class="updated-date">Last updated: November 8, 2026 &bull; Part of the Terms of Service, Version 2026-11-08</div>
 
       <div class="highlight-box">
         <strong>Part of the Terms of Service</strong>
@@ -630,15 +630,15 @@ export function renderRefundPolicyHtml(options: LegalPageOptions = {}): string {
   <main>
     <div class="legal-card">
       <h1>Refund &amp; Cancellation Policy</h1>
-      <div class="updated-date">Last updated: November 3, 2026</div>
+      <div class="updated-date">Last updated: November 8, 2026</div>
 
       <div class="highlight-box">
-        <strong>In short: payments are not refundable</strong>
-        Try Lab Kiosk before you pay: the Free plan covers ${p.freeWorkstations} workstations with no end date, and every organization can try the full subscription free for ${p.trialDays} days. Once you pay for a period, we do not refund it.
+        <strong>In short: plans renew until you cancel, and payments are not refundable</strong>
+        Try Lab Kiosk before you pay: the Free plan covers ${p.freeWorkstations} workstations with no end date, and every organization can try Standard free for ${p.trialDays} days. A paid plan renews by itself each month or year until you cancel it; cancelling stops the next charge, and the period already paid for is not refunded.
       </div>
 
       <h2>1. What You Pay For</h2>
-      <p>A subscription is paid in advance for one month or one year, at the prices on our <a href="/pricing">pricing page</a> plus GST, for the number of workstations you choose. Payments are taken by Razorpay, which sends the receipt. The Free plan, the trial and the Education plan cost nothing.</p>
+      <p>A subscription is paid in advance for one month or one year, at the prices on our <a href="/pricing">pricing page</a> plus any GST that applies, for the plan, the extra workstations and the Remote Control seats you choose. When you subscribe you authorise Razorpay to charge the same amount at the start of each new period, by card, UPI mandate or netbanking mandate, until you cancel; Razorpay tells you before each charge. Every payment has an invoice under Plan &amp; billing in your console. The Free plan, the trial and the Education plan cost nothing.</p>
 
       <h2>2. No Refunds</h2>
       <p>Every payment is final. We do not refund, in whole or in part:</p>
@@ -646,7 +646,8 @@ export function renderRefundPolicyHtml(options: LegalPageOptions = {}): string {
         <li>a month or a year that has started, including time you do not use;</li>
         <li>workstations you paid for and did not enrol, or removed;</li>
         <li>a plan you stop using before its end date, or an organization you close;</li>
-        <li>a renewal paid before the current period ended, which adds to that period;</li>
+        <li>a renewal charged at the start of a period because the subscription had not been cancelled before it;</li>
+        <li>the difference charged when you move to a larger plan in the middle of a period;</li>
         <li>a plan suspended or ended because the <a href="/terms">Terms of Service</a> or the <a href="/content-policy">Content Policy</a> were broken.</li>
       </ul>
 
@@ -660,10 +661,10 @@ export function renderRefundPolicyHtml(options: LegalPageOptions = {}): string {
       <p>Write to <a href="mailto:support@labkiosk.org">support@labkiosk.org</a> within 30 days of the payment with your organization's address and the Razorpay payment reference. Once we confirm it, the refund is issued within 7 working days; your bank may take a few more days to show it.</p>
 
       <h2>4. Cancellation</h2>
-      <p>Nothing renews by itself and we never charge you without your action, so there is nothing to cancel: a paid plan simply ends on its end date unless you pay for another period. The console reminds administrators before that date. When it ends, the organization moves to the Free plan: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, and none of your settings or data are deleted.</p>
+      <p>The organization's owner cancels under Plan &amp; billing in the console, at any time. Cancelling stops every later charge at once; the plan stays until the end of the period already paid for, and can be resumed until then. If a renewal payment fails, Razorpay tries again, and the plan stays for 7 days after the last attempt so you can update the payment method. We email the owner before a yearly renewal. When a plan ends, the organization moves to the Free plan: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, staff over the Free plan's limit are suspended, and none of your settings or data are deleted.</p>
 
       <h2>5. Delivery</h2>
-      <p>Lab Kiosk is an online service; nothing is shipped. A paid plan is applied to your organization as soon as Razorpay confirms the payment, usually within a minute, and shows under Plan in your console. If it has not appeared within an hour, write to <a href="mailto:support@labkiosk.org">support@labkiosk.org</a> with the payment reference.</p>
+      <p>Lab Kiosk is an online service; nothing is shipped. A paid plan is applied to your organization as soon as Razorpay confirms the payment, usually within a minute, and shows under Plan &amp; billing in your console. If it has not appeared within an hour, write to <a href="mailto:support@labkiosk.org">support@labkiosk.org</a> with the payment reference.</p>
 
       <h2>6. Changes to This Policy</h2>
       <p>We may change this policy by publishing a new version here with a new date. A payment is governed by the version in force when it was made.</p>

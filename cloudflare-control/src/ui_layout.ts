@@ -1125,6 +1125,11 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .stat-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .stat-label { color: var(--text-muted); }
     .stat-val { color: var(--text-main); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    /* On a phone the dots carry the meaning, so the counters fit without scrolling. */
+    @media (max-width: 480px) {
+      .stat-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .stat-pill { padding: 3px 9px; }
+    }
     @keyframes stat-pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.6; }
@@ -1333,6 +1338,8 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .hidden { display: none !important; }
 
     /* A tinted note inside a page: information, a warning, or a confirmation. */
+    /* The hidden attribute wins over a class's display, or a hidden callout shows empty. */
+    [hidden] { display: none !important; }
     .callout {
       display: flex;
       align-items: flex-start;

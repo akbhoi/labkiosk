@@ -543,7 +543,8 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
       db,
       tenant.id,
       approve
-        ? { remote_control_status: "approved", remote_control_seats: seats as number, remote_control_revoked_at: null }
+        ? // A manual grant is seats as well (src/limits.ts): one per workstation, as many open at once.
+          { remote_control_status: "approved", remote_control_seats: seats as number, remote_seats_paid: Math.max(Number(tenant.remote_seats_paid) || 0, seats as number), remote_control_revoked_at: null }
         : { remote_control_status: "rejected" }
     );
     await setConversationStatus(db, id, approve ? "approved" : "rejected", userId);

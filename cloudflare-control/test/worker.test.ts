@@ -597,10 +597,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const pricing = await (await call("/pricing")).text();
     assert.match(pricing, /Plans &amp; Pricing/);
     assert.match(pricing, /<h2 class="pricing-tier">Free<\/h2>[\s\S]*Up to 5 workstations/);
-    assert.match(pricing, /&#8377;1,999 <small>a month<\/small>[\s\S]*&#8377;19,990 a year/);
-    assert.match(pricing, /&#8377;39 a month \(&#8377;390 a year\) for each one more, up to 200/);
+    // Every tier, priced from the catalogue the console sells from (src/plans.ts).
+    for (const [tier, monthly, yearly] of [["Starter", "999", "9,990"], ["Standard", "1,999", "19,990"], ["Pro", "4,999", "49,990"]]) {
+      assert.match(pricing, new RegExp(`<h2 class="pricing-tier">${tier}</h2>[\\s\\S]*?<span data-price-month>&#8377;${monthly}</span>[\\s\\S]*?Billed &#8377;${yearly} once a year`), tier);
+    }
     assert.match(pricing, /15 days free/);
-    assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*after verification/);
+    assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*free for a year at a time/);
+    assert.match(pricing, /Remote Control add-on/);
+    assert.match(pricing, /Compare plans[\s\S]*Staff accounts besides you/);
+    assert.match(pricing, /id="pricing-calc"/);
+    assert.match(pricing, /renew by themselves/, "the page says plans renew");
+    assert.doesNotMatch(pricing, /never renewed without you/, "the old promise is gone");
     assert.match(pricing, /href="\/contact\?reason=sales">Contact sales/);
     assert.doesNotMatch(pricing, /Education Grant|50%/, "the old grant and the discount are gone");
     assert.match(pricing, /href="\/refunds">Refund &amp; Cancellation Policy/);
@@ -610,7 +617,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(refundsHtml, /<h1>Refund &amp; Cancellation Policy<\/h1>/);
     assert.match(refundsHtml, /Every payment is final/);
     assert.match(refundsHtml, /charged twice/, "duplicate charges are still refunded");
-    assert.match(refundsHtml, /Nothing renews by itself/);
+    assert.match(refundsHtml, /renews by itself each month or year until you cancel/, "the policy describes automatic renewal");
+    assert.match(refundsHtml, /Cancelling stops every later charge at once/);
+    assert.doesNotMatch(refundsHtml, /Nothing renews by itself/, "the old promise is gone");
     assert.equal((await call("/refunds?tenant=greenwood")).status, 200, "served on any address, like the other legal pages");
 
     const download = await (await call("/download")).text();
@@ -1481,6 +1490,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Remote Control is off until an organization asks and the platform approves", async () => {
+    // An organization with no seats: the platform's grant below gives it one.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET remote_seats_paid = 0 WHERE subdomain = 'greenwood'").run();
     const before = await callJson("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "PC-01" }), cookie: orgSessionCookie });
     assert.equal(before.res.status, 403);
     assert.match(before.data.error, /not enabled/);
@@ -1526,6 +1537,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const after = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.doesNotMatch(after, /id="form-remote-control-request"/);
     assert.match(after, /badge-green">Enabled/);
+    assert.match(after, /Your plan has 1 Remote Control seat\./, "the grant is a seat");
+    // The rest of the suite opens Remote Control on several workstations.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET remote_seats_paid = 10 WHERE subdomain = 'greenwood'").run();
   });
 
   test("A rejected registration is told why and cannot sign in", async () => {

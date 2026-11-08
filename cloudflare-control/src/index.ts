@@ -226,6 +226,7 @@ import {
 import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
 import { handlePlanRoutes } from "./plan_routes";
 import { billingEnabled } from "./billing";
+import { gstPercentFor } from "./invoices";
 import { handleBillingRoutes, sendRenewalNotices } from "./billing_routes";
 import { claimRemoteSeat, staffCapRefusal } from "./limits";
 import { reconcileSubscriptions } from "./subscriptions";
@@ -5683,7 +5684,8 @@ export default {
           contactEmail: "contact@labkiosk.org",
           ...formChecks,
           canonicalUrl,
-          nonce
+          nonce,
+          gstPercent: gstPercentFor(env)
         }),
         { headers: htmlHeaders }
       );

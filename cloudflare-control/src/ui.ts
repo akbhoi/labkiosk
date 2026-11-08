@@ -159,7 +159,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     },
     {
       id: "plan",
-      label: "Plan",
+      label: "Plan & billing",
       href: `/admin/plan${tenantParam}`,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
     },
