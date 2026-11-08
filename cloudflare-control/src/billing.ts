@@ -207,7 +207,7 @@ export async function createPaymentLink(
     callbackUrl: string;
     nowSeconds: number;
     /** A link the platform sends: its tier, seats, note, and how long it stays open. */
-    platform?: { tier: SoldTier; remoteSeats: number; note: string; hours: number };
+    platform?: { tier: SoldTier; remoteSeats: number; note: string; hours: number; razorpayEmail?: boolean };
   }
 ): Promise<Payment> {
   if (!billingEnabled(env)) throw new Error("Online payment is not set up");
@@ -258,8 +258,9 @@ export async function createPaymentLink(
         reference_id: id,
         description,
         customer: { name: input.name.slice(0, 100), email: input.email },
-        // The platform's links reach the customer by Lab Kiosk's own email, and Razorpay's.
-        notify: { sms: false, email: Boolean(p) },
+        // The platform's links reach the customer by Lab Kiosk's own email, and Razorpay's unless
+        // that email already carries the link (a proforma).
+        notify: { sms: false, email: Boolean(p) && p?.razorpayEmail !== false },
         reminder_enable: false,
         expire_by: expiresAt,
         callback_url: input.callbackUrl,

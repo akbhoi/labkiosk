@@ -496,6 +496,7 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
     const sent = rzp.links.get(payment.link_id);
     assert.equal(sent.amount, q.total, "Razorpay is asked for the proforma's total");
     assert.equal(sent.expire_by, now + 5 * DAY, "the link closes when the proforma does");
+    assert.equal(sent.notify.email, true, "without platform mail, Razorpay emails the link");
     assert.equal((await proforma()).number, `PI/${fy}/000002`);
 
     const paid = await recordPayment(db, { referenceId: payment.id, linkId: payment.link_id, paymentId: "pay_00000000000001" }, now + 60, env);

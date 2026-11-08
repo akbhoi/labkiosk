@@ -519,7 +519,8 @@ export async function createProforma(env: Env, db: D1Database, p: NewProforma): 
     quote,
     callbackUrl: p.callbackUrl,
     nowSeconds: p.now,
-    platform: { tier: p.input.tier, remoteSeats: p.input.remoteSeats, note: `Proforma ${number}${p.note ? `: ${p.note}` : ""}`, hours }
+    // The proforma email carries the link; Razorpay emails it too only when this platform cannot.
+    platform: { tier: p.input.tier, remoteSeats: p.input.remoteSeats, note: `Proforma ${number}${p.note ? `: ${p.note}` : ""}`, hours, razorpayEmail: Boolean(mailConfigProblem(env)) }
   });
   const id = `pf${crypto.randomUUID().replace(/-/g, "")}`;
   await db

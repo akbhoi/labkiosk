@@ -380,18 +380,22 @@ Firebase the same way, and only the SHA-256 of the link's token is stored.
 
 ### Online payment (Razorpay, optional)
 
-Plans (`src/plans.ts`): Free (5 workstations), a one-time 15-day trial (45), a subscription
-(₹1,999 a month or ₹19,990 a year plus 18% GST, 45 workstations, ₹39 / ₹390 per extra one up to
-200), Education (free, 45, verified by hand in Super Admin → Tasks → Education) and Custom (set
-by hand). Without Razorpay, Plan in the console sends customers to sales and the super admin
-records a subscription with **License** and **Workstation Limit** on the organization.
+Plans and prices live in one place, the catalogue in `src/plans.ts`: Free (5 workstations, 2 staff),
+a one-time 15-day trial, Starter, Standard and Pro (monthly or yearly, each with included
+workstations, extra workstations and a staff cap), Education (free, verified by hand in Super Admin
+→ Tasks → Education) and Custom above 200 workstations. Remote Control is sold per workstation on
+top of any plan. Pricing on `/pricing` and Plan & billing in the console are drawn from the same
+catalogue. Without Razorpay, Plan & billing shows the prices and sends customers to sales, and the
+super admin records a plan with **License** and **Workstation Limit** on the organization.
 
 To take payments online (needs a Razorpay account with KYC done and your GSTIN):
 
 1. Razorpay Dashboard → Account & Settings → **API Keys**: generate a key pair.
 2. Razorpay Dashboard → Account & Settings → **Webhooks**: add
-   `https://<your domain>/api/billing/razorpay/webhook` with the event **payment_link.paid**
-   and a secret of your choice.
+   `https://<your domain>/api/billing/razorpay/webhook` with a secret of your choice and these
+   events: **payment_link.paid**, and every **subscription.*** event (authenticated, activated,
+   charged, pending, halted, cancelled, completed, updated, paused, resumed). A missed event is
+   caught by the hourly reconciliation, which reads each subscription back from Razorpay.
 3. Set the Worker's secrets:
 
 | Secret | Value |
@@ -416,15 +420,23 @@ To take payments online (needs a Razorpay account with KYC done and your GSTIN):
 Invoices and proformas are computer generated and carry no signature. Super Admin → Billing
 exports each month's GSTR-1 as CSV for the GST portal's offline tool.
 
-Payments go through Payment Links: the console never loads Razorpay's script. Either the signed
-redirect back to `/api/billing/return` or the webhook records a payment, once.
+Plans renew through Razorpay Subscriptions (the customer authorises a card or UPI mandate once);
+older customers and one-off payments go through Payment Links. The console never loads Razorpay's
+script. Each charge is granted and invoiced once, whichever of the webhook, the signed return to
+`/api/billing/return` or the hourly reconciliation sees it first.
+
+A week before a plan that will not renew by itself ends, the hourly run emails a proforma invoice
+with a payment link and its QR code, and a reminder the day before. Paying it extends the plan and
+issues the tax invoice. Apply migrations `0059_subscriptions.sql` and `0060_billing_documents.sql`
+before deploying this.
 
 #### Razorpay relay on Google Cloud (when Pay fails with HTTP 525)
 
 Razorpay's API (`api.razorpay.com`, an AWS load balancer) refuses the TLS handshake from
 Cloudflare Workers, so creating a payment link fails with `HTTP 525 (server cloudflare, …)`.
-`cloudflare-control/relay/razorpay` is a small Cloud Run function that the Worker sends that one
-call through. It forwards only `POST /v1/payment_links`, only when the request is signed with a
+`cloudflare-control/relay/razorpay` is a small Cloud Run function that the Worker sends its
+Razorpay calls through. It forwards only the calls listed in `ALLOWED` in its `handler.js` (payment
+links, plans, subscriptions, a subscription's invoices, a payment), only when the request is signed with a
 shared secret and less than five minutes old, keeps no state and holds no Razorpay keys (the
 Worker's own authorization is passed through). The webhook and the return redirect are inbound
 to the Worker and do not use it.
@@ -456,7 +468,8 @@ Then set the Worker's secrets, using the function URL the deploy prints
 | `RAZORPAY_RELAY_URL` | the function URL, no trailing slash |
 | `RAZORPAY_RELAY_SECRET` | the contents of `relay-secret.txt` |
 
-Set both or neither: with only one, Pay answers that the relay is half set up. Delete
+Set both or neither: with only one, Pay answers that the relay is half set up. Deploy the relay
+again whenever `ALLOWED` changes: an older relay refuses the subscription calls with 404. Delete
 `relay-secret.txt` once both sides have it.
 
 Education certificates are stored in the `AUDIT_ARCHIVE` bucket under `education/`; a rejected
