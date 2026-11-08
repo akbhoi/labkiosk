@@ -838,6 +838,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const again = await call(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
     assert.equal(again.status, 409, "a decided task stays decided");
+    // The rest of the suite manages staff and Remote Control on greenwood: a Custom
+    // plan has room for both, where Free allows 2 staff and no Remote Control seat.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET license_plan = 'commercial', remote_seats_paid = 10 WHERE subdomain = 'greenwood'").run();
 
     // The organization's owner administers it, so sign-in asks for an emailed code as well.
     const login = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
@@ -6510,7 +6513,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     assert.equal((await license({ tenantId: "nope", plan: "commercial", expiresOn: null }, admin)).status, 404);
     assert.equal((await call("/api/super/tenants/license", { ...json(null), cookie: admin })).status, 404, "a null body is an empty request");
-    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, before!.license_plan ?? null, "nothing changed");
 
     // Room for more workstations than Free covers; those from earlier tests count as seen long ago.
     await updateTenant(db, tenantId, { workstation_limit: 200 });
@@ -6595,7 +6598,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const clientId of [...tokens.keys(), "PC-LAPSED"]) {
       await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
     }
-    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null, workstation_limit: before!.workstation_limit });
+    await updateTenant(db, tenantId, { license_plan: before!.license_plan ?? null, license_expires_at: null, workstation_limit: before!.workstation_limit });
     await db.prepare("DELETE FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).run();
   });
 
@@ -10695,7 +10698,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const now = 1_800_000_000;
     assert.deepEqual(
       { ...entitlement({ license_plan: null, license_expires_at: null, workstation_limit: 5 }, now) },
-      { kind: "free", label: "Free", limit: 5, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
+      { kind: "free", label: "Free", tier: null, limit: 5, staffLimit: 2, remoteSeats: 0, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
     );
     const trial = entitlement({ license_plan: "evaluation", license_expires_at: now + 86_400, workstation_limit: 45 }, now);
     assert.equal(trial.kind, "trial");
@@ -10747,13 +10750,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("An organization on Free starts its one 15-day trial of 45 workstations; staff without settings cannot", async () => {
     const { db, tenantId } = await restorePlan();
-    await updateTenant(db, tenantId, { workstation_limit: PRICING.freeWorkstations });
     assert.ok([401, 403].includes((await call("/api/plan/trial?tenant=greenwood", json({}))).status), "an anonymous caller is refused");
+    // Free allows 2 staff, and earlier tests left more: add this one while a Custom plan has room.
+    await updateTenant(db, tenantId, { license_plan: "commercial" });
     const { data: staffData } = await callJson("/api/tenant/staff?tenant=greenwood", {
       ...json({ name: "Plan operator", email: "plan-operator@greenwood.example", password: "StaffPassword123!", role: "operator", permissions: ["workstations"] }),
       cookie: orgSessionCookie
     });
     assert.equal(staffData.status, "ok", JSON.stringify(staffData));
+    await updateTenant(db, tenantId, { license_plan: null, workstation_limit: PRICING.freeWorkstations });
     const operator = await sessionOf(await signIn({ email: "plan-operator@greenwood.example", password: "StaffPassword123!" }));
     assert.equal((await call("/api/plan?tenant=greenwood", { cookie: operator })).status, 403, "the plan needs the settings permission");
     assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: operator })).status, 403);

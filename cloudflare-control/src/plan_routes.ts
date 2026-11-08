@@ -49,7 +49,9 @@ import { licenseDate } from "./license";
 import { sendMail, mailConfigProblem } from "./mail";
 import { createNotification } from "./notifications";
 import { moveLicence, syncLicences } from "./plan_sync";
-import { entitlement, listEnrolledWorkstations, MAX_ONLINE_EXTRA, parseQuoteInput, PRICING, trialRefusal } from "./plans";
+import { afterSubscriptionChange } from "./billing_routes";
+import { CATALOGUE, entitlement, listEnrolledWorkstations, MAX_ONLINE_EXTRA, parseQuoteInput, PRICING, trialRefusal } from "./plans";
+import { findSubscriptionByRazorpayId, syncSubscription } from "./subscriptions";
 import { notifyPlatformOwner, type RouteContext } from "./signup";
 import type { Tenant } from "./types";
 
@@ -278,7 +280,7 @@ async function organizationPlan(ctx: PlanRouteContext): Promise<Response | null>
 
 async function activate(ctx: PlanRouteContext, ref: { referenceId: string; linkId: string; paymentId: string }, via: string): Promise<Payment | null> {
   const nowMs = Date.now();
-  const payment = await recordPayment(ctx.db, ref, Math.floor(nowMs / 1000));
+  const payment = await recordPayment(ctx.db, ref, Math.floor(nowMs / 1000), ctx.env);
   if (!payment) return null;
   const tenant = await findTenantById(ctx.db, payment.tenant_id);
   await writeAuditLog(ctx.db, {
@@ -291,7 +293,7 @@ async function activate(ctx: PlanRouteContext, ref: { referenceId: string; linkI
       tenantId: tenant.id,
       kind: "license",
       title: "Payment received",
-      body: `Thank you. ${tenant.name} is subscribed for ${PRICING.includedWorkstations + Number(payment.extra_workstations)} workstations until ${licenseDate(Number(payment.period_ends_at))} (paid ${rupees(Number(payment.total_paise))}).`,
+      body: `Thank you. ${tenant.name} is subscribed for ${CATALOGUE[payment.tier ?? "standard"].includedWorkstations + Number(payment.extra_workstations)} workstations${payment.period_ends_at ? ` until ${licenseDate(Number(payment.period_ends_at))}` : ""} (paid ${rupees(Number(payment.total_paise))}).`,
       createdBy: payment.created_by
     });
     await syncLicences(ctx.env, ctx.db, tenant.id, nowMs);
@@ -328,6 +330,14 @@ async function findPaymentTenant(db: D1Database, id: string): Promise<{ subdomai
     .first<{ subdomain: string }>();
 }
 
+/**
+ * Razorpay's webhook. The signature is checked on the raw body; each event id
+ * is processed once (billing_events). A subscription event only prompts a
+ * fresh look at that subscription through Razorpay's API, whose state is
+ * what is applied (src/subscriptions.ts), so order and repeats do not matter.
+ * When Razorpay cannot be read, the answer is 500 and Razorpay sends the
+ * event again; the hourly reconciliation is the second net.
+ */
 async function billingWebhook(ctx: PlanRouteContext): Promise<Response> {
   const secret = ctx.env.RAZORPAY_WEBHOOK_SECRET;
   if (!secret) return jsonError("The webhook is not set up", 503, ctx.jsonHeaders);
@@ -341,10 +351,62 @@ async function billingWebhook(ctx: PlanRouteContext): Promise<Response> {
   } catch {
     return jsonError("The body is not JSON", 400, ctx.jsonHeaders);
   }
-  const paid = paidLinkFromWebhook(body);
-  // Every other event is acknowledged, or Razorpay would keep sending it.
-  if (paid) await activate(ctx, paid, "webhook");
+  const now = Math.floor(Date.now() / 1000);
+  const event = typeof (body as { event?: unknown })?.event === "string" ? String((body as { event: string }).event).slice(0, 64) : "";
+  const subscriptionId = subscriptionIdFromWebhook(body);
+  // Razorpay names each event; a signed body without the header still gets a stable id.
+  const eventId = (ctx.request.headers.get("x-razorpay-event-id") || "").slice(0, 100) || `sha:${await sha256Hex(raw)}`;
+  const seen = await ctx.db
+    .prepare("SELECT processed_at FROM billing_events WHERE event_id = ?")
+    .bind(eventId)
+    .first<{ processed_at: number | null }>();
+  if (seen?.processed_at) return json({ status: "ok", duplicate: true }, ctx.jsonHeaders);
+  if (!seen) {
+    await ctx.db
+      .prepare("INSERT OR IGNORE INTO billing_events (event_id, event, entity_id, received_at) VALUES (?, ?, ?, ?)")
+      .bind(eventId, event, subscriptionId ?? paidLinkFromWebhook(body)?.referenceId ?? null, now)
+      .run();
+  }
+  let outcome = "ignored";
+  let tenantId: string | null = null;
+  try {
+    const paid = paidLinkFromWebhook(body);
+    if (paid) {
+      const payment = await activate(ctx, paid, "webhook");
+      outcome = payment ? "payment_recorded" : "payment_known";
+      tenantId = payment?.tenant_id ?? null;
+    } else if (subscriptionId && event.startsWith("subscription.")) {
+      const row = await findSubscriptionByRazorpayId(ctx.db, subscriptionId);
+      if (!row) {
+        outcome = "unknown_subscription";
+      } else {
+        tenantId = row.tenant_id;
+        const result = await syncSubscription(ctx.env, ctx.db, row, now);
+        outcome = result.mismatched.length ? "amount_mismatch" : `synced:${result.status}${result.granted ? `:granted${result.granted}` : ""}`;
+        await afterSubscriptionChange(ctx.env, ctx.db, row, result.status, result.granted, now);
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Billing] Webhook ${event} (${eventId}) failed:`, message);
+    await ctx.db.prepare("UPDATE billing_events SET error = ? WHERE event_id = ?").bind(message.slice(0, 500), eventId).run();
+    return jsonError("The event could not be applied yet", 500, ctx.jsonHeaders);
+  }
+  await ctx.db
+    .prepare("UPDATE billing_events SET processed_at = ?, outcome = ?, tenant_id = COALESCE(tenant_id, ?), error = NULL WHERE event_id = ?")
+    .bind(now, outcome, tenantId, eventId)
+    .run();
   return json({ status: "ok" }, ctx.jsonHeaders);
+}
+
+function subscriptionIdFromWebhook(body: unknown): string | null {
+  const id = (body as { payload?: { subscription?: { entity?: { id?: unknown } } } })?.payload?.subscription?.entity?.id;
+  return typeof id === "string" && /^sub_[A-Za-z0-9]{1,32}$/.test(id) ? id : null;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ------------------------------------------------------------------- platform

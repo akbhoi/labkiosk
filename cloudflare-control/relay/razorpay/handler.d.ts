@@ -1,5 +1,5 @@
 export declare const RAZORPAY_ORIGIN: string;
-export declare const ALLOWED: ReadonlyArray<{ method: string; path: string }>;
+export declare const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }>;
 export declare const MAX_SKEW_SECONDS: number;
 
 export declare function relaySignature(secret: string, timestamp: string, method: string, path: string, body: string): string;

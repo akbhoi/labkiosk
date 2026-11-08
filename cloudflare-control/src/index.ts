@@ -225,6 +225,10 @@ import {
 } from "./notifications";
 import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
 import { handlePlanRoutes } from "./plan_routes";
+import { billingEnabled } from "./billing";
+import { handleBillingRoutes, sendRenewalNotices } from "./billing_routes";
+import { claimRemoteSeat, staffCapRefusal } from "./limits";
+import { reconcileSubscriptions } from "./subscriptions";
 import { syncLicences } from "./plan_sync";
 import { entitlement, PRICING } from "./plans";
 import { purgeEducationApplications } from "./education";
@@ -1441,6 +1445,19 @@ export default {
       return;
     }
     await purgeOldStatus(db);
+    // Subscriptions Razorpay changed without a webhook reaching us, checkouts
+    // never authorised, and charges since the last look (src/subscriptions.ts).
+    if (billingEnabled(env)) {
+      try {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const changed = await reconcileSubscriptions(env, db, nowSeconds);
+        if (changed.length) console.log(`[Billing] Reconciled subscriptions of ${changed.length} organization(s).`);
+        const notices = await sendRenewalNotices(env, db, nowSeconds);
+        if (notices) console.log(`[Billing] Sent ${notices} renewal notice(s).`);
+      } catch (err) {
+        console.error("[Billing] Reconciling subscriptions failed:", err);
+      }
+    }
     // Plans that ended this hour drop to Free, and what Free does not cover
     // shows the licence notice (src/plans.ts); one organization failing does not stop the rest.
     {
@@ -1883,6 +1900,10 @@ export default {
       isDev
     };
     const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
+
+    // Plan & billing, subscriptions and the platform's view of them (src/billing_routes.ts).
+    const billingResponse = handleBillingRoutes({ ...routeContext, method, path, tenant: currentTenant });
+    if (billingResponse) return billingResponse;
 
     // Plan, education applications and Razorpay (src/plan_routes.ts).
     const planResponse = await handlePlanRoutes({ ...routeContext, method, path, tenant: currentTenant });
@@ -3955,6 +3976,10 @@ export default {
         const refused = await staffDelegationProblem(db, session!, currentTenant!, { role, permissions });
         if (refused) return jsonError(refused, 403, jsonHeaders);
 
+        // The plan caps staff accounts besides the owner (src/limits.ts).
+        const capped = await staffCapRefusal(db, currentTenant!, entitlement(currentTenant!).staffLimit);
+        if (capped) return jsonError(capped, 402, jsonHeaders);
+
         if (body.password !== undefined && body.password !== "") {
           const passwordProblem =
             validatePasswordStrength(String(body.password)) || (await breachedPasswordProblem(String(body.password), env));
@@ -4506,6 +4531,12 @@ export default {
       const clientId = typeof body?.clientId === "string" ? body.clientId.trim() : "";
       if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
       const tenantId = currentTenant!.id;
+      // Each Remote Control seat belongs to one workstation (src/limits.ts); the
+      // platform's demos are not sold seats.
+      if (!isDemoTenant(currentTenant!, currentTenant!.user_id)) {
+        const seat = await claimRemoteSeat(db, tenantId, clientId, entitlement(currentTenant!).remoteSeats, session!.user_id, Math.floor(Date.now() / 1000));
+        if (!seat.ok) return jsonError(seat.error, 402, jsonHeaders);
+      }
       const token = newRelayToken();
       if (!(await openRelaySession(env, tenantId, clientId, await hashRelayToken(token), session!.user_id))) {
         return jsonError("The Remote Control relay could not open a session", 502, jsonHeaders);

@@ -18,7 +18,9 @@
 
 import { timingSafeEqual } from "./auth";
 import { findTenantById, updateTenant } from "./db";
-import { entitlement, PRICING, type BillingPeriod, type Quote } from "./plans";
+import { invoiceStatements } from "./invoices";
+import { CATALOGUE, entitlement, PRICING, quoteTier, type BillingPeriod, type Quote, type SoldTier } from "./plans";
+import { invoiceLines } from "./subscriptions";
 import type { Env } from "./types";
 
 const RAZORPAY_ORIGIN = "https://api.razorpay.com";
@@ -45,6 +47,13 @@ export interface Payment {
   created_at: number;
   paid_at: number | null;
   period_ends_at: number | null;
+  kind: "legacy" | "proration" | "platform_link";
+  tier: SoldTier | null;
+  remote_seats: number;
+  subscription_id: string | null;
+  sent_to: string | null;
+  note: string | null;
+  expires_at: number | null;
 }
 
 async function hmacHex(secret: string, message: string): Promise<string> {
@@ -108,11 +117,13 @@ export function razorpayRoute(env: Env): { kind: "direct" } | { kind: "relay"; u
 
 async function sendToRazorpay(env: Env, path: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<Response> {
   const route = razorpayRoute(env);
-  if (route.kind === "direct") return fetch(`${RAZORPAY_ORIGIN}${path}`, init);
+  // A GET carries no body; the relay signs it as the empty string.
+  const request = { method: init.method, headers: init.headers, body: init.method === "GET" ? undefined : init.body };
+  if (route.kind === "direct") return fetch(`${RAZORPAY_ORIGIN}${path}`, request);
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = await hmacHex(route.secret, `${timestamp}\n${init.method}\n${path}\n${init.body}`);
   return fetch(`${route.url}${path}`, {
-    ...init,
+    ...request,
     headers: { ...init.headers, "X-Relay-Timestamp": timestamp, "X-Relay-Signature": signature }
   });
 }
@@ -123,6 +134,51 @@ async function fetchRazorpay(env: Env, path: string, init: { method: string; hea
   console.error(`[Billing] Razorpay ${path} answered ${describeHttpFailure(first)}; trying once more`);
   await first.body?.cancel();
   return sendToRazorpay(env, path, init);
+}
+
+export class RazorpayError extends Error {
+  constructor(
+    message: string,
+    /** Razorpay's HTTP status, or 0 when it could not be reached. */
+    readonly status: number
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * One call to Razorpay's API with the key, through the relay when it is set.
+ * Returns the parsed JSON of a 2xx answer; throws RazorpayError otherwise,
+ * with Razorpay's own description when it gave one. Never logs keys or bodies.
+ */
+export async function razorpayJson<T>(env: Env, method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  if (!billingEnabled(env)) throw new RazorpayError("Online payment is not set up", 0);
+  let res: Response;
+  try {
+    res = await fetchRazorpay(env, path, {
+      method,
+      headers: {
+        Authorization: `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`,
+        "Content-Type": "application/json"
+      },
+      body: body === undefined ? "" : JSON.stringify(body)
+    });
+  } catch (err) {
+    console.error(`[Billing] Razorpay ${method} ${path.split("?")[0]} could not be reached:`, err);
+    throw new RazorpayError("Razorpay could not be reached. Try again in a few minutes.", 0);
+  }
+  let data: unknown = null;
+  try {
+    data = await res.json();
+  } catch (err) {
+    console.error(`[Billing] Razorpay ${method} ${path.split("?")[0]} answered with something that is not JSON:`, err);
+  }
+  if (!res.ok || data === null || typeof data !== "object") {
+    const description = (data as { error?: { description?: unknown } } | null)?.error?.description;
+    const why = typeof description === "string" ? description : describeHttpFailure(res);
+    throw new RazorpayError(`Razorpay refused ${method} ${path.split("?")[0]}: ${why}`, res.status);
+  }
+  return data as T;
 }
 
 /** "HTTP 525 (server cloudflare, ray abc123-MAA)": enough to tell whose edge answered, for Razorpay support. */
@@ -141,22 +197,53 @@ export function describeHttpFailure(res: Response): string {
 export async function createPaymentLink(
   env: Env,
   db: D1Database,
-  input: { tenantId: string; organization: string; userId: string; email: string; name: string; quote: Quote; callbackUrl: string; nowSeconds: number }
+  input: {
+    tenantId: string;
+    organization: string;
+    userId: string;
+    email: string;
+    name: string;
+    quote: Pick<Quote, "period" | "extraWorkstations" | "workstations" | "subtotal" | "gst" | "total">;
+    callbackUrl: string;
+    nowSeconds: number;
+    /** A link the platform sends: its tier, seats, note, and how long it stays open. */
+    platform?: { tier: SoldTier; remoteSeats: number; note: string; hours: number };
+  }
 ): Promise<Payment> {
   if (!billingEnabled(env)) throw new Error("Online payment is not set up");
   // A half-set relay is a setup mistake: say so before anything is written.
   razorpayRoute(env);
   const id = `lk${crypto.randomUUID().replace(/-/g, "")}`;
   const q = input.quote;
+  const p = input.platform;
+  const expiresAt = input.nowSeconds + (p ? p.hours : LINK_HOURS) * 3600;
   await db
     .prepare(
-      `INSERT INTO payments (id, tenant_id, period, extra_workstations, subtotal_paise, gst_paise, total_paise, status, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)`
+      `INSERT INTO payments (id, tenant_id, period, extra_workstations, subtotal_paise, gst_paise, total_paise, status, created_by, created_at,
+                             kind, tier, remote_seats, sent_to, note, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, input.tenantId, q.period, q.extraWorkstations, q.subtotal, q.gst, q.total, input.userId, input.nowSeconds)
+    .bind(
+      id,
+      input.tenantId,
+      q.period,
+      q.extraWorkstations,
+      q.subtotal,
+      q.gst,
+      q.total,
+      input.userId,
+      input.nowSeconds,
+      p ? "platform_link" : "legacy",
+      p ? p.tier : null,
+      p ? p.remoteSeats : 0,
+      p ? input.email : null,
+      p ? p.note.slice(0, 500) : null,
+      expiresAt
+    )
     .run();
+  const label = p ? CATALOGUE[p.tier].label : "subscription";
   const description =
-    `Lab Kiosk subscription, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations, for ${input.organization}`.slice(0, 2048);
+    `Lab Kiosk ${label}, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations${p && p.remoteSeats ? `, ${p.remoteSeats} Remote Control seats` : ""}, for ${input.organization}`.slice(0, 2048);
   let res: Response;
   try {
     res = await fetchRazorpay(env, "/v1/payment_links", {
@@ -171,9 +258,10 @@ export async function createPaymentLink(
         reference_id: id,
         description,
         customer: { name: input.name.slice(0, 100), email: input.email },
-        notify: { sms: false, email: false },
+        // The platform's links reach the customer by Lab Kiosk's own email, and Razorpay's.
+        notify: { sms: false, email: Boolean(p) },
         reminder_enable: false,
-        expire_by: input.nowSeconds + LINK_HOURS * 3600,
+        expire_by: expiresAt,
         callback_url: input.callbackUrl,
         callback_method: "get",
         notes: { tenant_id: input.tenantId, period: q.period, workstations: String(q.workstations) }
@@ -212,15 +300,17 @@ export async function listPayments(db: D1Database, tenantId: string): Promise<Pa
 }
 
 /**
- * Record a payment and extend the subscription, once. A subscription still in
- * force is extended from its end; anything else starts now. Returns the
- * payment when this call recorded it, null when it was recorded already or is
- * not ours.
+ * Record a payment and extend the plan, once. A plan still in force is
+ * extended from its end; anything else starts now. A payment for a tier sets
+ * that tier's limits (one without a tier is the original plan, Standard).
+ * With env, an invoice is issued in the same batch. Returns the payment when
+ * this call recorded it, null when it was recorded already or is not ours.
  */
 export async function recordPayment(
   db: D1Database,
   ref: { referenceId: string; linkId: string; paymentId: string },
-  nowSeconds: number
+  nowSeconds: number,
+  env?: Env
 ): Promise<Payment | null> {
   const payment = await findPayment(db, ref.referenceId);
   if (!payment || payment.link_id !== ref.linkId) return null;
@@ -234,12 +324,49 @@ export async function recordPayment(
   const plan = entitlement(tenant, nowSeconds);
   const from = plan.kind === "subscription" && plan.expiresAt !== null && plan.expiresAt > nowSeconds ? plan.expiresAt : nowSeconds;
   const ends = periodEnd(from, payment.period);
-  await updateTenant(db, tenant.id, {
-    license_plan: "subscriber",
-    license_expires_at: ends,
-    workstation_limit: PRICING.includedWorkstations + Number(payment.extra_workstations)
-  });
-  await db.prepare("UPDATE payments SET period_ends_at = ? WHERE id = ?").bind(ends, payment.id).run();
+  const tier: SoldTier = payment.tier ?? "standard";
+  const spec = CATALOGUE[tier];
+  const extra = Number(payment.extra_workstations);
+  const seats = Number(payment.remote_seats) || 0;
+  if (tier === "education") {
+    await updateTenant(db, tenant.id, {
+      workstation_limit: spec.includedWorkstations + extra,
+      remote_seats_paid: seats,
+      remote_control_seats: Math.max(Number(tenant.remote_control_seats) || 1, spec.includedRemoteSeats + seats)
+    });
+  } else {
+    await updateTenant(db, tenant.id, {
+      license_plan: "subscriber",
+      plan_tier: tier,
+      license_expires_at: ends,
+      workstation_limit: spec.includedWorkstations + extra,
+      remote_seats_paid: seats,
+      remote_control_seats: Math.max(Number(tenant.remote_control_seats) || 1, spec.includedRemoteSeats + seats),
+      grace_ends_at: null,
+      staff_limit: null
+    });
+  }
+  await db.prepare("UPDATE payments SET period_ends_at = ? WHERE id = ?").bind(tier === "education" ? null : ends, payment.id).run();
+  if (env && ref.paymentId) {
+    const q = quoteTier({ tier, period: payment.period, extraWorkstations: extra, remoteSeats: seats }, 0);
+    const lines = invoiceLines(q);
+    const fresh = (await findTenantById(db, tenant.id)) ?? tenant;
+    await db.batch(
+      invoiceStatements(db, env, {
+        id: `in${crypto.randomUUID().replace(/-/g, "")}`,
+        tenant: fresh,
+        source: "payment",
+        sourceId: payment.id,
+        razorpayPaymentId: ref.paymentId.slice(0, 64),
+        subtotal: Number(payment.subtotal_paise),
+        gst: Number(payment.gst_paise),
+        total: Number(payment.total_paise),
+        // The lines carry the catalogue's split; a price set by hand is one line.
+        lines: lines.reduce((sum, l) => sum + l.amount, 0) === Number(payment.subtotal_paise) ? lines : [{ description: `Lab Kiosk ${spec.label}`, amount: Number(payment.subtotal_paise) }],
+        issuedAt: nowSeconds
+      })
+    );
+  }
   return (await findPayment(db, payment.id))!;
 }
 

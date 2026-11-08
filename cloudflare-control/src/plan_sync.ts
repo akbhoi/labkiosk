@@ -6,11 +6,13 @@
  * reaches the hub.
  */
 
-import { findTenantById, setClientsBroadcast } from "./db";
+import { findTenantById, setClientsBroadcast, updateTenant, writeAuditLog } from "./db";
 import { notifyConfigChanged } from "./hub";
+import { enforceRemoteSeats, enforceStaffCap } from "./limits";
 import { createNotification } from "./notifications";
-import { entitlement, moveLicenceTo, rebalanceLicences, type Rebalance } from "./plans";
-import type { Env } from "./types";
+import { isDemoSlug } from "./demo";
+import { entitlement, moveLicenceTo, rebalanceLicences, type Entitlement, type Rebalance } from "./plans";
+import type { Env, Tenant } from "./types";
 
 /**
  * A workstation that gets its licence back leaves the notice: a reset
@@ -24,6 +26,7 @@ export async function syncLicences(env: Env, db: D1Database, tenantId: string, n
   const tenant = await findTenantById(db, tenantId);
   if (!tenant) return { unlicensed: [], relicensed: [] };
   const plan = entitlement(tenant, Math.floor(nowMs / 1000));
+  await syncAddOns(db, tenant, plan, Math.floor(nowMs / 1000));
   const result = await rebalanceLicences(db, tenantId, plan.limit, Math.floor(nowMs / 1000));
   if (!result.unlicensed.length && !result.relicensed.length) return result;
   await releaseNotice(db, tenantId, result.relicensed, nowMs);
@@ -42,6 +45,37 @@ export async function syncLicences(env: Env, db: D1Database, tenantId: string, n
   }
   await notifyConfigChanged(env, tenantId);
   return result;
+}
+
+/**
+ * Staff and Remote Control seats follow the plan too: staff over the cap are
+ * suspended, seats over the count released, and seats bought turn Remote
+ * Control on unless the platform turned it off.
+ */
+async function syncAddOns(db: D1Database, tenant: Tenant, plan: Entitlement, now: number): Promise<void> {
+  if (isDemoSlug(tenant.subdomain)) return;
+  const suspended = await enforceStaffCap(db, tenant, plan.staffLimit, now);
+  if (suspended.length) {
+    const n = suspended.length;
+    await writeAuditLog(db, { tenantId: tenant.id, action: "staff.suspended_over_cap", details: `users=${suspended.join(",")} limit=${plan.staffLimit}` });
+    await createNotification(db, {
+      tenantId: tenant.id,
+      kind: "license",
+      title: "Staff over the plan's limit",
+      body:
+        `${tenant.name} is on the ${plan.label} plan, which allows ${plan.staffLimit} staff account${plan.staffLimit === 1 ? "" : "s"} besides the owner. ` +
+        `${n} staff ${n === 1 ? "member added most recently is" : "members added most recently are"} suspended until the plan allows more. Choose who stays active under Plan & billing.`,
+      createdBy: null
+    });
+  }
+  const released = await enforceRemoteSeats(db, tenant.id, plan.remoteSeats);
+  if (released.length) {
+    await writeAuditLog(db, { tenantId: tenant.id, action: "remote_control.seats_released", details: `clients=${released.join(",")} seats=${plan.remoteSeats}` });
+  }
+  // How many sessions may be open at once is the platform's setting; a purchase raises it (src/subscriptions.ts).
+  const update: Partial<Tenant> = {};
+  if (plan.remoteSeats > 0 && tenant.remote_control_status !== "approved" && !tenant.remote_control_revoked_at) update.remote_control_status = "approved";
+  if (Object.keys(update).length) await updateTenant(db, tenant.id, update);
 }
 
 /** Move a licence to a workstation that shows the notice (Plan page). */

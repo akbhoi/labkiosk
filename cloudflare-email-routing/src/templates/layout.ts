@@ -137,7 +137,7 @@ export function paragraphs(text: string, style = ""): string {
     .join("");
 }
 
-type Tone = "accent" | "neutral" | "success" | "warning";
+export type Tone = "accent" | "neutral" | "success" | "warning";
 
 const PANEL: Record<Tone, { background: string; border: string; className: string }> = {
   accent: { background: COLOR.accentSoft, border: COLOR.accentBorder, className: "lk-panel" },

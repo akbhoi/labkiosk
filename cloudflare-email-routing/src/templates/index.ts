@@ -8,10 +8,12 @@
  *   decision  a request approved or declined
  *   letter    a formal letter to a company
  *   alert     a security notice about the recipient's account
+ *   billing   a payment, renewal or cancellation of an organization's plan
  *   notice    plain text in the scaffold (the fallback)
  *
  * The plain-text part is written by the sender and is the body of the
- * templates that carry prose (receipt, reply, decision, letter, notice), so
+ * templates that carry prose (receipt, reply, decision, letter, notice; billing
+ * puts it under its figures), so
  * the two parts of a message never say different things.
  *
  * This module has no bindings and no state: the email Worker renders with it
@@ -20,6 +22,7 @@
  */
 
 import { AlertTemplate, renderAlert } from "./alert";
+import { BillingTemplate, renderBilling } from "./billing";
 import { codeSubject, CodeTemplate, renderCode } from "./code";
 import { DecisionTemplate, renderDecision } from "./decision";
 import { Brand } from "./layout";
@@ -29,10 +32,11 @@ import { ReceiptTemplate, renderReceipt } from "./receipt";
 import { ReplyTemplate, renderReply } from "./reply";
 
 export type { Brand } from "./layout";
-export type { AlertTemplate, CodeTemplate, DecisionTemplate, LetterTemplate, NoticeTemplate, ReceiptTemplate, ReplyTemplate };
+export type { AlertTemplate, BillingTemplate, CodeTemplate, DecisionTemplate, LetterTemplate, NoticeTemplate, ReceiptTemplate, ReplyTemplate };
 
 export type MailTemplate =
   | AlertTemplate
+  | BillingTemplate
   | CodeTemplate
   | DecisionTemplate
   | LetterTemplate
@@ -40,7 +44,7 @@ export type MailTemplate =
   | ReceiptTemplate
   | ReplyTemplate;
 
-export const TEMPLATE_NAMES = ["alert", "code", "decision", "letter", "notice", "receipt", "reply"] as const;
+export const TEMPLATE_NAMES = ["alert", "billing", "code", "decision", "letter", "notice", "receipt", "reply"] as const;
 
 export interface RenderInput {
   template: MailTemplate;
@@ -64,6 +68,8 @@ export function renderMailHtml(input: RenderInput): string {
   switch (template.name) {
     case "alert":
       return renderAlert(template, subject, brand);
+    case "billing":
+      return renderBilling(template, subject, text, brand);
     case "code":
       return renderCode(template, subject, brand);
     case "decision":

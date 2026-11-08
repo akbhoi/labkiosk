@@ -107,6 +107,23 @@ export const SAMPLES: Sample[] = [
     }
   },
   {
+    file: "billing",
+    subject: "Payment received: Lab Kiosk Standard",
+    text: "Your GST invoice is attached to your account under Plan & billing.",
+    template: {
+      name: "billing",
+      title: "Payment received",
+      lead: "Thank you. Greenwood Public Library's Standard plan is paid until 8 December 2026.",
+      details: [
+        ["Plan", "Standard, monthly, 45 workstations"],
+        ["Amount", "₹2,358.82 (GST ₹359.82)"],
+        ["Invoice", "LK/2026-27/000012"]
+      ],
+      action: { label: "View invoice", url: "https://greenwood.labkiosk.org/admin/plan" },
+      tone: "success"
+    }
+  },
+  {
     file: "notice",
     subject: "[REG-M3X7QA] New registration: Greenwood Public Library",
     text:

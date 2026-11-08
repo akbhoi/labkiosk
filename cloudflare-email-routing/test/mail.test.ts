@@ -85,7 +85,8 @@ test("Nothing a person typed reaches a message unescaped", () => {
     { name: "reply", reference: HOSTILE, category: HOSTILE, author: HOSTILE },
     { name: "decision", reference: HOSTILE, outcome: "approved", title: HOSTILE, category: HOSTILE, action: { label: HOSTILE, url: "javascript:alert(1)" } },
     { name: "letter", reference: HOSTILE, date: HOSTILE, recipientName: HOSTILE, recipientOrganization: HOSTILE, heading: HOSTILE, signatory: HOSTILE, signatoryTitle: HOSTILE },
-    { name: "alert", title: HOSTILE, lead: HOSTILE, details: [[HOSTILE, HOSTILE]], advice: HOSTILE }
+    { name: "alert", title: HOSTILE, lead: HOSTILE, details: [[HOSTILE, HOSTILE]], advice: HOSTILE },
+    { name: "billing", title: HOSTILE, lead: HOSTILE, details: [[HOSTILE, HOSTILE]], action: { label: HOSTILE, url: "javascript:alert(1)" }, tone: "danger" }
   ];
   for (const template of templates) {
     const html = renderMailHtml({

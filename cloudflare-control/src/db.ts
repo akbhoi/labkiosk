@@ -107,7 +107,16 @@ CREATE TABLE IF NOT EXISTS tenants (
   chosen_subdomain TEXT,
   feature_tip_dismissed_at INTEGER,
   summary_dismissed_month TEXT,
-  trial_started_at INTEGER
+  trial_started_at INTEGER,
+  plan_tier TEXT
+  CHECK (plan_tier IS NULL OR plan_tier IN ('starter', 'standard', 'pro')),
+  staff_limit INTEGER,
+  remote_seats_paid INTEGER NOT NULL DEFAULT 0 CHECK (remote_seats_paid >= 0),
+  grace_ends_at INTEGER,
+  billing_legal_name TEXT,
+  billing_gstin TEXT,
+  billing_address TEXT,
+  billing_state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -378,6 +387,7 @@ CREATE TABLE IF NOT EXISTS tenant_users (
   role TEXT NOT NULL DEFAULT 'operator' CHECK (role IN ('org_admin', 'sub_admin', 'operator', 'assistant', 'content_manager')),
   permissions TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
+  suspended_at INTEGER,
   UNIQUE (tenant_id, user_id)
 );
 
@@ -796,10 +806,110 @@ CREATE TABLE IF NOT EXISTS payments (
   created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
   paid_at INTEGER,
-  period_ends_at INTEGER
+  period_ends_at INTEGER,
+  kind TEXT NOT NULL DEFAULT 'legacy'
+  CHECK (kind IN ('legacy', 'proration', 'platform_link')),
+  tier TEXT
+  CHECK (tier IS NULL OR tier IN ('starter', 'standard', 'pro', 'education')),
+  remote_seats INTEGER NOT NULL DEFAULT 0 CHECK (remote_seats >= 0),
+  subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
+  sent_to TEXT,
+  note TEXT,
+  expires_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_payments_tenant ON payments(tenant_id, created_at);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tier TEXT NOT NULL CHECK (tier IN ('starter', 'standard', 'pro', 'education')),
+  period TEXT NOT NULL CHECK (period IN ('month', 'year')),
+  catalogue_version INTEGER NOT NULL,
+  extra_workstations INTEGER NOT NULL CHECK (extra_workstations >= 0),
+  remote_seats INTEGER NOT NULL CHECK (remote_seats >= 0),
+  subtotal_paise INTEGER NOT NULL CHECK (subtotal_paise > 0),
+  gst_paise INTEGER NOT NULL CHECK (gst_paise >= 0),
+  total_paise INTEGER NOT NULL CHECK (total_paise > 0),
+  -- A replacement bought mid-term charges the pro-rated difference once, when
+  -- it is authorised (Razorpay's upfront add-on), GST included.
+  upfront_paise INTEGER NOT NULL DEFAULT 0 CHECK (upfront_paise >= 0),
+  upfront_gst_paise INTEGER NOT NULL DEFAULT 0 CHECK (upfront_gst_paise >= 0),
+  razorpay_plan_id TEXT,
+  razorpay_subscription_id TEXT UNIQUE,
+  short_url TEXT,
+  status TEXT NOT NULL DEFAULT 'created'
+  CHECK (status IN ('created', 'authenticated', 'active', 'pending', 'halted', 'cancelled', 'completed', 'paused', 'expired')),
+  current_start INTEGER,
+  current_end INTEGER,
+  -- Set when the organization cancelled: it keeps what it paid for until current_end.
+  cancelled_at INTEGER,
+  cancel_reason TEXT,
+  -- A replacement starts when the subscription it replaces ends.
+  replaces_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
+  starts_at INTEGER,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant ON subscriptions(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status, current_end);
+
+-- Every verified Razorpay webhook, once.
+CREATE TABLE IF NOT EXISTS billing_events (
+  event_id TEXT PRIMARY KEY,
+  event TEXT NOT NULL,
+  entity_id TEXT,
+  tenant_id TEXT REFERENCES tenants(id) ON DELETE SET NULL,
+  received_at INTEGER NOT NULL,
+  processed_at INTEGER,
+  outcome TEXT,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_events_tenant ON billing_events(tenant_id, received_at);
+CREATE INDEX IF NOT EXISTS idx_billing_events_entity ON billing_events(entity_id, received_at);
+
+-- A tax invoice (or, before the seller has a GSTIN, a receipt) for every
+-- captured charge. The figures are copied from what was sold, never recomputed.
+CREATE TABLE IF NOT EXISTS invoices (
+  id TEXT PRIMARY KEY,
+  number TEXT NOT NULL UNIQUE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK (source IN ('subscription', 'payment')),
+  source_id TEXT NOT NULL,
+  razorpay_payment_id TEXT NOT NULL UNIQUE,
+  subtotal_paise INTEGER NOT NULL,
+  cgst_paise INTEGER NOT NULL,
+  sgst_paise INTEGER NOT NULL,
+  igst_paise INTEGER NOT NULL,
+  total_paise INTEGER NOT NULL,
+  seller_gstin TEXT,
+  buyer_name TEXT NOT NULL,
+  buyer_gstin TEXT,
+  buyer_address TEXT,
+  place_of_supply TEXT,
+  lines_json TEXT NOT NULL,
+  issued_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_tenant ON invoices(tenant_id, issued_at);
+
+-- Gap-free invoice numbers per Indian financial year ("2026-27").
+CREATE TABLE IF NOT EXISTS invoice_counters (
+  fy TEXT PRIMARY KEY,
+  next INTEGER NOT NULL
+);
+
+-- Workstations that carry one of the organization's Remote Control seats.
+CREATE TABLE IF NOT EXISTS remote_control_workstations (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  assigned_at INTEGER NOT NULL,
+  assigned_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  PRIMARY KEY (tenant_id, client_id)
+);
 `;
 
 /**
@@ -1032,7 +1142,16 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT trial_started_at FROM tenants LIMIT 1",
   "SELECT tenant_id, client_id, since FROM unlicensed_workstations LIMIT 1",
   "SELECT id, board, affiliation_number, code_hash, certificate_key, status, decision_reason FROM education_applications LIMIT 1",
-  "SELECT id, link_id, period, extra_workstations, total_paise, status, period_ends_at FROM payments LIMIT 1"
+  "SELECT id, link_id, period, extra_workstations, total_paise, status, period_ends_at FROM payments LIMIT 1",
+  // 0059: subscriptions, invoices, staff caps and Remote Control seats.
+  "SELECT plan_tier, staff_limit, remote_seats_paid, grace_ends_at, billing_gstin, billing_state FROM tenants LIMIT 1",
+  "SELECT suspended_at FROM tenant_users LIMIT 1",
+  "SELECT id, tier, razorpay_subscription_id, status, current_end, cancelled_at, replaces_id FROM subscriptions LIMIT 1",
+  "SELECT event_id, outcome FROM billing_events LIMIT 1",
+  "SELECT id, number, razorpay_payment_id, igst_paise FROM invoices LIMIT 1",
+  "SELECT fy, next FROM invoice_counters LIMIT 1",
+  "SELECT tenant_id, client_id FROM remote_control_workstations LIMIT 1",
+  "SELECT kind, tier, remote_seats, subscription_id, expires_at FROM payments LIMIT 1"
 ];
 
 /**
@@ -1414,7 +1533,15 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "license_plan",
   "license_expires_at",
   "remote_control_revoked_at",
-  "trial_started_at"
+  "trial_started_at",
+  "plan_tier",
+  "staff_limit",
+  "remote_seats_paid",
+  "grace_ends_at",
+  "billing_legal_name",
+  "billing_gstin",
+  "billing_address",
+  "billing_state"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */
@@ -1747,11 +1874,12 @@ export async function getTenantUserPermissions(
   }
 
   const row = await db
-    .prepare("SELECT role, permissions FROM tenant_users WHERE tenant_id = ? AND user_id = ? LIMIT 1")
+    .prepare("SELECT role, permissions, suspended_at FROM tenant_users WHERE tenant_id = ? AND user_id = ? LIMIT 1")
     .bind(tenantId, userId)
-    .first<{ role?: string; permissions: string }>();
+    .first<{ role?: string; permissions: string; suspended_at?: number | null }>();
 
-  if (!row) return [];
+  // Staff over the plan's cap are suspended (src/limits.ts): no permission at all.
+  if (!row || row.suspended_at) return [];
   if (row.role === "org_admin") {
     return ["*"];
   }
