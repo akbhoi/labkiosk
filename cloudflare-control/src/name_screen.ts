@@ -8,7 +8,7 @@
  *
  * A name is split into words on anything that is not a letter or digit, and
  * each word is compared after undoing common character swaps (`p0rn`,
- * `s3x`). Most terms match a whole word only, because a substring match on a
+ * `s3x`), with any letter of a term allowed to repeat (`fuuck`). Most terms match a whole word only, because a substring match on a
  * short term refuses real places ("Essex", "Scunthorpe"); the few terms that
  * never occur inside an ordinary word also match inside one (`hotpornsite`).
  *
@@ -104,11 +104,25 @@ function words(text: string): string[] {
     .filter(Boolean);
 }
 
-/** A word with look-alike characters read as letters and runs of one letter collapsed ("fuuuck"). */
+/** A word with look-alike characters read as letters. */
 function plain(word: string): string {
-  const swapped = Array.from(word, (c) => LOOKALIKES[c] ?? c).join("");
-  return swapped.replace(/([a-z])\1{2,}/g, "$1");
+  return Array.from(word, (c) => LOOKALIKES[c] ?? c).join("");
 }
+
+/**
+ * A pattern for `term` that also accepts each letter repeated ("fuuck",
+ * "fuuuck"), while keeping a letter the term doubles doubled: "boob" needs
+ * two o's, so "bob" does not match it.
+ */
+function stretched(term: string, whole: boolean): RegExp {
+  const runs = term.match(/(.)\1*/g) ?? [];
+  const body = runs.map((run) => `${run[0]}{${run.length},}`).join("");
+  return new RegExp(whole ? `^${body}$` : body);
+}
+
+const ANYWHERE_PATTERNS = BLOCKED_ANYWHERE.map((term) => stretched(term, false));
+const WORD_PATTERNS = [...BLOCKED_WORDS].map((term) => stretched(term, true));
+const IMPERSONATED_PATTERNS = [...IMPERSONATED_WORDS].map((term) => stretched(term, true));
 
 /**
  * The words, with a run of single letters read as one word too: "p-o-r-n"
@@ -143,11 +157,11 @@ export function screenName(text: string): NameProblem | null {
     forms.add(plain(word));
   }
   for (const form of forms) {
-    if (BLOCKED_ANYWHERE.some((term) => form.includes(term))) return "blocked";
+    if (ANYWHERE_PATTERNS.some((pattern) => pattern.test(form))) return "blocked";
   }
   for (const form of forms) {
-    if (BLOCKED_WORDS.has(form)) return "blocked";
-    if (IMPERSONATED_WORDS.has(form)) return "impersonation";
+    if (WORD_PATTERNS.some((pattern) => pattern.test(form))) return "blocked";
+    if (IMPERSONATED_PATTERNS.some((pattern) => pattern.test(form))) return "impersonation";
   }
   return null;
 }

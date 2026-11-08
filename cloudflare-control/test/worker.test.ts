@@ -5686,11 +5686,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------------ registration rules
 
   test("Console addresses and organization names are screened against a word list, without refusing real places", () => {
-    for (const name of ["porn-hub", "P0RN Studio", "xxx-videos", "Hot Sex Shop", "s3xy-girls", "p-o-r-n", "fuuuck", "onlyfans-agency", "sbi-netbanking", "UIDAI Aadhaar Help", "chutiya"]) {
+    for (const name of ["porn-hub", "P0RN Studio", "xxx-videos", "Hot Sex Shop", "s3xy-girls", "p-o-r-n", "fuuuck", "fuuck", "sexxxy", "pooorn", "onlyfans-agency", "sbi-netbanking", "UIDAI Aadhaar Help", "chutiya"]) {
       assert.notEqual(screenName(name), null, `${name} is refused`);
     }
     assert.equal(screenName("sbi-netbanking"), "impersonation");
-    for (const name of ["Greenwood Holdings", "Essex County Library", "Middlesex School", "Scunthorpe College", "Sbitech Solutions", "Sussex-it", "Max X Xavier", "Analytics Hub", "Classic Assets", "Bhubaneswar Public Library", "unit-5"]) {
+    for (const name of ["Bob Smith Labs", "Booker Academy", "Greenwood Holdings", "Essex County Library", "Middlesex School", "Scunthorpe College", "Sbitech Solutions", "Sussex-it", "Max X Xavier", "Analytics Hub", "Classic Assets", "Bhubaneswar Public Library", "unit-5"]) {
       assert.equal(screenName(name), null, `${name} passes`);
     }
     assert.equal(subdomainProblem("sexy-shop"), ADDRESS_REFUSAL, "the refusal does not name the word");
