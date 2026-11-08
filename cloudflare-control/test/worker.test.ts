@@ -5707,7 +5707,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(tenant.name, "chosen-co", "named by its address until the second step");
     assert.equal(tenant.address_generated, 0, "a chosen address, with its public homepage");
     assert.equal(tenant.profile_completed_at, null);
-    assert.ok(lastMailTo("chosen@example.com").text.includes("chosen-co.labkiosk.org"), "the receipt names the address");
+    assert.match(lastMailTo("chosen@example.com").text, /\bchosen-co\.labkiosk\.org\b/, "the receipt names the address");
 
     const taken = await submitSignup({ email: "second@example.com", subdomain: "chosen-co" });
     assert.equal(taken.res.status, 409);
