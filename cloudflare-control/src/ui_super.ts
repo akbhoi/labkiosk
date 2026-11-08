@@ -5,6 +5,7 @@
  * platform's own demo organizations (web-demo, local-demo, docker-demo).
  */
 
+import { renderBillingPaneHtml, renderBillingScript } from "./ui_super_billing";
 import { renderReleasesPaneHtml, renderReleasesScript } from "./ui_super_releases";
 import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
@@ -50,7 +51,7 @@ export interface SuperAdminOptions {
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
-  activeTab?: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system";
+  activeTab?: "organizations" | "tasks" | "support" | "billing" | "releases" | "catalogs" | "system";
   /** Open tasks and mail, and unread and deleted mail, for the badges (src/conversations.ts). */
   inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
   /** Education applications waiting for a decision (src/education.ts). */
@@ -107,6 +108,11 @@ function renderLicenseCell(t: Tenant): string {
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.org", activeTab = "organizations", nonce } = data;
+  // Organizations a payment link can be sent to: every real one, never a demo.
+  const billingOrganizations =
+    activeTab === "billing"
+      ? tenants.filter((t) => t.status === "active" && !isDemoTenant(t, superAdminId)).map((t) => ({ id: t.id, name: t.name, subdomain: t.subdomain }))
+      : [];
 
   // Registrations are decided in Tasks; this list is an active organization asking for a new address.
   const pendingList = tenants.filter((t) => t.status !== "pending" && t.requested_subdomain);
@@ -333,6 +339,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`
     },
     {
+      id: "billing",
+      label: "Billing",
+      href: "/super/billing",
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
+    },
+    {
       id: "releases",
       label: "Releases",
       href: "/super/releases",
@@ -376,6 +388,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
     ],
     support: [],
+    billing: [],
     releases: [],
     catalogs: [
       { id: "catalogs-list", label: "Installed catalogs", count: catalogList.length, showZero: true, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>` },
@@ -406,6 +419,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     organizations: "Organizations",
     tasks: "Tasks",
     support: "Mail",
+    billing: "Billing",
     releases: "Releases",
     catalogs: "Catalogs",
     system: "System"
@@ -634,6 +648,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
     `,
     support: renderInboxPaneHtml("support", { open: inbox.openSupport, unread: inbox.unreadSupport, deleted: inbox.deletedSupport }),
+    billing: renderBillingPaneHtml(billingOrganizations),
     releases: renderReleasesPaneHtml(),
     catalogs: `
       <div class="tab-pane active" id="pane-catalogs-list">
@@ -744,6 +759,7 @@ ${tabSwitchScriptHtml}
 ${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
 ${activeTab === "tasks" ? renderEducationScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
+${activeTab === "billing" ? renderBillingScript(nonce, billingOrganizations) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.
       (function () {

@@ -2263,8 +2263,9 @@ export default {
         redirectUrl.pathname = path === "/super/approvals" ? "/super/tasks" : "/super/mail";
         return Response.redirect(redirectUrl.toString(), 302);
       }
-      let activeTab: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system" = "organizations";
+      let activeTab: "organizations" | "tasks" | "support" | "billing" | "releases" | "catalogs" | "system" = "organizations";
       if (path === "/super/tasks") activeTab = "tasks";
+      else if (path === "/super/billing") activeTab = "billing";
       else if (path === "/super/releases") activeTab = "releases";
       else if (path === "/super/mail") activeTab = "support";
       else if (path === "/super/catalogs") activeTab = "catalogs";

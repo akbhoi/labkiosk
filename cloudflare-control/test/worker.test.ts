@@ -10790,12 +10790,76 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const page = await call("/admin/plan?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(page.status, 200);
     const html = await page.text();
-    assert.match(html, /<h1 class="page-title">Plan<\/h1>/);
+    assert.match(html, /<h1 class="page-title">Plan &amp; billing<\/h1>/);
     assert.match(html, /href="\/admin\/plan[^"]*"[^>]*data-nav="plan"/, "Plan is in the navigation");
     assert.match(html, /Start the 15-day trial/);
     assert.match(html, /&#8377;|₹/);
     const operatorPage = await call("/admin/plan?tenant=greenwood", { cookie: operator, redirect: "manual" });
     assert.notEqual(operatorPage.status, 200, "staff without settings are sent elsewhere");
+    await restorePlan();
+  });
+
+  test("Plan & billing routes are the organization's own, and Billing is the platform's", async () => {
+    const { db, tenantId } = await restorePlan();
+    // Anonymous callers are refused everywhere.
+    for (const [path, body] of [
+      ["/api/billing?tenant=greenwood", undefined],
+      ["/api/billing/preview?tenant=greenwood", { tier: "standard", period: "month" }],
+      ["/api/billing/checkout?tenant=greenwood", { tier: "standard", period: "month" }],
+      ["/api/billing/cancel?tenant=greenwood", {}],
+      ["/api/billing/details?tenant=greenwood", { gstin: "" }],
+      ["/api/super/billing", undefined],
+      ["/api/super/billing/extend", { tenantId, days: 3 }]
+    ] as Array<[string, unknown]>) {
+      const res = await call(path, body === undefined ? {} : json(body));
+      assert.ok([401, 403].includes(res.status), `${path} refuses an anonymous caller (${res.status})`);
+    }
+    // Another organization's session cannot read or change greenwood's billing.
+    assert.ok([403, 404].includes((await call("/api/billing?tenant=greenwood", { cookie: rivalSessionCookie })).status));
+    assert.ok([403, 404].includes((await call("/api/billing/details?tenant=greenwood", { ...json({ legalName: "Rival" }), cookie: rivalSessionCookie })).status));
+    // A cross-site request is refused.
+    assert.equal((await call("/api/billing/details?tenant=greenwood", { ...json({ legalName: "X" }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status, 403);
+    // An organization is never the platform.
+    assert.equal((await call("/api/super/billing", { cookie: orgSessionCookie })).status, 403);
+    assert.equal((await call("/api/super/billing/payment-link", { ...json({ tenantId }), cookie: orgSessionCookie })).status, 403);
+
+    // The owner reads the plan and prices; the browser's amounts are never used.
+    const { res, data } = await callJson("/api/billing?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    assert.equal(data.plan.kind, "free");
+    assert.equal(data.plan.staff, 2);
+    assert.ok(data.catalogue.tiers.some((t: any) => t.tier === "pro" && t.monthly === 4999));
+    const preview = await callJson("/api/billing/preview?tenant=greenwood", { ...json({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0, total: 1 }), cookie: orgSessionCookie });
+    assert.equal(preview.res.status, 200, JSON.stringify(preview.data));
+    assert.equal(preview.data.quote.subtotal, 499_900);
+    assert.equal(preview.data.quote.gst, 0, "no GST while the seller has no GSTIN");
+    assert.equal((await callJson("/api/billing/preview?tenant=greenwood", { ...json({ tier: "pro", period: "month", extraWorkstations: -2 }), cookie: orgSessionCookie })).res.status, 400);
+    assert.equal((await callJson("/api/billing/preview?tenant=greenwood", { ...json({ tier: "education", period: "month", extraWorkstations: 2 }), cookie: orgSessionCookie })).res.status, 403, "Education prices are for Education");
+    assert.equal((await callJson("/api/billing/checkout?tenant=greenwood", { ...json({ tier: "pro", period: "month" }), cookie: orgSessionCookie })).res.status, 503, "no checkout without Razorpay keys");
+    assert.equal((await callJson("/api/billing/cancel?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).res.status, 409, "nothing to cancel");
+
+    // Billing details: a GSTIN must be valid and match the state.
+    assert.equal((await callJson("/api/billing/details?tenant=greenwood", { ...json({ gstin: "AA211126005970R" }), cookie: orgSessionCookie })).res.status, 400);
+    assert.equal((await callJson("/api/billing/details?tenant=greenwood", { ...json({ gstin: "27AAPFU0939F1ZV", state: "21" }), cookie: orgSessionCookie })).res.status, 400);
+    assert.equal((await callJson("/api/billing/details?tenant=greenwood", { ...json({ legalName: "Greenwood Trust", gstin: "27aapfu0939f1zv", address: "1 Road" }), cookie: orgSessionCookie })).res.status, 200);
+    const saved = (await findTenantBySubdomain(db, "greenwood"))!;
+    assert.deepEqual([saved.billing_gstin, saved.billing_state], ["27AAPFU0939F1ZV", "27"], "the state follows the GSTIN");
+
+    // An invoice of greenwood's is not found from another organization.
+    assert.equal((await call("/api/billing/invoices/in" + "0".repeat(32) + "?tenant=greenwood", { cookie: orgSessionCookie })).status, 404);
+
+    // The platform's view and its validation.
+    const admin = await superCookie();
+    const platform = await callJson("/api/super/billing", { cookie: admin });
+    assert.equal(platform.res.status, 200);
+    assert.equal(platform.data.gstRegistered, false);
+    assert.equal((await callJson("/api/super/billing/extend", { ...json({ tenantId, days: 0 }), cookie: admin })).res.status, 400);
+    assert.equal((await callJson("/api/super/billing/extend", { ...json({ tenantId, days: 3 }), cookie: admin })).res.status, 409, "Free has nothing to extend");
+    assert.equal((await callJson("/api/super/billing/tenants/nope", { cookie: admin })).res.status, 404);
+    const page = await call("/super/billing", { cookie: admin });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Monthly recurring revenue/);
+    await updateTenant(db, tenantId, { billing_legal_name: null, billing_gstin: null, billing_address: null, billing_state: null });
     await restorePlan();
   });
 
