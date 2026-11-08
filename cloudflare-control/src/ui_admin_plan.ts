@@ -71,6 +71,7 @@ function renderPlanPageHtml(contactHref: string): string {
       .tier-featured { border-color: var(--accent); }
       .tier-card.is-current { border-color: var(--success); }
       .btn-block { width: 100%; justify-content: center; }
+      #form-details .form-row { margin-bottom: 16px; }
       .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 32px 0 12px; }
       .section-head h2 { font-size: 1.0625rem; margin: 0; }
       .overview { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
@@ -153,12 +154,8 @@ function renderPlanPageHtml(contactHref: string): string {
     <p class="form-hint">Prices are before GST where it applies. More than ${p.salesAbove} workstations or several sites? <a href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">Talk to sales</a>.</p>
 
     <div class="card mt-lg hidden" id="plan-config">
-      <div class="card-head">
-        <div>
-          <h2 class="card-title" id="config-title">Your plan</h2>
-          <p class="card-sub">Choose how many workstations and Remote Control seats you need. The price updates as you go.</p>
-        </div>
-      </div>
+      <h2 class="card-title" id="config-title">Your plan</h2>
+      <p class="card-sub">Choose how many workstations and Remote Control seats you need. The price updates as you go.</p>
       <div class="config-grid">
         <div>
           <div class="form-group">
@@ -517,7 +514,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           }
           line("Covers:", p.workstations + " workstations, " + p.staff + " staff, " + p.remoteSeats + " Remote Control seat" + (p.remoteSeats === 1 ? "" : "s"));
           const live = sub && !sub.legacy && sub.status !== "cancelled";
-          show($("btn-change"), Boolean(bill.enabled));
+          show($("btn-change"), true);
           $("btn-change").textContent = sub ? "Change plan" : "Choose a plan";
           show($("btn-cancel"), Boolean(bill.isOwner && live));
           show($("btn-resume"), Boolean(bill.isOwner && bill.enabled && sub && sub.status === "cancelled" && sub.currentEnd > now && !bill.replacement));
@@ -557,7 +554,6 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             show(card.querySelector("[data-tier-current]"), current);
             const btn = card.querySelector("[data-choose-tier]");
             btn.textContent = current ? "Change " + t.label : "Choose " + t.label;
-            btn.disabled = !bill.enabled;
           }
         }
 
@@ -638,8 +634,8 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             if (data.losses.remoteSeats) losses.push(data.losses.remoteSeats + " Remote Control seat" + (data.losses.remoteSeats === 1 ? "" : "s") + " will be released");
             $("cfg-losses").textContent = losses.length ? "With this plan, " + losses.join(", ") + ". You choose which under this page." : "";
             show($("cfg-losses"), losses.length > 0);
-            btn.textContent = data.immediate || data.upfront ? "Continue to payment" : "Authorise the change";
-            btn.disabled = data.same || !bill.enabled;
+            btn.textContent = !bill.enabled ? "Talk to sales" : data.immediate || data.upfront ? "Continue to payment" : "Authorise the change";
+            btn.disabled = data.same;
           } catch (err) {
             if (seq !== previewSeq) return;
             $("sum-now").textContent = err.message;
@@ -724,7 +720,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
         function renderDetails() {
           const select = $("bd-state");
           if (select.options.length <= 1) {
-            for (const [code, name] of Object.entries(bill.states)) select.add(new Option(code + " " + name, code));
+            for (const [code, name] of Object.entries(bill.states).sort((x, y) => x[0].localeCompare(y[0]))) select.add(new Option(code + " " + name, code));
           }
           $("bd-name").value = bill.details.legalName;
           $("bd-gstin").value = bill.details.gstin;
@@ -918,6 +914,10 @@ function renderPlanScript(nonce: string, contactHref: string): string {
         });
 
         $("btn-checkout").addEventListener("click", async () => {
+          if (!bill.enabled) {
+            window.open(CONTACT, "_blank", "noopener");
+            return;
+          }
           const c = counts();
           try {
             const data = await api("/api/billing/checkout", { tier: chosen, period, extraWorkstations: c.extra, remoteSeats: c.seats });
