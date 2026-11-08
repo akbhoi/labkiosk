@@ -24,10 +24,11 @@ export function buildPlanPage(options: AdminPageInput): AdminPageParts {
 
 const BOARDS = ["CBSE", "CISCE (ICSE / ISC)", "State board", "NIOS", "IB", "Cambridge (CAIE)", "UGC", "AICTE", "State university"];
 
+/** What each tier adds beyond its limits; the same words as /pricing, where every console feature is in every plan. */
 const TIER_POINTS: Record<string, string[]> = {
-  starter: ["Remote Control as an add-on", "Email support"],
-  standard: ["Remote Control as an add-on", "Exams, power schedules and printing", "Email support"],
-  pro: ["Remote Control on 10 workstations included", "Single sign-on for staff", "Priority support"]
+  starter: ["Every console feature, including exams and usage reports", "Remote Control as an add-on", "Email support"],
+  standard: ["Every console feature, including exams and usage reports", "Remote Control as an add-on", "Email support"],
+  pro: [`Remote Control on ${CATALOGUE.pro.includedRemoteSeats} workstations included`, "Priority support"]
 };
 
 function tierCard(tier: (typeof PAID_TIERS)[number]): string {
