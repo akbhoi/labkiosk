@@ -49,7 +49,7 @@ import {
 import { findTenantById, findUserById, getTenantUserPermissions, updateTenant, writeAuditLog } from "./db";
 import { isDemoTenant } from "./demo";
 import { jsonError, requireSuperAdmin, requireTenantPermission } from "./guard";
-import { findInvoice, GST_STATES, gstPercentFor, listInvoices, sellerFrom, validGstin, type Invoice } from "./invoices";
+import { findInvoice, GST_STATES, gstPercentFor, listInvoices, sellerFrom, sellerName, validGstin, type Invoice } from "./invoices";
 import { licenseDate } from "./license";
 import { activeStaffCount, assignRemoteSeat, listRemoteSeats, listStaff, setStaffSuspended } from "./limits";
 import { mailConfigProblem, sendMail } from "./mail";
@@ -664,7 +664,7 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
         razorpayPaymentId: invoice.razorpay_payment_id,
         buyer: { name: invoice.buyer_name, gstin: invoice.buyer_gstin, address: invoice.buyer_address },
         placeOfSupply: invoice.place_of_supply ? `${invoice.place_of_supply} ${GST_STATES[invoice.place_of_supply] ?? ""}`.trim() : null,
-        seller: { name: seller.legalName, address: seller.address, gstin: invoice.seller_gstin, state: seller.state, sac: seller.sac }
+        seller: { name: sellerName(seller), legalName: seller.legalName, address: seller.address, gstin: invoice.seller_gstin, state: seller.state, sac: seller.sac }
       },
       jsonHeaders
     );

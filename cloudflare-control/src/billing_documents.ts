@@ -19,7 +19,7 @@
 import { createPaymentLink, rupees } from "./billing";
 import { findTenantById, findUserById, writeAuditLog } from "./db";
 import { escapeAttr, escapeHtml } from "./escape";
-import { financialYear, GST_STATES, gstPercentFor, sellerFrom, shortFinancialYear, splitGst, type Invoice, type InvoiceLine, type Seller } from "./invoices";
+import { financialYear, GST_STATES, gstPercentFor, sellerFrom, sellerLegalLine, sellerName, shortFinancialYear, splitGst, type Invoice, type InvoiceLine, type Seller } from "./invoices";
 import { mailConfigProblem, sendMail } from "./mail";
 import { CATALOGUE, entitlement, quoteTier, type BillingPeriod, type SoldTier, type TierQuoteInput } from "./plans";
 import { encodeQr, qrRows, qrSvg } from "./qr";
@@ -376,7 +376,8 @@ ${rootTokensCss()}
         ${statusBadge}
       </div>
       <div class="doc-seller">
-        <div class="name">${escapeHtml(seller.legalName)}</div>
+        <div class="name">${escapeHtml(sellerName(seller))}</div>
+        ${sellerLegalLine(seller) ? `<div>Legal name: ${escapeHtml(sellerLegalLine(seller)!)}</div>` : ""}
         ${seller.address ? `<div class="doc-addr">${escapeHtml(seller.address)}</div>` : ""}
         ${view.sellerGstin ? `<div>GSTIN <strong>${escapeHtml(view.sellerGstin)}</strong></div>` : ""}
         ${seller.state ? `<div>State ${escapeHtml(stateLabel(seller.state))}</div>` : ""}
@@ -430,7 +431,7 @@ ${rootTokensCss()}
               : "This is a computer-generated receipt. No GST was charged: the seller was not registered for GST when it was issued."
         }
       </div>
-      <div class="doc-sign">For ${escapeHtml(seller.legalName)}<br>${options.signatory ? `${escapeHtml(options.signatory)}, ` : ""}Authorised signatory</div>
+      <div class="doc-sign">For ${escapeHtml(sellerName(seller))}<br>${options.signatory ? `${escapeHtml(options.signatory)}, ` : ""}Authorised signatory</div>
     </div>
   </main>
   <script nonce="${escapeAttr(nonce)}">
@@ -575,7 +576,11 @@ export function documentMailFields(view: DocumentView, seller: Seller) {
     number: view.number,
     date: documentDate(view.issuedAt),
     validUntil: view.validUntil ? documentDate(view.validUntil) : null,
-    seller: { name: seller.legalName, gstin: view.sellerGstin, address: seller.address || null },
+    seller: {
+      name: sellerLegalLine(seller) ? `${sellerName(seller)} (${sellerLegalLine(seller)})` : sellerName(seller),
+      gstin: view.sellerGstin,
+      address: seller.address || null
+    },
     buyer: { name: view.buyer.name, gstin: view.buyer.gstin, address: view.buyer.address },
     lines: view.lines.map((l) => ({ description: l.description, amount: rupees(l.amount) })),
     totals: [

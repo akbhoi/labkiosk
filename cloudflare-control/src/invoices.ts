@@ -77,6 +77,8 @@ export function validGstin(value: string): boolean {
 
 export interface Seller {
   legalName: string;
+  /** The trade name on the registration, or null; a proprietorship's legal name is the proprietor's own. */
+  tradeName: string | null;
   address: string;
   state: string | null;
   gstin: string | null;
@@ -90,11 +92,22 @@ export function sellerFrom(env: Env): Seller {
   const sac = (env.SELLER_SAC || "").trim();
   return {
     legalName: (env.SELLER_LEGAL_NAME || "").trim() || "Lab Kiosk",
+    tradeName: (env.SELLER_TRADE_NAME || "").trim() || null,
     address: (env.SELLER_ADDRESS || "").trim(),
     state: GST_STATES[state] ? state : null,
     gstin: gstin && validGstin(gstin) ? gstin : null,
     sac: /^\d{4,8}$/.test(sac) ? sac : null
   };
+}
+
+/** The name a document leads with: the trade name, else the legal name. */
+export function sellerName(seller: Seller): string {
+  return seller.tradeName || seller.legalName;
+}
+
+/** The legal name, when the document leads with a different trade name. */
+export function sellerLegalLine(seller: Seller): string | null {
+  return seller.tradeName && seller.tradeName.toUpperCase() !== seller.legalName.toUpperCase() ? seller.legalName : null;
 }
 
 /** The GST rate to charge: 18% once the seller has a valid GSTIN, else none. */

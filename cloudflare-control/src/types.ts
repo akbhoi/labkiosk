@@ -506,6 +506,8 @@ export interface Env {
    * SELLER_GSTIN is set, invoices are receipts that carry no GST.
    */
   SELLER_LEGAL_NAME?: string;
+  /** The trade name on the GST registration, when there is one: shown first, the legal name under it. */
+  SELLER_TRADE_NAME?: string;
   SELLER_ADDRESS?: string;
   SELLER_STATE?: string;
   SELLER_GSTIN?: string;

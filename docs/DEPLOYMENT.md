@@ -406,8 +406,9 @@ To take payments online (needs a Razorpay account with KYC done and your GSTIN):
 
 | Variable | Value |
 | --- | --- |
-| `SELLER_LEGAL_NAME` | the name on the GST registration, e.g. `LABKIOSK` |
-| `SELLER_ADDRESS` | the principal place of business; a line break starts a new line |
+| `SELLER_LEGAL_NAME` | the legal name on the GST registration certificate (a proprietor's own name) |
+| `SELLER_TRADE_NAME` | the trade name on the certificate, if any, e.g. `LABKIOSK`: printed first, the legal name under it |
+| `SELLER_ADDRESS` | the principal place of business as on the certificate, with the PIN code |
 | `SELLER_STATE` | the two-digit GST state code, e.g. `21` (Odisha) |
 | `SELLER_GSTIN` | the 15-character GSTIN |
 | `SELLER_SAC` | the services accounting code, e.g. `998315` |

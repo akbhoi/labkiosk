@@ -512,6 +512,10 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
       assert.ok(page.includes(shown), `the tax invoice shows ${shown}`);
     }
     assert.ok(!page.includes('class="qr-code"') && !page.includes("Pay online"), "a tax invoice has nothing to pay");
+    // A proprietorship trades under its trade name; the legal name is the proprietor's, and both are printed.
+    const traded = renderDocumentPage(view!, sellerFrom({ ...env, SELLER_LEGAL_NAME: "ASHISH KUMAR BHOI", SELLER_TRADE_NAME: "LABKIOSK" } as Env), "n0nce");
+    assert.ok(traded.includes('<div class="name">LABKIOSK</div>') && traded.includes("Legal name: ASHISH KUMAR BHOI") && traded.includes("For LABKIOSK<br>"));
+    assert.ok(!page.includes("Legal name:"), "no second line without a trade name");
     assert.equal(await invoiceView(db, "another-tenant", invoice.id), null, "another organization's id finds nothing");
     const pfPage = renderDocumentPage((await proformaView(db, tenant.id, (await proforma()).id))!, sellerFrom(env), "n0nce");
     assert.ok(pfPage.includes("Proforma Invoice") && pfPage.includes("not a tax invoice") && pfPage.includes('class="qr-code"') && pfPage.includes("https://rzp.io/rzp/"));
