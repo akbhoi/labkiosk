@@ -4,8 +4,8 @@
  *
  * Why it exists: api.razorpay.com sits on an AWS load balancer that refuses the
  * TLS handshake from Cloudflare Workers, which surfaces as HTTP 525. This relay
- * runs on Google Cloud (Cloud Run functions, asia-south1) and forwards a single
- * kind of request, POST /v1/payment_links, to Razorpay unchanged.
+ * runs on Google Cloud (Cloud Run functions, asia-south1) and forwards the
+ * calls in ALLOWED (payment links and subscriptions) to Razorpay unchanged.
  *
  * What it trusts: only requests signed with RELAY_SECRET, which the Worker
  * holds as RAZORPAY_RELAY_SECRET. The signature is the hex HMAC-SHA256 of
@@ -17,8 +17,19 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const RAZORPAY_ORIGIN = "https://api.razorpay.com";
-/** The only calls the relay forwards. */
-export const ALLOWED = Object.freeze([{ method: "POST", path: "/v1/payment_links" }]);
+/**
+ * The only calls the relay forwards. A path is matched whole, query included:
+ * ids are Razorpay's own shape, and the only query is a subscription's invoices.
+ */
+export const ALLOWED = Object.freeze([
+  { method: "POST", path: /^\/v1\/payment_links$/ },
+  { method: "POST", path: /^\/v1\/plans$/ },
+  { method: "POST", path: /^\/v1\/subscriptions$/ },
+  { method: "GET", path: /^\/v1\/subscriptions\/sub_[A-Za-z0-9]{1,32}$/ },
+  { method: "POST", path: /^\/v1\/subscriptions\/sub_[A-Za-z0-9]{1,32}\/cancel$/ },
+  { method: "GET", path: /^\/v1\/payments\/pay_[A-Za-z0-9]{1,32}$/ },
+  { method: "GET", path: /^\/v1\/invoices\?subscription_id=sub_[A-Za-z0-9]{1,32}&count=100&skip=\d{1,6}$/ }
+]);
 export const MAX_SKEW_SECONDS = 300;
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -49,8 +60,9 @@ export async function handleRelay(input) {
   }
   const method = String(input.method || "").toUpperCase();
   const path = String(input.path || "");
-  if (!ALLOWED.some((a) => a.method === method && a.path === path)) return refuse(404, "Not a call this relay forwards");
+  if (!ALLOWED.some((a) => a.method === method && a.path.test(path))) return refuse(404, "Not a call this relay forwards");
   const body = typeof input.body === "string" ? input.body : "";
+  if (method === "GET" && body) return refuse(400, "A GET carries no body");
   if (Buffer.byteLength(body) > MAX_BODY_BYTES) return refuse(413, "The request body is too large");
 
   const timestamp = input.headers["x-relay-timestamp"] || "";
@@ -68,7 +80,7 @@ export async function handleRelay(input) {
     res = await input.fetchImpl(`${RAZORPAY_ORIGIN}${path}`, {
       method,
       headers: { authorization, "content-type": "application/json", accept: "application/json" },
-      body
+      body: method === "GET" ? undefined : body
     });
   } catch (err) {
     console.error("[relay] Razorpay could not be reached:", err);

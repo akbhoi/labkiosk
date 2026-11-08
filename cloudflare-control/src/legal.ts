@@ -35,7 +35,7 @@ export interface LegalDocument {
  * "terms" version, and /dpa shows that version.
  */
 export const LEGAL_DOCUMENTS: readonly LegalDocument[] = [
-  { id: "terms", title: "Terms of Service", path: "/terms", version: "2026-10-20", required: true },
+  { id: "terms", title: "Terms of Service", path: "/terms", version: "2026-11-08", required: true },
   { id: "content", title: "Content Policy", path: "/content-policy", version: "2026-10-13", required: true },
   { id: "privacy", title: "Privacy Policy", path: "/privacy", version: "2026-11-03", required: false }
 ];

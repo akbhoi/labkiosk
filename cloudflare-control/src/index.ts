@@ -225,6 +225,12 @@ import {
 } from "./notifications";
 import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
 import { handlePlanRoutes } from "./plan_routes";
+import { billingEnabled } from "./billing";
+import { gstPercentFor } from "./invoices";
+import { runProformas } from "./billing_documents";
+import { handleBillingRoutes, sendRenewalNotices } from "./billing_routes";
+import { claimRemoteSeat, staffCapRefusal } from "./limits";
+import { reconcileSubscriptions } from "./subscriptions";
 import { syncLicences } from "./plan_sync";
 import { entitlement, PRICING } from "./plans";
 import { purgeEducationApplications } from "./education";
@@ -1376,6 +1382,13 @@ function buildHtmlHeaders(
 }
 
 /** The cron that runs the status checks; wrangler.jsonc names it beside the hourly one. */
+/** Settings tabs that became pages of their own: an old link or bookmark lands where they are now. */
+const MOVED_SETTINGS_TABS: Record<string, { path: string; tab: string | null }> = {
+  usage: { path: "/admin/reports", tab: "usage" },
+  issues: { path: "/admin/reports", tab: "issues" },
+  "two-factor": { path: "/admin/account", tab: null }
+};
+
 export const STATUS_CRON = "*/5 * * * *";
 
 /** The registration page: /register, or the public landing routes opened with ?register. */
@@ -1441,6 +1454,22 @@ export default {
       return;
     }
     await purgeOldStatus(db);
+    // Subscriptions Razorpay changed without a webhook reaching us, checkouts
+    // never authorised, and charges since the last look (src/subscriptions.ts).
+    if (billingEnabled(env)) {
+      try {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const changed = await reconcileSubscriptions(env, db, nowSeconds);
+        if (changed.length) console.log(`[Billing] Reconciled subscriptions of ${changed.length} organization(s).`);
+        const notices = await sendRenewalNotices(env, db, nowSeconds);
+        if (notices) console.log(`[Billing] Sent ${notices} renewal notice(s).`);
+        // Plans that will not renew by themselves get a proforma a week before they end.
+        const proformas = await runProformas(env, db, nowSeconds, null);
+        if (proformas) console.log(`[Billing] Sent ${proformas} proforma email(s).`);
+      } catch (err) {
+        console.error("[Billing] Reconciling subscriptions failed:", err);
+      }
+    }
     // Plans that ended this hour drop to Free, and what Free does not cover
     // shows the licence notice (src/plans.ts); one organization failing does not stop the rest.
     {
@@ -1884,6 +1913,10 @@ export default {
     };
     const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
 
+    // Plan & billing, subscriptions and the platform's view of them (src/billing_routes.ts).
+    const billingResponse = handleBillingRoutes({ ...routeContext, method, path, tenant: currentTenant });
+    if (billingResponse) return billingResponse;
+
     // Plan, education applications and Razorpay (src/plan_routes.ts).
     const planResponse = await handlePlanRoutes({ ...routeContext, method, path, tenant: currentTenant });
     if (planResponse) return planResponse;
@@ -2242,13 +2275,30 @@ export default {
         redirectUrl.pathname = path === "/super/approvals" ? "/super/tasks" : "/super/mail";
         return Response.redirect(redirectUrl.toString(), 302);
       }
-      let activeTab: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system" = "organizations";
-      if (path === "/super/tasks") activeTab = "tasks";
+      // System and Catalogs became Platform: an old link lands on the same view.
+      if (path === "/super/system" || path === "/super/catalogs") {
+        const moved = new URL(request.url);
+        const tab = moved.searchParams.get("tab") || "";
+        moved.pathname = "/super/platform";
+        if (path === "/super/catalogs") moved.searchParams.set("tab", tab.startsWith("catalogs-") ? tab : "catalogs-list");
+        else if (tab === "system-two-factor") {
+          moved.pathname = "/super/account";
+          moved.searchParams.delete("tab");
+        } else if (tab === "system-audit") {
+          moved.pathname = "/super/organizations";
+          moved.searchParams.set("tab", "org-audit");
+        } else if (tab === "system-arch") moved.searchParams.delete("tab");
+        return Response.redirect(moved.toString(), 301);
+      }
+      let activeTab: "overview" | "organizations" | "tasks" | "support" | "billing" | "releases" | "catalogs" | "system" | "account" = "overview";
+      if (path === "/super/organizations") activeTab = "organizations";
+      else if (path === "/super/tasks") activeTab = "tasks";
+      else if (path === "/super/billing") activeTab = "billing";
       else if (path === "/super/releases") activeTab = "releases";
       else if (path === "/super/mail") activeTab = "support";
-      else if (path === "/super/catalogs") activeTab = "catalogs";
-      else if (path === "/super/system") activeTab = "system";
-      else if (path.startsWith("/super/") && path !== "/super/organizations") {
+      else if (path === "/super/platform") activeTab = "system";
+      else if (path === "/super/account") activeTab = "account";
+      else if (path.startsWith("/super/") && path !== "/super/overview") {
         // A mistyped console address is not the Organizations page.
         return new Response(
           renderStatusPageHtml({
@@ -3955,6 +4005,10 @@ export default {
         const refused = await staffDelegationProblem(db, session!, currentTenant!, { role, permissions });
         if (refused) return jsonError(refused, 403, jsonHeaders);
 
+        // The plan caps staff accounts besides the owner (src/limits.ts).
+        const capped = await staffCapRefusal(db, currentTenant!, entitlement(currentTenant!).staffLimit);
+        if (capped) return jsonError(capped, 402, jsonHeaders);
+
         if (body.password !== undefined && body.password !== "") {
           const passwordProblem =
             validatePasswordStrength(String(body.password)) || (await breachedPasswordProblem(String(body.password), env));
@@ -4506,6 +4560,12 @@ export default {
       const clientId = typeof body?.clientId === "string" ? body.clientId.trim() : "";
       if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
       const tenantId = currentTenant!.id;
+      // Each Remote Control seat belongs to one workstation (src/limits.ts); the
+      // platform's demos are not sold seats.
+      if (!isDemoTenant(currentTenant!, currentTenant!.user_id)) {
+        const seat = await claimRemoteSeat(db, tenantId, clientId, entitlement(currentTenant!).remoteSeats, session!.user_id, Math.floor(Date.now() / 1000));
+        if (!seat.ok) return jsonError(seat.error, 402, jsonHeaders);
+      }
       const token = newRelayToken();
       if (!(await openRelaySession(env, tenantId, clientId, await hashRelayToken(token), session!.user_id))) {
         return jsonError("The Remote Control relay could not open a session", 502, jsonHeaders);
@@ -5651,7 +5711,8 @@ export default {
           contactEmail: "contact@labkiosk.org",
           ...formChecks,
           canonicalUrl,
-          nonce
+          nonce,
+          gstPercent: gstPercentFor(env)
         }),
         { headers: htmlHeaders }
       );
@@ -5805,11 +5866,23 @@ export default {
 
       const tenant = currentTenant!;
       let activePage: AdminPageId = "workstations";
-      if (path === "/admin/apps-web") activePage = "apps-web";
+      if (path === "/admin" || path === "/admin/overview") activePage = "overview";
+      else if (path === "/admin/reports") activePage = "reports";
+      else if (path === "/admin/account") activePage = "account";
+      else if (path === "/admin/apps-web") activePage = "apps-web";
       else if (path === "/admin/exams") activePage = "exams";
       else if (path === "/admin/staff") activePage = "staff";
       else if (path === "/admin/plan") activePage = "plan";
       else if (path === "/admin/settings") activePage = "settings";
+
+      const movedTab = activePage === "settings" ? MOVED_SETTINGS_TABS[url.searchParams.get("tab") || ""] : undefined;
+      if (movedTab) {
+        const moved = new URL(url.toString());
+        moved.pathname = movedTab.path;
+        if (movedTab.tab) moved.searchParams.set("tab", movedTab.tab);
+        else moved.searchParams.delete("tab");
+        return Response.redirect(moved.toString(), 301);
+      }
 
       const userPerms = session.role === "super_admin"
         ? ["*"]
@@ -5818,7 +5891,8 @@ export default {
       const checkPermission = (page: AdminPageId) => {
         if (userPerms.includes("*") || userPerms.includes(page)) return true;
         if (page === "exams") return userPerms.includes("workstations");
-        if (page === "plan") return userPerms.includes("settings");
+        if (page === "overview" || page === "account") return true;
+        if (page === "plan" || page === "reports") return userPerms.includes("settings");
         if (page === "apps-web") {
           return (
             userPerms.includes("broadcast") ||
@@ -5834,10 +5908,10 @@ export default {
       const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
-        const pages: AdminPageId[] = ["workstations", "exams", "apps-web", "staff", "plan", "settings"];
+        const pages: AdminPageId[] = ["overview", "workstations", "exams", "apps-web", "staff", "plan", "settings"];
         const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
-          const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;
+          const redirectPath = allowedPage === "overview" ? "/admin" : `/admin/${allowedPage}`;
           const targetUrl = isDev
             ? `${url.origin}${redirectPath}?tenant=${encodeURIComponent(tenant.subdomain)}`
             : `https://${tenant.subdomain}.${baseDomain}${redirectPath}`;

@@ -85,7 +85,29 @@ test("Nothing a person typed reaches a message unescaped", () => {
     { name: "reply", reference: HOSTILE, category: HOSTILE, author: HOSTILE },
     { name: "decision", reference: HOSTILE, outcome: "approved", title: HOSTILE, category: HOSTILE, action: { label: HOSTILE, url: "javascript:alert(1)" } },
     { name: "letter", reference: HOSTILE, date: HOSTILE, recipientName: HOSTILE, recipientOrganization: HOSTILE, heading: HOSTILE, signatory: HOSTILE, signatoryTitle: HOSTILE },
-    { name: "alert", title: HOSTILE, lead: HOSTILE, details: [[HOSTILE, HOSTILE]], advice: HOSTILE }
+    { name: "alert", title: HOSTILE, lead: HOSTILE, details: [[HOSTILE, HOSTILE]], advice: HOSTILE },
+    { name: "billing", title: HOSTILE, lead: HOSTILE, details: [[HOSTILE, HOSTILE]], action: { label: HOSTILE, url: "javascript:alert(1)" }, tone: "danger" },
+    {
+      name: "invoice",
+      title: HOSTILE,
+      lead: HOSTILE,
+      document: {
+        kind: "proforma",
+        number: HOSTILE,
+        date: HOSTILE,
+        validUntil: HOSTILE,
+        seller: { name: HOSTILE, gstin: HOSTILE, address: HOSTILE },
+        buyer: { name: HOSTILE, gstin: null, address: HOSTILE },
+        lines: [{ description: HOSTILE, amount: HOSTILE }],
+        totals: [[HOSTILE, HOSTILE]],
+        total: HOSTILE,
+        totalInWords: HOSTILE,
+        qr: [[HOSTILE as unknown as boolean]]
+      },
+      action: { label: HOSTILE, url: "javascript:alert(1)" },
+      viewUrl: "javascript:alert(1)",
+      note: HOSTILE
+    }
   ];
   for (const template of templates) {
     const html = renderMailHtml({
@@ -193,4 +215,27 @@ test("POST /send refuses what it cannot send safely, and says why a send failed"
   const failing = await handleSend(post(REQUEST), { EMAIL: sender(true).EMAIL });
   assert.equal(failing.status, 502);
   assert.deepEqual(await failing.json(), { error: "destination address not verified" });
+});
+
+test("An invoice shows its figures, and a proforma a QR code for its payment link", () => {
+  const proforma = SAMPLES.find((s) => s.file === "invoice-proforma")!;
+  const html = renderMailHtml({ template: proforma.template, subject: proforma.subject, text: proforma.text, brand: BRAND });
+  for (const shown of ["PI/26-27/000004", "Pay by", "15 Nov 2026", "IGST @ 18%", "₹2,653.82", "Rupees Two Thousand Six Hundred", "not a tax invoice", "21CWZPB0039H2ZO", "Unregistered (no GSTIN)"]) {
+    assert.ok(html.includes(shown), `the proforma shows ${shown}`);
+  }
+  assert.ok(html.includes('aria-label="QR code for the payment link"'), "the proforma carries the QR code");
+  // Version 3 and its quiet zone: 37 rows of 4px.
+  assert.equal((html.match(/<tr style="height:4px">/g) || []).length, 37);
+  assert.equal((html.match(/<col width="4"/g) || []).length, 37, "every column is declared before the first row");
+  assert.ok(html.length < 60_000, `a proforma stays well under Gmail's clipping size (${html.length} bytes)`);
+
+  const tax = SAMPLES.find((s) => s.file === "invoice-tax")!;
+  const taxHtml = renderMailHtml({ template: tax.template, subject: tax.subject, text: tax.text, brand: BRAND });
+  assert.ok(taxHtml.includes("Tax invoice") && taxHtml.includes("LK/26-27/000012") && taxHtml.includes("27AAPFU0939F1ZV"));
+  assert.ok(!taxHtml.includes("QR code") && !taxHtml.includes("not a tax invoice"), "a tax invoice has no QR code and no proforma notice");
+
+  // A matrix of the wrong shape is left out rather than drawn.
+  const bent = structuredClone(proforma.template) as Extract<MailTemplate, { name: "invoice" }>;
+  bent.document.qr = bent.document.qr!.map((row, i) => (i === 3 ? row.slice(1) : row));
+  assert.ok(!renderMailHtml({ template: bent, subject: "s", text: "t", brand: BRAND }).includes("QR code"));
 });

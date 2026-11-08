@@ -60,7 +60,7 @@ function renderMonthlySummaryHtml(tenantParam: string, summary: MonthlySummary |
         }</li>`
       : `<li>No problems reported by workstations</li>`
   );
-  const usage = `/admin/settings${tenantParam ? `${tenantParam}&` : "?"}tab=usage`;
+  const usage = `/admin/reports${tenantParam ? `${tenantParam}&` : "?"}tab=usage`;
   return `
     <div class="callout" id="monthly-summary" role="note" style="margin-bottom: 16px;" data-month="${escapeAttr(summary.month)}">
       <div style="flex: 1;">

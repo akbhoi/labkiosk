@@ -5,6 +5,8 @@
  * platform's own demo organizations (web-demo, local-demo, docker-demo).
  */
 
+import { renderBillingPaneHtml, renderBillingScript } from "./ui_super_billing";
+import { renderSuperOverviewPaneHtml, renderSuperOverviewScript } from "./ui_super_overview";
 import { renderReleasesPaneHtml, renderReleasesScript } from "./ui_super_releases";
 import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
@@ -50,7 +52,7 @@ export interface SuperAdminOptions {
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
-  activeTab?: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system";
+  activeTab?: "overview" | "organizations" | "tasks" | "support" | "billing" | "releases" | "catalogs" | "system" | "account";
   /** Open tasks and mail, and unread and deleted mail, for the badges (src/conversations.ts). */
   inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
   /** Education applications waiting for a decision (src/education.ts). */
@@ -107,6 +109,11 @@ function renderLicenseCell(t: Tenant): string {
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.org", activeTab = "organizations", nonce } = data;
+  // Organizations a payment link can be sent to: every real one, never a demo.
+  const billingOrganizations =
+    activeTab === "billing"
+      ? tenants.filter((t) => t.status === "active" && !isDemoTenant(t, superAdminId)).map((t) => ({ id: t.id, name: t.name, subdomain: t.subdomain }))
+      : [];
 
   // Registrations are decided in Tasks; this list is an active organization asking for a new address.
   const pendingList = tenants.filter((t) => t.status !== "pending" && t.requested_subdomain);
@@ -124,6 +131,19 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
   const domainRequestCount = pendingList.length + pendingCustomList.length;
   const pendingCount = inbox.openTasks + domainRequestCount;
+  const realTenants = tenants.filter((t) => !isDemoTenant(t, superAdminId));
+  const overviewData = {
+    organizations: {
+      active: realTenants.filter((t) => t.status === "active").length,
+      pending: realTenants.filter((t) => t.status === "pending").length,
+      suspended: realTenants.filter((t) => t.status === "suspended").length
+    },
+    workstations: { online: totalOnline, total: totalClients },
+    tasks: { requests: inbox.openTasks, subdomains: pendingList.length, customDomains: pendingCustomList.length, education: data.pendingEducation ?? 0 },
+    unreadMail: inbox.unreadSupport,
+    plansEndingSoon: realTenants.filter((t) => t.status === "active" && licenseState(t).endingSoon).length,
+    plansLapsed: realTenants.filter((t) => t.status === "active" && licenseState(t).expired).length
+  };
 
   const catalogList = data.catalogs || [];
   const catalogRows = catalogList
@@ -310,6 +330,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
   const navItems: NavItem[] = [
     {
+      id: "overview",
+      label: "Overview",
+      href: "/super",
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>`
+    },
+    {
       id: "organizations",
       label: "Organizations",
       href: "/super/organizations",
@@ -333,22 +359,21 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`
     },
     {
+      id: "billing",
+      label: "Billing",
+      href: "/super/billing",
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
+    },
+    {
       id: "releases",
       label: "Releases",
       href: "/super/releases",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`
     },
     {
-      id: "catalogs",
-      label: "Catalogs",
-      href: "/super/catalogs",
-      badge: catalogList.length,
-      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`
-    },
-    {
       id: "system",
-      label: "System",
-      href: "/super/system",
+      label: "Platform",
+      href: "/super/platform",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`
     }
   ];
@@ -368,7 +393,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   // A request to change an address is a task, so both kinds live under Tasks
   // only; Organizations is the directory, and Mail's views are its folders.
   const viewsByTab: Record<typeof activeTab, SuperView[]> = {
-    organizations: [],
+    organizations: [
+      { id: "org-directory", label: "Directory", count: tenants.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>` },
+      { id: "org-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` }
+    ],
     tasks: [
       { id: "requests", label: "Requests", count: inbox.openTasks, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>` },
       { id: "subdomains", label: "Subdomain changes", count: pendingList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>` },
@@ -376,21 +404,20 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
     ],
     support: [],
+    billing: [],
     releases: [],
-    catalogs: [
-      { id: "catalogs-list", label: "Installed catalogs", count: catalogList.length, showZero: true, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>` },
-      { id: "catalogs-upload", label: "Upload or replace", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>` }
-    ],
+    catalogs: [],
     system: [
-      { id: "system-arch", label: "Architecture & health", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>` },
+      { id: "system-status", label: "Status & incidents", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>` },
       { id: "system-usage", label: "Usage", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>` },
       { id: "system-hardware", label: "Hardware", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/></svg>` },
-      { id: "system-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` },
-      { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` },
-      { id: "system-status", label: "Status & incidents", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>` },
       { id: "system-notifications", label: "Notifications", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>` },
-      { id: "system-legal", label: "Legal", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/></svg>` }
-    ]
+      { id: "system-legal", label: "Legal", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/></svg>` },
+      { id: "catalogs-list", label: "Catalogs", count: catalogList.length, showZero: true, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>` },
+      { id: "catalogs-upload", label: "Upload catalog", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>` }
+    ],
+    overview: [],
+    account: []
   };
   const views = viewsByTab[activeTab] || [];
 
@@ -406,9 +433,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     organizations: "Organizations",
     tasks: "Tasks",
     support: "Mail",
+    billing: "Billing",
     releases: "Releases",
     catalogs: "Catalogs",
-    system: "System"
+    system: "Platform",
+    overview: "Overview",
+    account: "My account"
   };
 
   // Each console tab renders on its own. The four panes used to be emitted
@@ -586,30 +616,6 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
   `;
 
-  const architectureCardHtml = `
-      <div class="card" id="platform-architecture">
-        <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
-        <p class="card-sub">Cloudflare D1 edge database status and real-time operational telemetry.</p>
-        <div class="stat-grid">
-          <div class="stat-tile">
-            <div class="stat-tile-label">Database engine</div>
-            <div class="stat-tile-value">Cloudflare D1 (SQLite)</div>
-            <div class="stat-tile-hint">Schema verified at boot by assertSchemaCurrent()</div>
-          </div>
-          <div class="stat-tile">
-            <div class="stat-tile-label">Runtime dependencies</div>
-            <div class="stat-tile-value">0 npm packages</div>
-            <div class="stat-tile-hint">Native Web Crypto PBKDF2</div>
-          </div>
-          <div class="stat-tile">
-            <div class="stat-tile-label">Client OS overlay</div>
-            <div class="stat-tile-value">100% RAM overlay</div>
-            <div class="stat-tile-hint">overlayroot="tmpfs:recurse=0", no SSD wear</div>
-          </div>
-        </div>
-      </div>
-  `;
-
   // Mail's view tabs are its folders, with New message beside them; every
   // other tab's are its views.
   const segmentedNavHtml =
@@ -618,7 +624,20 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       : renderViewTabsHtml(tabLabels[activeTab] || tabLabels.organizations, views);
 
   const panesByTab: Record<typeof activeTab, string> = {
-    organizations: organizationsPaneHtml,
+    overview: renderSuperOverviewPaneHtml(overviewData),
+    account: `
+      <div class="tab-pane active" id="pane-account-two-factor">
+        ${renderTwoFactorPaneHtml()}
+      </div>
+    `,
+    organizations: `
+      <div class="tab-pane active" id="pane-org-directory">
+${organizationsPaneHtml}
+      </div>
+      <div class="tab-pane" id="pane-org-audit">
+        ${auditCardHtml}
+      </div>
+    `,
     tasks: `
       <div class="tab-pane active" id="pane-requests">
         ${renderInboxPaneHtml("tasks", { open: inbox.openTasks })}
@@ -634,6 +653,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
     `,
     support: renderInboxPaneHtml("support", { open: inbox.openSupport, unread: inbox.unreadSupport, deleted: inbox.deletedSupport }),
+    billing: renderBillingPaneHtml(billingOrganizations),
     releases: renderReleasesPaneHtml(),
     catalogs: `
       <div class="tab-pane active" id="pane-catalogs-list">
@@ -644,23 +664,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
     `,
     system: `
-      <div class="tab-pane active" id="pane-system-arch">
-        ${architectureCardHtml}
+      <div class="tab-pane active" id="pane-system-status">
+        ${renderStatusPaneHtml()}
       </div>
       <div class="tab-pane" id="pane-system-usage">
         ${renderPlatformUsagePaneHtml()}
       </div>
       <div class="tab-pane" id="pane-system-hardware">
         ${renderPlatformHardwarePaneHtml()}
-      </div>
-      <div class="tab-pane" id="pane-system-audit">
-        ${auditCardHtml}
-      </div>
-      <div class="tab-pane" id="pane-system-two-factor">
-        ${renderTwoFactorPaneHtml()}
-      </div>
-      <div class="tab-pane" id="pane-system-status">
-        ${renderStatusPaneHtml()}
       </div>
       <div class="tab-pane" id="pane-system-notifications">
         ${renderNotificationsPaneHtml(
@@ -669,6 +680,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
       <div class="tab-pane" id="pane-system-legal">
         ${renderLegalPaneHtml()}
+      </div>
+      <div class="tab-pane" id="pane-catalogs-list">
+        ${catalogsTableCardHtml}
+      </div>
+      <div class="tab-pane" id="pane-catalogs-upload">
+        ${catalogsUploadCardHtml}
       </div>
     `
   };
@@ -741,9 +758,12 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
-${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
+${activeTab === "overview" ? renderSuperOverviewScript(nonce) : ""}
+${activeTab === "account" ? renderTwoFactorScript(nonce) : ""}
+${activeTab === "system" ? renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
 ${activeTab === "tasks" ? renderEducationScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
+${activeTab === "billing" ? renderBillingScript(nonce, billingOrganizations) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.
       (function () {

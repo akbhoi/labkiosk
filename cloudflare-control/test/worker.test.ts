@@ -57,6 +57,7 @@ import { monthlySummaryFor } from "../src/monthly_summary";
 import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
 import { PRICING, entitlement, quote, rebalanceLicences } from "../src/plans";
 import { periodEnd, razorpayRoute } from "../src/billing";
+import { createDocumentLink } from "../src/billing_documents";
 import { handleRelay, relaySignature } from "../relay/razorpay/handler.js";
 import { emailMatchesWebsite } from "../src/education";
 import nodeCrypto from "node:crypto";
@@ -577,7 +578,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /Register Your Organization/);
     assert.match(html, /id="mobile-toggle"/);
     assert.match(html, /id="mobile-drawer"/);
-    assert.match(html, /class="specs-table-container"/);
+    // The home page keeps hardware short and links to the full requirements.
+    assert.match(html, /Runs on the Computers You Have[\s\S]*href="\/specs">Full requirements/);
+    assert.match(html, /id="pricing-teaser"[\s\S]*href="\/pricing"/);
+    for (const feature of ["Exam Mode", "Power Schedules", "Usage Reports", "Managed Printing", "Single Sign-On for Staff"]) {
+      assert.ok(html.includes(feature), `the home page names ${feature}`);
+    }
   });
 
   test("Opens the sign-in dialog when redirected with ?login=1", async () => {
@@ -597,10 +603,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const pricing = await (await call("/pricing")).text();
     assert.match(pricing, /Plans &amp; Pricing/);
     assert.match(pricing, /<h2 class="pricing-tier">Free<\/h2>[\s\S]*Up to 5 workstations/);
-    assert.match(pricing, /&#8377;1,999 <small>a month<\/small>[\s\S]*&#8377;19,990 a year/);
-    assert.match(pricing, /&#8377;39 a month \(&#8377;390 a year\) for each one more, up to 200/);
+    // Every tier, priced from the catalogue the console sells from (src/plans.ts).
+    for (const [tier, monthly, yearly] of [["Starter", "999", "9,990"], ["Standard", "1,999", "19,990"], ["Pro", "4,999", "49,990"]]) {
+      assert.match(pricing, new RegExp(`<h2 class="pricing-tier">${tier}</h2>[\\s\\S]*?<span data-price-month>&#8377;${monthly}</span>[\\s\\S]*?Billed &#8377;${yearly} once a year`), tier);
+    }
     assert.match(pricing, /15 days free/);
-    assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*after verification/);
+    assert.match(pricing, /<h2 class="pricing-tier">Education<\/h2>[\s\S]*free for a year at a time/);
+    assert.match(pricing, /Remote Control add-on/);
+    assert.match(pricing, /Compare plans[\s\S]*Staff accounts besides you/);
+    assert.match(pricing, /id="pricing-calc"/);
+    assert.match(pricing, /renew by themselves/, "the page says plans renew");
+    assert.doesNotMatch(pricing, /never renewed without you/, "the old promise is gone");
     assert.match(pricing, /href="\/contact\?reason=sales">Contact sales/);
     assert.doesNotMatch(pricing, /Education Grant|50%/, "the old grant and the discount are gone");
     assert.match(pricing, /href="\/refunds">Refund &amp; Cancellation Policy/);
@@ -610,7 +623,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(refundsHtml, /<h1>Refund &amp; Cancellation Policy<\/h1>/);
     assert.match(refundsHtml, /Every payment is final/);
     assert.match(refundsHtml, /charged twice/, "duplicate charges are still refunded");
-    assert.match(refundsHtml, /Nothing renews by itself/);
+    assert.match(refundsHtml, /renews by itself each month or year until you cancel/, "the policy describes automatic renewal");
+    assert.match(refundsHtml, /Cancelling stops every later charge at once/);
+    assert.doesNotMatch(refundsHtml, /Nothing renews by itself/, "the old promise is gone");
     assert.equal((await call("/refunds?tenant=greenwood")).status, 200, "served on any address, like the other legal pages");
 
     const download = await (await call("/download")).text();
@@ -838,6 +853,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const again = await call(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
     assert.equal(again.status, 409, "a decided task stays decided");
+    // The rest of the suite manages staff and Remote Control on greenwood: a Custom
+    // plan has room for both, where Free allows 2 staff and no Remote Control seat.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET license_plan = 'commercial', remote_seats_paid = 10 WHERE subdomain = 'greenwood'").run();
 
     // The organization's owner administers it, so sign-in asks for an emailed code as well.
     const login = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
@@ -1478,6 +1496,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Remote Control is off until an organization asks and the platform approves", async () => {
+    // An organization with no seats: the platform's grant below gives it one.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET remote_seats_paid = 0 WHERE subdomain = 'greenwood'").run();
     const before = await callJson("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "PC-01" }), cookie: orgSessionCookie });
     assert.equal(before.res.status, 403);
     assert.match(before.data.error, /not enabled/);
@@ -1523,6 +1543,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const after = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.doesNotMatch(after, /id="form-remote-control-request"/);
     assert.match(after, /badge-green">Enabled/);
+    assert.match(after, /Your plan has 1 Remote Control seat\./, "the grant is a seat");
+    // The rest of the suite opens Remote Control on several workstations.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET remote_seats_paid = 10 WHERE subdomain = 'greenwood'").run();
   });
 
   test("A rejected registration is told why and cannot sign in", async () => {
@@ -2844,7 +2867,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(superRes.status, 200);
     const html = await superRes.text();
     assert.match(html, /Super Admin Master Console/);
-    assert.match(html, /Greenwood Holdings/);
+    assert.match(html, /id="pane-overview"/, "the console opens on its Overview");
+    assert.match(await (await call("/super/organizations", { cookie: superSessionCookie })).text(), /Greenwood Holdings/);
   });
 
   test("Refuses the Super Admin Console without a super admin session", async () => {
@@ -2866,7 +2890,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
-      ["/super/catalogs", superSessionCookie]
+      ["/super/platform", superSessionCookie]
     ];
     for (const [page, cookie] of pages) {
       const html = await (await call(page, { cookie })).text();
@@ -2958,7 +2982,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200);
 
-    const html = await (await call("/super", { cookie: superSessionCookie })).text();
+    const html = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(!html.includes(hostileName), "raw script-bearing tag must never reach the super admin console");
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   });
@@ -3130,7 +3154,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Dashboard markup is well formed so every modal is reachable", async () => {
-    const html = await (await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    const html = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     const body = html.split("<body>")[1].split("<script>")[0];
     const opened = (body.match(/<div\b/g) || []).length;
     const closed = (body.match(/<\/div>/g) || []).length;
@@ -3167,11 +3191,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/admin/plan?tenant=greenwood", orgSessionCookie],
+      ["/admin?tenant=greenwood", orgSessionCookie],
+      ["/admin/reports?tenant=greenwood", orgSessionCookie],
+      ["/admin/account?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     for (const [page, cookie] of pages) {
@@ -3240,7 +3268,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie, true],
       ["/admin/settings?tenant=greenwood", orgSessionCookie, true],
       ["/super/organizations", superSessionCookie, true],
-      ["/super/system", superSessionCookie, true],
+      ["/super/platform", superSessionCookie, true],
       ["/", undefined, true],
       ["/home?tenant=greenwood", undefined, false],
       ["/?tenant=greenwood", undefined, false],
@@ -3272,8 +3300,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie],
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie],
       ["/", undefined],
       ["/home?tenant=greenwood", undefined],
       ["/?tenant=greenwood", undefined],
@@ -3311,8 +3340,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     for (const [page, cookie] of pages) {
@@ -3338,8 +3368,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // The allowlist tab called /api/settings/whitelist, which never existed: add,
     // remove and every preset pack answered 404, and the markup tests were happy.
     const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
-    const router = ["index.ts", "plan_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
-    const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
+    const router = ["index.ts", "plan_routes.ts", "billing_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
+    // `path === "…"` for one route, `path.startsWith("…/")` for a family of them.
+    const routes = [...router.matchAll(/path(?: ===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
     const called = new Set<string>();
     for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
       const source = fs.readFileSync(path.join(srcDir, f), "utf8");
@@ -3372,8 +3403,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     let parsed = 0;
@@ -3420,8 +3452,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     for (const [page, cookie] of pages) {
@@ -3437,7 +3470,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         assert.match(item, /<span class="rail-tooltip"[^>]*>[^<]+<\/span>/, `${page}: a rail item has no tooltip`);
         assert.doesNotMatch(item.slice(0, item.indexOf(">")), /\stitle=/, `${page}: a rail item carries a native title as well`);
       }
-      assert.equal((html.match(/aria-current="page"/g) || []).length, 1, `${page} marks one rail item as the current page`);
+      // My account opens from the profile menu, not the rail: no rail item is current there.
+      const current = page.includes("/account") ? 0 : 1;
+      assert.equal((html.match(/aria-current="page"/g) || []).length, current, `${page} marks ${current} rail item as the current page`);
     }
   });
 
@@ -5259,7 +5294,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(found.title, "GitHub Room");
 
     // 4. Admin console includes the preset in rendered HTML
-    const adminHtml = await (await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    const adminHtml = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.ok(adminHtml.includes("GitHub Room"));
 
     // 5. Deletes preset
@@ -6510,7 +6545,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     assert.equal((await license({ tenantId: "nope", plan: "commercial", expiresOn: null }, admin)).status, 404);
     assert.equal((await call("/api/super/tenants/license", { ...json(null), cookie: admin })).status, 404, "a null body is an empty request");
-    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, before!.license_plan ?? null, "nothing changed");
 
     // Room for more workstations than Free covers; those from earlier tests count as seen long ago.
     await updateTenant(db, tenantId, { workstation_limit: 200 });
@@ -6595,7 +6630,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const clientId of [...tokens.keys(), "PC-LAPSED"]) {
       await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
     }
-    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null, workstation_limit: before!.workstation_limit });
+    await updateTenant(db, tenantId, { license_plan: before!.license_plan ?? null, license_expires_at: null, workstation_limit: before!.workstation_limit });
     await db.prepare("DELETE FROM unlicensed_workstations WHERE tenant_id = ?").bind(tenantId).run();
   });
 
@@ -7122,7 +7157,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: superSessionCookie
     });
 
-    const page = await call("/super/catalogs", { cookie: superSessionCookie });
+    const page = await call("/super/platform?tab=catalogs-list", { cookie: superSessionCookie });
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.ok(html.includes("Workstation Interface Catalogs (i18n)"));
@@ -7142,7 +7177,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const organizations = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(organizations.includes(directoryHeading), "organizations tab shows the directory");
 
-    for (const tab of ["/super/tasks", "/super/mail", "/super/catalogs", "/super/system"]) {
+    for (const tab of ["/", "/super/tasks", "/super/mail", "/super/platform", "/super/account"].map((t) => (t === "/" ? "/super" : t))) {
       const res = await call(tab, { cookie: superSessionCookie });
       assert.equal(res.status, 200);
       const body = await res.text();
@@ -7153,15 +7188,40 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(tasks.includes('data-box="tasks"'), "Tasks shows the task list");
     const support = await (await call("/super/mail", { cookie: superSessionCookie })).text();
     assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
-    const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
-    assert.ok(system.includes("Platform Architecture"));
-    // Two-factor sign-in is a tab, and every console's profile menu links to it.
-    assert.ok(system.includes('id="pane-system-two-factor"') && system.includes('id="two-factor-email"'));
-    assert.ok(system.includes('href="/super/system?tab=system-two-factor"'));
+    const system = await (await call("/super/platform", { cookie: superSessionCookie })).text();
+    assert.ok(!system.includes("Platform Architecture"), "the static architecture card is gone");
+    assert.ok(system.includes('id="pane-system-status"') && system.includes('id="pane-catalogs-list"'), "Platform holds status and catalogs");
+    // Two-factor sign-in is the account's own page, and every console's profile menu links to it.
+    const superAccount = await (await call("/super/account", { cookie: superSessionCookie })).text();
+    assert.ok(superAccount.includes('id="two-factor-email"'));
+    assert.ok(system.includes('href="/super/account"'));
+    // The old addresses land where their views are now.
+    for (const [from, to] of [
+      ["/super/system", "/super/platform"],
+      ["/super/system?tab=system-two-factor", "/super/account"],
+      ["/super/system?tab=system-audit", "/super/organizations?tab=org-audit"],
+      ["/super/catalogs", "/super/platform?tab=catalogs-list"]
+    ]) {
+      const moved = await call(from, { cookie: superSessionCookie });
+      assert.equal(moved.status, 301, from);
+      assert.ok((moved.headers.get("location") || "").endsWith(to), `${from} lands on ${to}`);
+    }
+    const orgs = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    assert.ok(orgs.includes('id="pane-org-audit"') && orgs.includes('id="platform-audit-rows"'), "the audit log is under Organizations");
     const workstations = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(workstations, /href="\/admin\/settings\?(tenant=greenwood&amp;)?tab=two-factor"/, "the profile menu links to the tab");
-    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.ok(settings.includes('data-action="tab-two-factor"') && settings.includes('id="pane-two-factor"') && settings.includes('id="two-factor-email"'));
+    assert.match(workstations, /href="\/admin\/account(\?tenant=greenwood)?#pane-two-factor-section"/, "the profile menu links to My account");
+    // Two-factor sign-in is on My account now; its old Settings address lands there.
+    const settings = await (await call("/admin/account?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(settings.includes('id="pane-two-factor-section"') && settings.includes('id="two-factor-email"') && settings.includes('id="section-password"'));
+    assert.ok(settings.includes('<span class="breadcrumb-page">My account</span>'), "the header names the page");
+    const oldTab = await call("/admin/settings?tenant=greenwood&tab=two-factor", { cookie: orgSessionCookie });
+    assert.equal(oldTab.status, 301);
+    assert.match(oldTab.headers.get("location") || "", /\/admin\/account\?tenant=greenwood$/);
+    for (const [tab, to] of [["usage", "usage"], ["issues", "issues"]]) {
+      const moved = await call(`/admin/settings?tenant=greenwood&tab=${tab}`, { cookie: orgSessionCookie });
+      assert.equal(moved.status, 301);
+      assert.match(moved.headers.get("location") || "", new RegExp(`/admin/reports\\?tenant=greenwood&tab=${to}$`));
+    }
     for (const page of [system, workstations, settings]) {
       assert.ok(!page.includes("two-factor-modal") && !page.includes("open-two-factor"), "no dialog any more");
     }
@@ -7268,7 +7328,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const demoRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
-    assert.match(demoHtml, /<h1 class="page-title">Workstations<\/h1>/);
+    assert.match(demoHtml, /<h1 class="page-title">Overview<\/h1>/, "the console opens on its Overview");
   });
 
   test("Sign-in lands where the request came from, not always on /super", async () => {
@@ -7541,9 +7601,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(ownSettings.status, 200);
     const ownSettingsHtml = await ownSettings.text();
     assert.ok(ownSettingsHtml.includes('id="two-factor-email"'));
-    for (const marker of ['id="section-enrollment"', 'id="section-password"', 'id="pane-general"', 'id="org-name"']) {
+    for (const marker of ['id="section-enrollment"', 'id="pane-general"', 'id="org-name"']) {
       assert.ok(!ownSettingsHtml.includes(marker), `${marker} needs the settings permission`);
     }
+    // Her own password is hers to change, on My account.
+    const ownAccount = await call("/admin/account?tenant=greenwood", { cookie: operatorCookie });
+    assert.equal(ownAccount.status, 200);
+    assert.ok((await ownAccount.text()).includes('id="section-password"'));
+    // Overview opens for her, without the organization's plan or reports.
+    const overview = await (await call("/admin?tenant=greenwood", { cookie: operatorCookie })).text();
+    assert.match(overview, /<h1 class="page-title">Overview<\/h1>/);
+    assert.ok(overview.includes('id="ov-online"') && !overview.includes('id="ov-plan"') && !overview.includes('id="ov-problem-list"'));
+    assert.notEqual((await call("/admin/reports?tenant=greenwood", { cookie: operatorCookie, redirect: "manual" })).status, 200, "Reports needs the settings permission");
     assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
 
     // 4. Allowed: Operator can view workstations list via /api/clients
@@ -8400,12 +8469,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/admin/plan?tenant=greenwood", orgSessionCookie],
+      ["/admin?tenant=greenwood", orgSessionCookie],
+      ["/admin/reports?tenant=greenwood", orgSessionCookie],
+      ["/admin/account?tenant=greenwood", orgSessionCookie],
       ["/super", superSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie],
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie],
       ["/home?tenant=greenwood"],
       ["/?tenant=greenwood"]
     ];
@@ -10695,7 +10768,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const now = 1_800_000_000;
     assert.deepEqual(
       { ...entitlement({ license_plan: null, license_expires_at: null, workstation_limit: 5 }, now) },
-      { kind: "free", label: "Free", limit: 5, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
+      { kind: "free", label: "Free", tier: null, limit: 5, staffLimit: 2, remoteSeats: 0, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
     );
     const trial = entitlement({ license_plan: "evaluation", license_expires_at: now + 86_400, workstation_limit: 45 }, now);
     assert.equal(trial.kind, "trial");
@@ -10747,13 +10820,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("An organization on Free starts its one 15-day trial of 45 workstations; staff without settings cannot", async () => {
     const { db, tenantId } = await restorePlan();
-    await updateTenant(db, tenantId, { workstation_limit: PRICING.freeWorkstations });
     assert.ok([401, 403].includes((await call("/api/plan/trial?tenant=greenwood", json({}))).status), "an anonymous caller is refused");
+    // Free allows 2 staff, and earlier tests left more: add this one while a Custom plan has room.
+    await updateTenant(db, tenantId, { license_plan: "commercial" });
     const { data: staffData } = await callJson("/api/tenant/staff?tenant=greenwood", {
       ...json({ name: "Plan operator", email: "plan-operator@greenwood.example", password: "StaffPassword123!", role: "operator", permissions: ["workstations"] }),
       cookie: orgSessionCookie
     });
     assert.equal(staffData.status, "ok", JSON.stringify(staffData));
+    await updateTenant(db, tenantId, { license_plan: null, workstation_limit: PRICING.freeWorkstations });
     const operator = await sessionOf(await signIn({ email: "plan-operator@greenwood.example", password: "StaffPassword123!" }));
     assert.equal((await call("/api/plan?tenant=greenwood", { cookie: operator })).status, 403, "the plan needs the settings permission");
     assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: operator })).status, 403);
@@ -10785,12 +10860,140 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const page = await call("/admin/plan?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(page.status, 200);
     const html = await page.text();
-    assert.match(html, /<h1 class="page-title">Plan<\/h1>/);
+    assert.match(html, /<h1 class="page-title">Plan &amp; billing<\/h1>/);
     assert.match(html, /href="\/admin\/plan[^"]*"[^>]*data-nav="plan"/, "Plan is in the navigation");
     assert.match(html, /Start the 15-day trial/);
     assert.match(html, /&#8377;|₹/);
     const operatorPage = await call("/admin/plan?tenant=greenwood", { cookie: operator, redirect: "manual" });
     assert.notEqual(operatorPage.status, 200, "staff without settings are sent elsewhere");
+    await restorePlan();
+  });
+
+  test("Plan & billing routes are the organization's own, and Billing is the platform's", async () => {
+    const { db, tenantId } = await restorePlan();
+    // Anonymous callers are refused everywhere.
+    for (const [path, body] of [
+      ["/api/billing?tenant=greenwood", undefined],
+      ["/api/billing/preview?tenant=greenwood", { tier: "standard", period: "month" }],
+      ["/api/billing/checkout?tenant=greenwood", { tier: "standard", period: "month" }],
+      ["/api/billing/cancel?tenant=greenwood", {}],
+      ["/api/billing/details?tenant=greenwood", { gstin: "" }],
+      ["/api/super/billing", undefined],
+      ["/api/super/billing/extend", { tenantId, days: 3 }]
+    ] as Array<[string, unknown]>) {
+      const res = await call(path, body === undefined ? {} : json(body));
+      assert.ok([401, 403].includes(res.status), `${path} refuses an anonymous caller (${res.status})`);
+    }
+    // Another organization's session cannot read or change greenwood's billing.
+    assert.ok([403, 404].includes((await call("/api/billing?tenant=greenwood", { cookie: rivalSessionCookie })).status));
+    assert.ok([403, 404].includes((await call("/api/billing/details?tenant=greenwood", { ...json({ legalName: "Rival" }), cookie: rivalSessionCookie })).status));
+    // A cross-site request is refused.
+    assert.equal((await call("/api/billing/details?tenant=greenwood", { ...json({ legalName: "X" }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status, 403);
+    // An organization is never the platform.
+    assert.equal((await call("/api/super/billing", { cookie: orgSessionCookie })).status, 403);
+    assert.equal((await call("/api/super/billing/payment-link", { ...json({ tenantId }), cookie: orgSessionCookie })).status, 403);
+
+    // The owner reads the plan and prices; the browser's amounts are never used.
+    const { res, data } = await callJson("/api/billing?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    assert.equal(data.plan.kind, "free");
+    assert.equal(data.plan.staff, 2);
+    assert.ok(data.catalogue.tiers.some((t: any) => t.tier === "pro" && t.monthly === 4999));
+    const preview = await callJson("/api/billing/preview?tenant=greenwood", { ...json({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0, total: 1 }), cookie: orgSessionCookie });
+    assert.equal(preview.res.status, 200, JSON.stringify(preview.data));
+    assert.equal(preview.data.quote.subtotal, 499_900);
+    assert.equal(preview.data.quote.gst, 0, "no GST while the seller has no GSTIN");
+    assert.equal((await callJson("/api/billing/preview?tenant=greenwood", { ...json({ tier: "pro", period: "month", extraWorkstations: -2 }), cookie: orgSessionCookie })).res.status, 400);
+    assert.equal((await callJson("/api/billing/preview?tenant=greenwood", { ...json({ tier: "education", period: "month", extraWorkstations: 2 }), cookie: orgSessionCookie })).res.status, 403, "Education prices are for Education");
+    assert.equal((await callJson("/api/billing/checkout?tenant=greenwood", { ...json({ tier: "pro", period: "month" }), cookie: orgSessionCookie })).res.status, 503, "no checkout without Razorpay keys");
+    assert.equal((await callJson("/api/billing/cancel?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).res.status, 409, "nothing to cancel");
+
+    // Billing details: a GSTIN must be valid and match the state.
+    assert.equal((await callJson("/api/billing/details?tenant=greenwood", { ...json({ gstin: "AA211126005970R" }), cookie: orgSessionCookie })).res.status, 400);
+    assert.equal((await callJson("/api/billing/details?tenant=greenwood", { ...json({ gstin: "27AAPFU0939F1ZV", state: "21" }), cookie: orgSessionCookie })).res.status, 400);
+    assert.equal((await callJson("/api/billing/details?tenant=greenwood", { ...json({ legalName: "Greenwood Trust", gstin: "27aapfu0939f1zv", address: "1 Road" }), cookie: orgSessionCookie })).res.status, 200);
+    const saved = (await findTenantBySubdomain(db, "greenwood"))!;
+    assert.deepEqual([saved.billing_gstin, saved.billing_state], ["27AAPFU0939F1ZV", "27"], "the state follows the GSTIN");
+
+    // An invoice of greenwood's is not found from another organization.
+    assert.equal((await call("/api/billing/invoices/in" + "0".repeat(32) + "?tenant=greenwood", { cookie: orgSessionCookie })).status, 404);
+
+    // The platform's view and its validation.
+    const admin = await superCookie();
+    const platform = await callJson("/api/super/billing", { cookie: admin });
+    assert.equal(platform.res.status, 200);
+    assert.equal(platform.data.gstRegistered, false);
+    assert.equal((await callJson("/api/super/billing/extend", { ...json({ tenantId, days: 0 }), cookie: admin })).res.status, 400);
+    assert.equal((await callJson("/api/super/billing/extend", { ...json({ tenantId, days: 3 }), cookie: admin })).res.status, 409, "Free has nothing to extend");
+    assert.equal((await callJson("/api/super/billing/tenants/nope", { cookie: admin })).res.status, 404);
+    const page = await call("/super/billing", { cookie: admin });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Monthly recurring revenue/);
+    await updateTenant(db, tenantId, { billing_legal_name: null, billing_gstin: null, billing_address: null, billing_state: null });
+    await restorePlan();
+  });
+
+  test("A billing document opens from its private link alone, from the console for its organization, and GSTR-1 for the platform", async () => {
+    const { db, tenantId } = await restorePlan();
+    const now = Math.floor(Date.now() / 1000);
+    const id = "in" + "a1".repeat(16);
+    await db
+      .prepare(
+        `INSERT INTO invoices (id, number, tenant_id, source, source_id, razorpay_payment_id, subtotal_paise, cgst_paise, sgst_paise, igst_paise, total_paise,
+                               seller_gstin, buyer_name, buyer_gstin, buyer_address, place_of_supply, lines_json, issued_at)
+         VALUES (?, 'LK/99-00/000001', ?, 'payment', 'pdoc', 'pay_doc', 199900, 17991, 17991, 0, 235882, '21CWZPB0039H2ZO', 'Greenwood <b>Trust</b>', NULL, NULL, '21', ?, ?)`
+      )
+      .bind(id, tenantId, JSON.stringify([{ description: "Lab Kiosk Standard", amount: 199900 }]), now)
+      .run();
+    const consolePath = `/api/billing/documents/invoice/${id}?tenant=greenwood`;
+
+    // The console: the organization's own staff with settings, nobody else.
+    const page = await call(consolePath, { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.ok(html.includes("LK/99-00/000001") && html.includes("Greenwood &lt;b&gt;Trust&lt;/b&gt;") && html.includes("Rupees Two Thousand Three Hundred Fifty Eight and Eighty Two Paise Only"));
+    const csp = page.headers.get("Content-Security-Policy") || "";
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+    assert.ok(nonce && html.includes(`<script nonce="${nonce}">`) && csp.includes("default-src 'none'") && csp.includes("frame-ancestors 'none'"));
+    assert.equal(page.headers.get("Cache-Control"), "no-store");
+    assert.ok(!/\son[a-z]+=/i.test(html), "no inline handlers");
+    assert.ok([401, 403].includes((await call(consolePath)).status), "anonymous");
+    assert.ok([403, 404].includes((await call(consolePath, { cookie: rivalSessionCookie })).status), "another organization");
+    assert.equal((await call(`/api/billing/documents/proforma/${id}?tenant=greenwood`, { cookie: orgSessionCookie })).status, 404, "an invoice id is not a proforma");
+    assert.equal((await call(`/api/billing/documents/receipt/${id}?tenant=greenwood`, { cookie: orgSessionCookie })).status, 404);
+
+    // The private link: the token is the credential, and only its own document opens.
+    const token = await createDocumentLink(db, tenantId, "invoice", id, now);
+    const linked = await call(`/billing/document/${token}`);
+    assert.equal(linked.status, 200);
+    assert.equal(linked.headers.get("Referrer-Policy"), "no-referrer");
+    assert.match(linked.headers.get("X-Robots-Tag") || "", /noindex/);
+    assert.ok((await linked.text()).includes("LK/99-00/000001"));
+    assert.equal((await call(`/billing/document/${"0".repeat(64)}`)).status, 404);
+    assert.equal((await call(`/billing/document/${token.slice(1)}`)).status, 404);
+    await db.prepare("UPDATE document_links SET expires_at = ? WHERE tenant_id = ?").bind(now - 1, tenantId).run();
+    assert.equal((await call(`/billing/document/${token}`)).status, 404, "an expired link opens nothing");
+
+    // The overview lists proformas beside invoices.
+    const overview = await callJson("/api/billing?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.ok(Array.isArray(overview.data.proformas));
+    assert.ok(overview.data.invoices.some((i: any) => i.id === id));
+
+    // GSTR-1 is the platform's.
+    assert.ok([401, 403].includes((await call("/api/super/billing/gstr1?month=2026-11&section=b2b")).status));
+    assert.equal((await call("/api/super/billing/gstr1?month=2026-11&section=b2b", { cookie: orgSessionCookie })).status, 403);
+    const admin = await superCookie();
+    assert.equal((await call("/api/super/billing/gstr1?month=2026-13&section=b2b", { cookie: admin })).status, 400);
+    assert.equal((await call("/api/super/billing/gstr1?month=2026-11&section=exports", { cookie: admin })).status, 400);
+    const istMonth = new Date((now + 19_800) * 1000).toISOString().slice(0, 7);
+    const csv = await call(`/api/super/billing/gstr1?month=${istMonth}&section=b2cs`, { cookie: admin });
+    assert.equal(csv.status, 200);
+    assert.match(csv.headers.get("Content-Type") || "", /^text\/csv/);
+    assert.match(csv.headers.get("Content-Disposition") || "", new RegExp(`attachment; filename="gstr1-${istMonth}-b2cs.csv"`));
+    assert.ok((await csv.text()).includes("OE,21-Odisha,,18,1999.00,0.00,"));
+
+    await db.prepare("DELETE FROM document_links WHERE tenant_id = ?").bind(tenantId).run();
+    await db.prepare("DELETE FROM invoices WHERE id = ?").bind(id).run();
     await restorePlan();
   });
 

@@ -3,6 +3,7 @@
  * `pnpm run preview` writes out to look at in a browser.
  */
 
+import { encodeQr, qrRows } from "../../cloudflare-control/src/qr";
 import { Brand, MailTemplate } from "../src/templates";
 
 export const BRAND: Brand = { name: "Lab Kiosk", siteUrl: "https://labkiosk.org", replyAddress: "support@labkiosk.org" };
@@ -104,6 +105,83 @@ export const SAMPLES: Sample[] = [
         ["Browser", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0"]
       ],
       advice: "If this was you, there is nothing to do. If it was not, change your password now. Changing the password signs every other browser out."
+    }
+  },
+  {
+    file: "billing",
+    subject: "Payment received: Lab Kiosk Standard",
+    text: "Your GST invoice is attached to your account under Plan & billing.",
+    template: {
+      name: "billing",
+      title: "Payment received",
+      lead: "Thank you. Greenwood Public Library's Standard plan is paid until 8 December 2026.",
+      details: [
+        ["Plan", "Standard, monthly, 45 workstations"],
+        ["Amount", "₹2,358.82 (GST ₹359.82)"],
+        ["Invoice", "LK/26-27/000012"]
+      ],
+      action: { label: "View invoice", url: "https://greenwood.labkiosk.org/admin/plan" },
+      tone: "success"
+    }
+  },
+  {
+    file: "invoice-proforma",
+    subject: "Proforma invoice PI/26-27/000004: renew Lab Kiosk before 15 Nov 2026",
+    text: "Greenwood Public Library's plan ends on 15 Nov 2026. Pay this proforma before then to keep it for another month.",
+    template: {
+      name: "invoice",
+      title: "Your plan is ending",
+      lead: "Greenwood Public Library's plan ends on 15 Nov 2026. Pay this proforma before then to keep it for another month.",
+      document: {
+        kind: "proforma",
+        number: "PI/26-27/000004",
+        date: "08 Nov 2026",
+        validUntil: "15 Nov 2026",
+        seller: { name: "Lab Kiosk", gstin: "21CWZPB0039H2ZO", address: "Bhubaneswar, Odisha" },
+        buyer: { name: "Greenwood Public Library", gstin: null, address: "12 Park Road\nPune, Maharashtra" },
+        lines: [
+          { description: "Lab Kiosk Standard, monthly, 40 workstations", amount: "₹1,999.00" },
+          { description: "Remote Control, 5 workstations", amount: "₹250.00" }
+        ],
+        totals: [
+          ["Taxable value", "₹2,249.00"],
+          ["IGST @ 18%", "₹404.82"]
+        ],
+        total: "₹2,653.82",
+        totalInWords: "Rupees Two Thousand Six Hundred Fifty Three and Eighty Two Paise Only",
+        qr: qrRows(encodeQr("https://rzp.io/rzp/AbC123xy", "M"))
+      },
+      action: { label: "Pay ₹2,653.82", url: "https://rzp.io/rzp/AbC123xy" },
+      viewUrl: "https://labkiosk.org/billing/document/0f1e2d3c",
+      note: "Prefer automatic renewal? Choose a plan under Plan & billing in your console."
+    }
+  },
+  {
+    file: "invoice-tax",
+    subject: "Payment received: tax invoice LK/26-27/000012",
+    text: "Thank you. Greenwood Public Library's Standard plan is paid until 15 Dec 2026.",
+    template: {
+      name: "invoice",
+      title: "Payment received",
+      lead: "Thank you. Greenwood Public Library's Standard plan is paid until 15 Dec 2026.",
+      document: {
+        kind: "invoice",
+        number: "LK/26-27/000012",
+        date: "14 Nov 2026",
+        validUntil: null,
+        seller: { name: "Lab Kiosk", gstin: "21CWZPB0039H2ZO", address: "Bhubaneswar, Odisha" },
+        buyer: { name: "Greenwood Public Library", gstin: "27AAPFU0939F1ZV", address: "12 Park Road\nPune, Maharashtra" },
+        lines: [{ description: "Lab Kiosk Standard, monthly, 40 workstations", amount: "₹1,999.00" }],
+        totals: [
+          ["Taxable value", "₹1,999.00"],
+          ["IGST @ 18%", "₹359.82"]
+        ],
+        total: "₹2,358.82",
+        totalInWords: "Rupees Two Thousand Three Hundred Fifty Eight and Eighty Two Paise Only",
+        qr: null
+      },
+      action: { label: "View invoice", url: "https://labkiosk.org/billing/document/0f1e2d3c" },
+      viewUrl: "https://labkiosk.org/billing/document/0f1e2d3c"
     }
   },
   {

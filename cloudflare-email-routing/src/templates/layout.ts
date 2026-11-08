@@ -69,6 +69,7 @@ const STYLE = `
     .lk-panel-warning { background: #2a1f0a !important; border-color: #713f12 !important; }
     .lk-code { color: #f8fafc !important; }
     a { color: #93b4ff !important; }
+    a.lk-btn { color: #ffffff !important; }
   }
 `;
 
@@ -137,7 +138,7 @@ export function paragraphs(text: string, style = ""): string {
     .join("");
 }
 
-type Tone = "accent" | "neutral" | "success" | "warning";
+export type Tone = "accent" | "neutral" | "success" | "warning";
 
 const PANEL: Record<Tone, { background: string; border: string; className: string }> = {
   accent: { background: COLOR.accentSoft, border: COLOR.accentBorder, className: "lk-panel" },
@@ -175,7 +176,7 @@ export function button(text: string, href: string): string {
   if (!url) return "";
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 24px;border-collapse:separate">
   <tr><td align="center" bgcolor="${COLOR.accent}" style="background:${COLOR.accent};border-radius:8px">
-    <a href="${esc(url)}" style="display:inline-block;padding:12px 22px;font-family:${FONT};font-size:15px;line-height:20px;font-weight:600;color:#ffffff;text-decoration:none">${esc(text)}</a>
+    <a class="lk-btn" href="${esc(url)}" style="display:inline-block;padding:12px 22px;font-family:${FONT};font-size:15px;line-height:20px;font-weight:600;color:#ffffff;text-decoration:none">${esc(text)}</a>
   </td></tr>
 </table>`;
 }

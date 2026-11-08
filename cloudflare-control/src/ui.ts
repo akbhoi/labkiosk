@@ -34,8 +34,14 @@ import { buildAppsWebPage } from "./ui_admin_apps_web";
 import { buildStaffPage } from "./ui_admin_staff";
 import { buildSettingsPage } from "./ui_admin_settings";
 import { buildExamsPage } from "./ui_admin_exams";
+import { buildOverviewPage } from "./ui_admin_overview";
+import { buildReportsPage } from "./ui_admin_reports";
+import { buildAccountPage } from "./ui_admin_account";
 
 export type AdminPageId =
+  | "overview"
+  | "reports"
+  | "account"
   | "workstations"
   | "exams"
   | "apps-web"
@@ -87,6 +93,9 @@ export interface DashboardOptions {
 }
 
 const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPageParts> = {
+  overview: buildOverviewPage,
+  reports: buildReportsPage,
+  account: buildAccountPage,
   workstations: buildWorkstationsPage,
   exams: buildExamsPage,
   "apps-web": buildAppsWebPage,
@@ -132,6 +141,12 @@ export function renderDashboardHtml(options: DashboardOptions): string {
 
   const allNavItems: NavItem[] = [
     {
+      id: "overview",
+      label: "Overview",
+      href: `/admin${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>`
+    },
+    {
       id: "workstations",
       label: "Workstations",
       href: `/admin/workstations${tenantParam}`,
@@ -158,8 +173,14 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       badge: staff.length
     },
     {
+      id: "reports",
+      label: "Reports",
+      href: `/admin/reports${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`
+    },
+    {
       id: "plan",
-      label: "Plan",
+      label: "Plan & billing",
       href: `/admin/plan${tenantParam}`,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
     },
@@ -185,8 +206,10 @@ export function renderDashboardHtml(options: DashboardOptions): string {
         }
         // Exams are run by whoever runs the workstations.
         if (item.id === "exams") return userPermissions.includes("workstations");
-        // The plan is the organization's, like its settings.
-        if (item.id === "plan") return userPermissions.includes("settings");
+        // Everyone has an overview of what they may open.
+        if (item.id === "overview") return true;
+        // The plan and the reports are the organization's, like its settings.
+        if (item.id === "plan" || item.id === "reports") return userPermissions.includes("settings");
         // Everyone opens Settings: without the permission it holds only their own sign-in.
         return item.id === "settings" || userPermissions.includes(item.id);
       });
@@ -221,6 +244,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     canSettings: hasAll || userPermissions.includes("settings"),
     monthlySummary: options.monthlySummary ?? null,
     canRemoteControl: options.currentUser?.role === "org_admin" || options.currentUser?.role === "super_admin",
+    permissions: userPermissions,
     nonce
   };
 
@@ -253,10 +277,11 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   return renderLayoutHtml({
     title: `${labName} • ${page.title}`,
     brandTitle: labName,
-    brandHref: `/admin/workstations${tenantParam}`,
+    brandHref: `/admin${tenantParam}`,
     brandSubtitle: `${subdomain}.${baseDomain} • Control Console`,
     navItems,
-    activeNavId: activePage,
+    activeNavId: activePage === "account" ? "" : activePage,
+    breadcrumbLabel: activePage === "account" ? page.title : undefined,
     stats,
     userMeta: currentUser ? { name: currentUser.name, email: currentUser.email, role: roleLabel(currentUser.role) } : undefined,
     contentHtml: gated ? legalHtml : legalHtml + page.contentHtml,

@@ -119,7 +119,24 @@ export interface Tenant {
   license_expires_at?: number | null;
   /** When the organization started its one free trial (0058, src/plans.ts). */
   trial_started_at?: number | null;
+  /** The paid tier of a subscriber; NULL for every other plan (0059, src/plans.ts). */
+  plan_tier?: PaidTier | null;
+  /** Staff accounts the plan allows besides the owner; NULL: the plan's default (0059). */
+  staff_limit?: number | null;
+  /** Remote Control seats paid for, each on one workstation (0059). */
+  remote_seats_paid?: number;
+  /** A halted subscription's organization falls to Free at this time (0059). */
+  grace_ends_at?: number | null;
+  /** Who invoices are made out to (0059, src/invoices.ts). */
+  billing_legal_name?: string | null;
+  billing_gstin?: string | null;
+  billing_address?: string | null;
+  /** The buyer's GST state code, "01".."38", for the place of supply. */
+  billing_state?: string | null;
 }
+
+/** The tiers sold online (src/plans.ts CATALOGUE). */
+export type PaidTier = "starter" | "standard" | "pro";
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
 export type UpdateChannel = "stable" | "beta";
@@ -483,6 +500,19 @@ export interface Env {
    */
   RAZORPAY_RELAY_URL?: string;
   RAZORPAY_RELAY_SECRET?: string;
+  /**
+   * The seller printed on invoices (src/invoices.ts). SELLER_STATE is the GST
+   * state code ("21" for Odisha) that decides CGST + SGST or IGST. Until
+   * SELLER_GSTIN is set, invoices are receipts that carry no GST.
+   */
+  SELLER_LEGAL_NAME?: string;
+  /** The trade name on the GST registration, when there is one: shown first, the legal name under it. */
+  SELLER_TRADE_NAME?: string;
+  SELLER_ADDRESS?: string;
+  SELLER_STATE?: string;
+  SELLER_GSTIN?: string;
+  /** Optional SAC code printed on invoice lines, when the seller's CA gives one. */
+  SELLER_SAC?: string;
 }
 
 /** The one Workers AI method the Worker uses. */

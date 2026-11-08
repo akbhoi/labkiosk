@@ -36,6 +36,8 @@ mail client honours them. Every value is escaped, and only an http(s) address be
 | `decision` | A request approved or declined, with the next step as a button |
 | `letter` | A formal letter to a company: date, addressee, subject line, signature |
 | `alert` | A security notice about the recipient's own account |
+| `billing` | A plan's renewal, failed payment or cancellation, with its figures and one button |
+| `invoice` | A proforma before a plan ends (with the payment link and a QR code drawn as a table) or the tax invoice after a payment |
 | `notice` | Plain text in the scaffold: what anything without its own template goes out as |
 
 **This folder is the one place email changes.** The controller chooses the template, the recipient

@@ -18,7 +18,7 @@
  */
 
 import { CertifiedModel, PublicReseller, certifiedLookup } from "./partners";
-import { PRICING } from "./plans";
+import { CATALOGUE, PRICING, STAFF_LIMITS } from "./plans";
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { fnv1a } from "./ui_layout";
 import { GEO_DATA_PATH } from "./geo";
@@ -117,6 +117,8 @@ export interface LandingOptions {
   loginTurnstile?: boolean;
   /** Firebase's public web settings when registration proves the phone by a texted code (src/phone_verify.ts). */
   firebase?: FirebaseConfig | null;
+  /** The GST rate prices are charged with (src/invoices.ts gstPercentFor), for Pricing. */
+  gstPercent?: number;
   /** On one organization's sign-in page: the single sign-on providers it offers (src/sso.ts). */
   sso?: { providers: ReadonlyArray<"google" | "microsoft">; tenantSlug: string };
 }
@@ -231,7 +233,7 @@ ${FONT_LINKS}
     <nav class="nav-links" aria-label="Main Navigation">
       <a href="/"${meta.activeNav ? "" : ' class="active"'}>Home</a>
       <a href="/features"${meta.activeNav === "features" ? ' class="active"' : ""}>Features</a>
-      <a href="/specs"${meta.activeNav === "specs" ? ' class="active"' : ""}>Specs</a>
+      <a href="/specs"${meta.activeNav === "specs" ? ' class="active"' : ""}>Hardware</a>
       <a href="/pricing"${meta.activeNav === "pricing" ? ' class="active"' : ""}>Pricing</a>
       <a href="/download"${meta.activeNav === "download" ? ' class="active"' : ""}>Download</a>
       <a href="/docs"${meta.activeNav === "docs" ? ' class="active"' : ""}>Docs</a>
@@ -1954,7 +1956,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; font-weight: 700; color: var(--text-main);">Lab Kiosk</td>
-                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free on ${PRICING.freeWorkstations} PCs; &#8377;${PRICING.monthly.toLocaleString("en-IN")}/month for ${PRICING.includedWorkstations}</td>
+                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free on ${PRICING.freeWorkstations} PCs; plans from &#8377;${CATALOGUE.starter.monthly.toLocaleString("en-IN")}/month</td>
               </tr>
             </table>
             <a class="btn btn-primary btn-block" href="/register">Register Your Organization</a>
@@ -2173,58 +2175,70 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <h3 class="feature-title">A Record of Every Change</h3>
           <p class="feature-desc">Subdomain changes, staff accounts, allowlist edits and key rotations are recorded and readable from your console, including anything the platform did to your organization.</p>
         </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <h3 class="feature-title">Exam Mode</h3>
+          <p class="feature-desc">Hold a group of workstations on one exam site for a set time, with printing blocked and the browser cleared before and after. Watch it live and download a report.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          </div>
+          <h3 class="feature-title">Power Schedules</h3>
+          <p class="feature-desc">Workstations switch themselves off at the end of the day after an on-screen warning, and on again in the morning, per group or for every workstation.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </div>
+          <h3 class="feature-title">Usage Reports</h3>
+          <p class="feature-desc">How long each workstation is switched on and in use, and which sites it spends that time on, by host name only. Export any report as CSV.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          </div>
+          <h3 class="feature-title">Managed Printing</h3>
+          <p class="feature-desc">Off until you turn it on; then workstations print to the network printers you list, for every workstation or per group. Printing stays off during an exam.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+          </div>
+          <h3 class="feature-title">Single Sign-On for Staff</h3>
+          <p class="feature-desc">Staff sign in to the console with their Google Workspace or Microsoft Entra ID account, followed by the second factor your organization requires. On every plan.</p>
+        </div>
       </div>
     </section>
 
-    <!-- Hardware Compatibility & Specs Section -->
+    <!-- Hardware: the short version; /specs and /hardware have the detail -->
     <section class="section-wrap" id="specs">
       <div class="section-header">
-        <h2 class="section-title">Hardware Specs &amp; Compatibility</h2>
+        <h2 class="section-title">Runs on the Computers You Have</h2>
         <p class="section-sub">Bring older desktops back into service or run on modern thin clients, without hardware upgrades.</p>
       </div>
-
-      <div class="specs-table-container">
-        <table class="specs-table">
-          <thead>
-            <tr>
-              <th>Component</th>
-              <th>Minimum Requirement</th>
-              <th>Recommended Specification</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Processor (CPU)</strong></td>
-              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer), or 64-bit ARM that boots with UEFI</td>
-              <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
-            </tr>
-            <tr>
-              <td><strong>System Memory (RAM)</strong></td>
-              <td>2 GB RAM (the system and the browser run from RAM)</td>
-              <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
-            </tr>
-            <tr>
-              <td><strong>Storage Drive</strong></td>
-              <td>2 GB+ USB flash drive (USB 2.0 or 3.0); internal disk not required</td>
-              <td>Fast USB 3.0/3.1 Thumb Drive or Internal M.2 / SATA SSD</td>
-            </tr>
-            <tr>
-              <td><strong>Network</strong></td>
-              <td>10/100 Mbps Fast Ethernet or 802.11n Wi-Fi</td>
-              <td>Gigabit Ethernet (1000 Mbps) or 802.11ac Wi-Fi</td>
-            </tr>
-            <tr>
-              <td><strong>Display Output</strong></td>
-              <td>VGA / DVI / HDMI supporting 1024x768 resolution</td>
-              <td>1080p Full HD (1920x1080) or higher via HDMI/DisplayPort</td>
-            </tr>
-            <tr>
-              <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported); a 64-bit ARM computer with UEFI firmware; or a Raspberry Pi 4, Pi 400 or Compute Module 4 from its own card image. <a href="/hardware">The models organizations run it on</a></td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="teaser-grid">
+        <div class="teaser-card"><strong>64-bit PC or ARM</strong><span>Any 64-bit x86 desktop, laptop or thin client, a 64-bit ARM computer with UEFI, or a Raspberry Pi 4.</span></div>
+        <div class="teaser-card"><strong>2 GB RAM</strong><span>The system and the browser run from RAM; 4 GB or more for heavier sites.</span></div>
+        <div class="teaser-card"><strong>A 2 GB+ USB drive</strong><span>Start from the stick, or install to the internal disk. No hard disk needed.</span></div>
       </div>
+      <p class="teaser-links"><a href="/specs">Full requirements</a> &middot; <a href="/hardware">Models organizations run it on</a> &middot; <a href="/download">Download the ISO</a></p>
+    </section>
+
+    <!-- Pricing: the short version -->
+    <section class="section-wrap" id="pricing-teaser">
+      <div class="section-header">
+        <h2 class="section-title">Start Free, Pay as You Grow</h2>
+        <p class="section-sub">Free on ${PRICING.freeWorkstations} workstations with no end date, a ${PRICING.trialDays}-day free trial of ${CATALOGUE.standard.label}, then plans from &#8377;${CATALOGUE.starter.monthly.toLocaleString("en-IN")} a month. Free for verified education institutions.</p>
+      </div>
+      <p class="teaser-links"><a class="btn btn-primary" href="/pricing">See plans and pricing</a></p>
     </section>
 
     <!-- Security & Architecture Section -->
@@ -2302,7 +2316,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Yes, on up to ${PRICING.freeWorkstations} workstations, with no end date. For a whole site, try the subscription free for ${PRICING.trialDays} days, then it is &#8377;${PRICING.monthly.toLocaleString("en-IN")} a month or &#8377;${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. See <a href="/pricing">Plans &amp; pricing</a>. To host it yourself, the source is available under the LabKiosk Software License: free for accredited educational institutions and non-commercial evaluation on up to 45 computers, and a commercial license for everyone else.
+            Yes, on up to ${PRICING.freeWorkstations} workstations, with no end date. For more, try ${CATALOGUE.standard.label} free for ${PRICING.trialDays} days; paid plans start at &#8377;${CATALOGUE.starter.monthly.toLocaleString("en-IN")} a month for ${CATALOGUE.starter.includedWorkstations} workstations (${CATALOGUE.standard.label}: &#8377;${CATALOGUE.standard.monthly.toLocaleString("en-IN")} a month for ${CATALOGUE.standard.includedWorkstations}), renew monthly or yearly, and can be cancelled any time. Institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. See <a href="/pricing">Plans &amp; pricing</a>. To host it yourself, the source is available under the LabKiosk Software License: free for accredited educational institutions and non-commercial evaluation on up to 45 computers, and a commercial license for everyone else.
           </div>
         </div>
 
@@ -2786,21 +2800,57 @@ export function renderHardwareHtml(
   });
 }
 
-function pricingMainHtml(): string {
+/** A tier's price per month in both periods, for the period switch: the monthly figure shows until a script picks yearly. */
+function periodPrice(monthly: number, yearly: number): string {
+  const inr = (n: number) => `&#8377;${Math.round(n).toLocaleString("en-IN")}`;
+  return `<span data-price-month>${inr(monthly)}</span><span data-price-year hidden>${inr(yearly / 12)}</span> <small>a month</small>`;
+}
+
+function periodNote(yearly: number): string {
+  return `<p class="pricing-billed"><span data-price-month>Billed monthly</span><span data-price-year hidden>Billed &#8377;${yearly.toLocaleString("en-IN")} once a year</span></p>`;
+}
+
+/**
+ * Plans & pricing, from the catalogue the console sells from (src/plans.ts
+ * CATALOGUE), so this page and checkout can never disagree. The calculator
+ * works a total out the way checkout does.
+ */
+function pricingMainHtml(nonce: string, gstPercent: number): string {
   const p = PRICING;
+  const t = CATALOGUE;
   const tick = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
   const list = (items: string[]) => `<ul class="pricing-features">${items.map((i) => `<li>${tick}<span>${i}</span></li>`).join("")}</ul>`;
   const inr = (n: number) => `&#8377;${n.toLocaleString("en-IN")}`;
+  const yes = `<span class="compare-yes" role="img" aria-label="Included">${tick}</span>`;
+  const no = `<span class="compare-no" role="img" aria-label="Not included">&mdash;</span>`;
+  const gstLine = gstPercent ? `Prices are before ${gstPercent}% GST.` : "No GST is charged at present.";
+  const row = (label: string, cells: string[]) => `<tr><th scope="row">${label}</th>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
+  const calcTiers = (["starter", "standard", "pro"] as const).map((k) => ({
+    tier: k,
+    label: t[k].label,
+    monthly: t[k].monthly,
+    yearly: t[k].yearly,
+    included: t[k].includedWorkstations,
+    extraMonthly: t[k].extraMonthly,
+    extraYearly: t[k].extraYearly,
+    seatsIncluded: t[k].includedRemoteSeats,
+    seatMonthly: t[k].remoteMonthly,
+    seatYearly: t[k].remoteYearly
+  }));
   return `
     <section class="page-hero">
       <div class="hero-badge-container">
         <span class="badge badge-blue">Plans &amp; Pricing</span>
         <span class="badge badge-green">${p.trialDays}-day free trial</span>
       </div>
-      <h1 class="page-hero-title">Simple plans, <span>priced per site</span></h1>
+      <h1 class="page-hero-title">Plans that <span>grow with your site</span></h1>
       <p class="page-hero-desc">
-        Start free on ${p.freeWorkstations} workstations, try the full subscription for ${p.trialDays} days, and pay only when you are sure. Verified education institutions use it free.
+        Start free on ${p.freeWorkstations} workstations, try ${t.standard.label} free for ${p.trialDays} days, then pay monthly or yearly. Plans renew by themselves, and you can cancel any time. Verified education institutions use Lab Kiosk free.
       </p>
+      <div class="pricing-period" role="group" aria-label="Billing period">
+        <button type="button" data-period="month" aria-pressed="true">Monthly</button>
+        <button type="button" data-period="year" aria-pressed="false">Yearly <span class="badge badge-green">2 months free</span></button>
+      </div>
     </section>
 
     <section class="section-wrap" style="padding-top: 0;">
@@ -2809,68 +2859,187 @@ function pricingMainHtml(): string {
           <h2 class="pricing-tier">Free</h2>
           <div class="pricing-sub">For trying Lab Kiosk on a few computers, for as long as you like.</div>
           <div class="pricing-price">${inr(0)} <small>forever</small></div>
+          <p class="pricing-billed">No card needed</p>
           ${list([
             `Up to ${p.freeWorkstations} workstations`,
+            `${STAFF_LIMITS.free} staff accounts besides you`,
             "Tamper-proof OS and managed Chromium",
-            "Central web console and User Portal",
-            "Your own console address"
+            "Central web console and User Portal"
           ])}
           <a class="btn btn-ghost btn-block" href="/register">Create a free account</a>
         </div>
 
+        <div class="pricing-card">
+          <h2 class="pricing-tier">${t.starter.label}</h2>
+          <div class="pricing-sub">For a small room or office.</div>
+          <div class="pricing-price">${periodPrice(t.starter.monthly, t.starter.yearly)}</div>
+          ${periodNote(t.starter.yearly)}
+          ${list([
+            `${t.starter.includedWorkstations} workstations, then ${inr(t.starter.extraMonthly)} a month each`,
+            `${t.starter.staff} staff accounts`,
+            "Every console feature, including exams and usage reports",
+            "Remote Control as an add-on"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/register">Get started</a>
+        </div>
+
         <div class="pricing-card featured">
           <div class="pricing-card-badge">${p.trialDays} days free</div>
-          <h2 class="pricing-tier">Subscription</h2>
-          <div class="pricing-sub">For a site of up to ${p.includedWorkstations} computers, and more when you need them.</div>
-          <div class="pricing-price">${inr(p.monthly)} <small>a month</small></div>
-          <p class="pricing-sub" style="min-height: 0; margin-top: -16px;">or ${inr(p.yearly)} a year, two months free. Plus ${p.gstPercent}% GST.</p>
+          <h2 class="pricing-tier">${t.standard.label}</h2>
+          <div class="pricing-sub">For a whole site, and the plan most organizations choose.</div>
+          <div class="pricing-price">${periodPrice(t.standard.monthly, t.standard.yearly)}</div>
+          ${periodNote(t.standard.yearly)}
           ${list([
-            `${p.includedWorkstations} workstations included`,
-            `${inr(p.extraMonthly)} a month (${inr(p.extraYearly)} a year) for each one more, up to ${p.salesAbove}`,
-            "Live screens, exam mode and Remote Control",
-            "Staff roles, audit log and custom domain",
-            `Try it all free for ${p.trialDays} days, no card needed`
+            `${t.standard.includedWorkstations} workstations, then ${inr(t.standard.extraMonthly)} a month each`,
+            `${t.standard.staff} staff accounts`,
+            "Every console feature, including exams and usage reports",
+            "Remote Control as an add-on",
+            `Try it free for ${p.trialDays} days, no card needed`
           ])}
           <a class="btn btn-primary btn-block" href="/register">Start the free trial</a>
         </div>
 
         <div class="pricing-card">
+          <h2 class="pricing-tier">${t.pro.label}</h2>
+          <div class="pricing-sub">For large sites and several rooms run by one team.</div>
+          <div class="pricing-price">${periodPrice(t.pro.monthly, t.pro.yearly)}</div>
+          ${periodNote(t.pro.yearly)}
+          ${list([
+            `${t.pro.includedWorkstations} workstations, then ${inr(t.pro.extraMonthly)} a month each`,
+            `${t.pro.staff} staff accounts`,
+            `Remote Control on ${t.pro.includedRemoteSeats} workstations included`,
+            "Priority support"
+          ])}
+          <a class="btn btn-ghost btn-block" href="/register">Get started</a>
+        </div>
+      </div>
+      <p class="pricing-footnote">${gstLine} A yearly plan costs ten months. Online plans go up to ${p.salesAbove} workstations; for more, <a href="/contact?reason=sales">talk to sales</a>.</p>
+
+      <div class="pricing-grid pricing-grid-2">
+        <div class="pricing-card pricing-card-row">
           <h2 class="pricing-tier">Education</h2>
           <div class="pricing-sub">For institutions recognised by an education board, university or regulator.</div>
-          <div class="pricing-price">${inr(0)} <small>after verification</small></div>
           ${list([
-            `${p.educationWorkstations} workstations, everything in the subscription`,
-            "Apply from Plan in your console with your affiliation certificate",
-            "An official email on your institution's own domain",
-            "Checked by hand, renewed every year"
+            `${t.education.includedWorkstations} workstations and ${t.education.staff} staff, free for a year at a time`,
+            `Remote Control at half price: ${inr(t.education.remoteMonthly)} a month per workstation`,
+            "Apply from Plan &amp; billing in your console; we check every application by hand"
           ])}
-          <a class="btn btn-ghost btn-block" href="/register">Register, then apply</a>
+          <a class="btn btn-ghost" href="/register">Register, then apply</a>
         </div>
-
-        <div class="pricing-card">
-          <h2 class="pricing-tier">Large deployments</h2>
+        <div class="pricing-card pricing-card-row">
+          <h2 class="pricing-tier">Custom</h2>
           <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
-          <div class="pricing-price">Custom <small>quote</small></div>
-          ${list([
-            "Any number of workstations and sites",
-            "Volume pricing and annual invoicing",
-            "Priority onboarding and support",
-            "Help with certified hardware and resellers"
-          ])}
-          <a class="btn btn-ghost btn-block" href="/contact?reason=sales">Contact sales</a>
+          ${list(["Any number of workstations and sites", "Volume pricing, purchase orders and annual invoicing", "Priority onboarding, and help with certified hardware"])}
+          <a class="btn btn-ghost" href="/contact?reason=sales">Contact sales</a>
         </div>
       </div>
 
-      <div class="docs-callout" style="margin-top: 48px; border-left-color: var(--accent);">
-        <strong>Payments:</strong> prepaid by the month or the year through Razorpay, never renewed without you, and not refundable; see the <a href="/refunds">Refund &amp; Cancellation Policy</a>. Try the Free plan and the ${p.trialDays}-day trial first.
+      <div class="docs-callout pricing-addon">
+        <strong>Remote Control add-on:</strong> see and control a workstation's screen from the console. ${inr(t.standard.remoteMonthly)} a month (${inr(t.standard.remoteYearly)} a year) for each workstation that carries a seat; ${t.pro.label} includes ${t.pro.includedRemoteSeats}. Move a seat to another workstation whenever you like.
       </div>
-      <div class="docs-callout" style="margin-top: 16px;">
-        <strong>How the limit works:</strong> each plan covers a number of workstations. If a plan ends, the organization is back on Free: ${p.freeWorkstations} workstations keep working, the others stay enrolled and show a notice until a licence is free for them, and nothing is deleted.
+    </section>
+
+    <section class="section-wrap">
+      <h2 class="section-title">Compare plans</h2>
+      <div class="compare-wrap">
+        <table class="compare-table">
+          <thead><tr><th scope="col"><span class="visually-hidden">Feature</span></th><th scope="col">Free</th><th scope="col">${t.starter.label}</th><th scope="col">${t.standard.label}</th><th scope="col">${t.pro.label}</th></tr></thead>
+          <tbody>
+            ${row("Workstations included", [String(p.freeWorkstations), String(t.starter.includedWorkstations), String(t.standard.includedWorkstations), String(t.pro.includedWorkstations)])}
+            ${row("Each extra workstation, a month", [no, inr(t.starter.extraMonthly), inr(t.standard.extraMonthly), inr(t.pro.extraMonthly)])}
+            ${row("Staff accounts besides you", [String(STAFF_LIMITS.free), String(t.starter.staff), String(t.standard.staff), String(t.pro.staff)])}
+            ${row("Remote Control seats included", [no, "0", "0", String(t.pro.includedRemoteSeats)])}
+            ${row("More Remote Control seats, a month", [no, `${inr(t.starter.remoteMonthly)} each`, `${inr(t.standard.remoteMonthly)} each`, `${inr(t.pro.remoteMonthly)} each`])}
+            ${row("Live screens, lock and broadcast", [yes, yes, yes, yes])}
+            ${row("User Portal and domain allowlist", [yes, yes, yes, yes])}
+            ${row("Exam mode, power schedules, usage reports", [yes, yes, yes, yes])}
+            ${row("Single sign-on with Google or Microsoft", [yes, yes, yes, yes])}
+            ${row("Invoices for every payment", [no, yes, yes, yes])}
+            ${row("Support", ["Docs", "Email", "Email", "Priority"])}
+          </tbody>
+        </table>
       </div>
-      <div class="docs-callout" style="margin-top: 16px;">
+    </section>
+
+    <section class="section-wrap">
+      <h2 class="section-title">Work out your price</h2>
+      <div class="pricing-calc" id="pricing-calc">
+        <div class="calc-fields">
+          <label class="calc-field">Plan
+            <select id="calc-tier">${calcTiers.map((c) => `<option value="${c.tier}"${c.tier === "standard" ? " selected" : ""}>${c.label}</option>`).join("")}</select>
+          </label>
+          <label class="calc-field">Workstations
+            <input type="number" id="calc-ws" min="1" max="${p.salesAbove}" step="1" value="${t.standard.includedWorkstations}" inputmode="numeric">
+          </label>
+          <label class="calc-field">Remote Control seats
+            <input type="number" id="calc-seats" min="0" max="${p.salesAbove}" step="1" value="0" inputmode="numeric">
+          </label>
+        </div>
+        <div class="calc-result" aria-live="polite">
+          <div class="calc-row"><span>Paid monthly</span><strong id="calc-month">&mdash;</strong></div>
+          <div class="calc-row"><span>Paid yearly</span><strong id="calc-year">&mdash;</strong></div>
+          <p class="calc-note" id="calc-note">${gstLine} The total at checkout is worked out the same way.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-wrap">
+      <h2 class="section-title">Questions about billing</h2>
+      <div class="pricing-faq">
+        <details><summary>How does renewal work?</summary><p>A plan renews by itself at the end of each month or year, through the card, UPI mandate or netbanking mandate you authorised on Razorpay. Razorpay tells you before each charge.</p></details>
+        <details><summary>How do I cancel?</summary><p>Under Plan &amp; billing in your console. Nothing more is charged, and the plan stays until the end of the period you paid for; resume before then and nothing changes. Payments already made are not refunded; see the <a href="/refunds">Refund &amp; Cancellation Policy</a>.</p></details>
+        <details><summary>What if a payment fails?</summary><p>Razorpay tries again over the next few days and we tell you. If it still fails, the plan stays for 7 more days so you can update the payment method; after that the organization moves to Free.</p></details>
+        <details><summary>Can I change plans in the middle of a period?</summary><p>Yes. Moving up applies at once, and you pay only the difference for the rest of the period. Moving down, or between monthly and yearly, applies when the period ends.</p></details>
+        <details><summary>What happens above my plan's limits?</summary><p>Workstations beyond the plan stay enrolled and show a notice instead of your portal until a licence is free; staff beyond it are suspended until there is room. Nothing is deleted, and you choose which ones stay active.</p></details>
+        <details><summary>Do I get an invoice?</summary><p>Every payment has an invoice under Plan &amp; billing. Add your GSTIN and billing address there to have them printed on it.</p></details>
+      </div>
+      <div class="docs-callout" style="margin-top: 32px;">
         <strong>Self-hosting:</strong> the source is available to run the control plane on your own Cloudflare account. Self-hosted use is free only for accredited educational institutions and non-commercial evaluation on up to 45 computers, under the <a href="/terms">LabKiosk Software License</a>; everyone else needs a commercial license. <a href="/docs">Read the self-host docs</a>.
       </div>
-    </section>`;
+    </section>
+    <script nonce="${escapeAttr(nonce)}">
+      (function () {
+        "use strict";
+        var TIERS = ${escapeJson(calcTiers)};
+        var GST = ${escapeJson(gstPercent)};
+        var SALES_ABOVE = ${escapeJson(p.salesAbove)};
+        var buttons = document.querySelectorAll(".pricing-period [data-period]");
+        function setPeriod(period) {
+          buttons.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.period === period)); });
+          document.querySelectorAll("[data-price-month]").forEach(function (el) { el.hidden = period !== "month"; });
+          document.querySelectorAll("[data-price-year]").forEach(function (el) { el.hidden = period !== "year"; });
+        }
+        buttons.forEach(function (b) { b.addEventListener("click", function () { setPeriod(b.dataset.period); }); });
+        function rupees(n) { return "₹" + Math.round(n).toLocaleString("en-IN"); }
+        function whole(input, min) {
+          var v = parseInt(input.value, 10);
+          if (!isFinite(v) || v < min) v = min;
+          var max = parseInt(input.max, 10);
+          if (isFinite(max) && v > max) v = max;
+          return v;
+        }
+        function calc() {
+          var chosen = document.getElementById("calc-tier").value;
+          var tier = TIERS.filter(function (x) { return x.tier === chosen; })[0];
+          var ws = whole(document.getElementById("calc-ws"), 1);
+          var seats = whole(document.getElementById("calc-seats"), 0);
+          var extra = Math.max(0, ws - tier.included);
+          var paidSeats = Math.max(0, seats - tier.seatsIncluded);
+          var tax = 1 + GST / 100;
+          var month = (tier.monthly + extra * tier.extraMonthly + paidSeats * tier.seatMonthly) * tax;
+          var year = (tier.yearly + extra * tier.extraYearly + paidSeats * tier.seatYearly) * tax;
+          document.getElementById("calc-month").textContent = rupees(month) + " a month";
+          document.getElementById("calc-year").textContent = rupees(year) + " a year";
+          document.getElementById("calc-note").textContent =
+            tier.label + " covers " + tier.included + " workstations" + (tier.seatsIncluded ? " and " + tier.seatsIncluded + " Remote Control seats" : "") + "; " +
+            (extra ? extra + " more workstation" + (extra === 1 ? "" : "s") + " added. " : "nothing extra. ") +
+            (GST ? "Includes " + GST + "% GST. " : "No GST is charged at present. ") +
+            (ws >= SALES_ABOVE ? "For more workstations, talk to sales." : "The total at checkout is worked out the same way.");
+        }
+        ["calc-tier", "calc-ws", "calc-seats"].forEach(function (id) { document.getElementById(id).addEventListener("input", calc); });
+        calc();
+      })();
+    </script>`;
 }
 
 /** "7 October 2026": a release's date as people write one. */
@@ -3040,7 +3209,7 @@ function downloadMainHtml(
       </div>
       <h1 class="page-hero-title">Download <span>Lab Kiosk OS</span></h1>
       <p class="page-hero-desc">
-        Lightweight, immutable ${escapeHtml(debian)} live-build image for x86-64 and ARM64. Flash to a USB flash drive and turn any computer into a managed browser workstation.
+        Lightweight, immutable ${escapeHtml(debian)} live-build image for ${arm64 ? "x86-64 and ARM64 computers" : "Intel and AMD (x86-64) computers"}. Flash it to a USB drive and turn any computer into a managed browser workstation.
       </p>
     </section>
 
@@ -3120,6 +3289,7 @@ ${arm64}
             </p>
           </div>
         </div>
+        <p class="download-next">The enrollment key is in your console, under <strong>Overview &rarr; Enrol a workstation</strong> (Settings &rarr; Security). No account yet? <a href="/register">Register your organization</a>, free on ${PRICING.freeWorkstations} workstations. Not sure your computers will run it? Check the <a href="/specs">requirements</a> and the <a href="/hardware">models organizations run it on</a>.</p>
       </div>
 
       <div style="max-width: 840px; margin: 0 auto;">
@@ -3259,9 +3429,9 @@ export function renderSpecsHtml(data: LandingOptions): string {
 export function renderPricingHtml(data: LandingOptions): string {
   return renderPublicShell(data, {
     title: "Lab Kiosk OS - Plans & Pricing",
-    description: `Free on ${PRICING.freeWorkstations} workstations, a ${PRICING.trialDays}-day free trial, and a subscription of ₹${PRICING.monthly.toLocaleString("en-IN")} a month or ₹${PRICING.yearly.toLocaleString("en-IN")} a year for ${PRICING.includedWorkstations} workstations. Free for verified education institutions.`,
+    description: `Free on ${PRICING.freeWorkstations} workstations, a ${PRICING.trialDays}-day free trial, and Starter, Standard and Pro plans from ₹${CATALOGUE.starter.monthly.toLocaleString("en-IN")} a month, renewing monthly or yearly. Free for verified education institutions.`,
     activeNav: "pricing",
-    mainHtml: pricingMainHtml()
+    mainHtml: pricingMainHtml(data.nonce, data.gstPercent ?? 0)
   });
 }
 
@@ -4405,6 +4575,46 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .pricing-features { list-style: none; display: flex; flex-direction: column; gap: 12px; margin-bottom: 32px; flex: 1; }
     .pricing-features li { display: flex; align-items: flex-start; gap: 10px; font-size: 0.875rem; color: var(--text-main); line-height: 1.5; }
     .pricing-features li svg { color: var(--success-text); flex-shrink: 0; margin-top: 2px; }
+
+    .teaser-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); max-width: 960px; margin: 0 auto; }
+    .teaser-card { display: grid; gap: 6px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); }
+    .teaser-card strong { font-size: 1.125rem; color: var(--text-main); }
+    .teaser-card span { font-size: 0.875rem; color: var(--text-muted); line-height: 1.5; }
+    .teaser-links { text-align: center; margin-top: 20px; color: var(--text-muted); }
+    .download-next { margin-top: 20px; font-size: 0.9375rem; color: var(--text-muted); line-height: 1.6; }
+    .pricing-billed { font-size: 0.8125rem; color: var(--text-muted); margin: -16px 0 20px; }
+    .pricing-footnote { font-size: 0.875rem; color: var(--text-muted); text-align: center; margin-top: 20px; }
+    .pricing-grid-2 { grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 20px; }
+    .pricing-card-row { padding: 28px; }
+    .pricing-card-row .pricing-features { margin-bottom: 20px; }
+    .pricing-addon { margin-top: 32px; border-left-color: var(--accent); }
+    .pricing-period { display: inline-flex; gap: 4px; padding: 4px; margin-top: 28px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-subtle); }
+    .pricing-period button { border: 0; background: transparent; color: var(--text-muted); padding: 8px 18px; border-radius: 999px; font: inherit; font-size: 0.875rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
+    .pricing-period button[aria-pressed="true"] { background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-sm); }
+    .compare-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); margin-top: 24px; }
+    .compare-table { width: 100%; border-collapse: collapse; min-width: 640px; font-size: 0.875rem; }
+    .compare-table th, .compare-table td { padding: 14px 18px; border-bottom: 1px solid var(--border-subtle); text-align: center; color: var(--text-main); }
+    .compare-table thead th { font-weight: 700; background: var(--bg-subtle); }
+    .compare-table tbody th { text-align: left; font-weight: 500; color: var(--text-muted); }
+    /* On a phone the table scrolls sideways; the feature names stay in view. */
+    .compare-table tbody th, .compare-table thead th:first-child { position: sticky; left: 0; z-index: 1; background: var(--bg-surface); max-width: 46vw; }
+    .compare-table thead th:first-child { background: var(--bg-subtle); }
+    .compare-table tr:last-child th, .compare-table tr:last-child td { border-bottom: 0; }
+    .compare-yes { color: var(--success-text); display: inline-flex; }
+    .compare-no { color: var(--text-subtle); }
+    .pricing-calc { display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); margin-top: 24px; padding: 28px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); }
+    .calc-fields { display: grid; gap: 16px; }
+    .calc-field { display: grid; gap: 6px; font-size: 0.875rem; font-weight: 600; color: var(--text-main); }
+    .calc-field select, .calc-field input { font: inherit; font-weight: 400; padding: 10px 12px; border: 1px solid var(--border-input); border-radius: var(--radius-sm); background: var(--bg-base); color: var(--text-main); }
+    .calc-result { padding: 20px; border-radius: var(--radius-md); background: var(--bg-subtle); align-self: start; }
+    .calc-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 1rem; color: var(--text-muted); }
+    .calc-row strong { color: var(--text-main); font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+    .calc-note { font-size: 0.8125rem; color: var(--text-muted); margin-top: 12px; line-height: 1.5; }
+    .pricing-faq { display: grid; gap: 12px; margin-top: 24px; max-width: 840px; }
+    .pricing-faq details { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-surface); padding: 0 20px; }
+    .pricing-faq summary { cursor: pointer; padding: 16px 0; font-weight: 600; color: var(--text-main); }
+    .pricing-faq details p { padding: 0 0 16px; color: var(--text-muted); font-size: 0.9375rem; line-height: 1.6; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
     /* Download Page Cards */
     .download-hero-card {
