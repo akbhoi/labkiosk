@@ -191,7 +191,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
-      <div class="updated-date">Last updated: November 3, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: November 9, 2026 • Effective immediately</div>
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
@@ -233,7 +233,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p><strong>Signing in with Google or Microsoft.</strong> An organization can let its staff sign in with their Google Workspace or Microsoft Entra ID account (OpenID Connect). Only when the organization has turned this on and a member of staff chooses it, their browser is sent to Google or Microsoft, which receives the sign-in request and returns the person's email address, name, an identifier for their account with that provider, and the Google Workspace domain or the Microsoft tenant it belongs to. We keep only what we need to match the sign-in to the staff account the organization already created, and we do not store the provider's access or refresh tokens. Google and Microsoft handle the sign-in as independent controllers under their own terms and privacy statements, which the organization agreed to when it set up its Google Workspace or Microsoft Entra ID.</p>
       <p>Signing in sets two cookies, both strictly necessary and never used for tracking: <code>__Host-labkiosk_session</code>, which keeps you signed in on the one address that set it for up to seven days (twelve hours for the platform's own administrators), and <code>labkiosk_device</code>, a random identifier for the browser, sent only to the sign-in service. We keep a hash of that identifier with the browser's user-agent string, so that a sign-in from a browser your account has not used before can be reported to you by email (with the time, IP address and browser), and so that a browser you chose to trust can skip the two-factor code for 30 days. If you turn on two-factor sign-in, we store the authenticator-app secret and hashes of your recovery codes, and a code you ask for by email is sent to your account's address. If you add a passkey, we store its public key, the name you give it, its signature counter and when it was last used; the private key never leaves your device.</p>
       <p>We keep a record of each organization's account: its license plan and end date, its workstation limit, its Remote Control approval and seats, the notifications we send to its console and which members of staff dismissed them, its requests for new major releases and its trial workstation group, and any content we took down with the reason. Actions in the console are kept in the organization's audit log.</p>
-      <p>To register an organization we also ask for a technical contact's name, email address and phone number, the organization's postal address and, optionally, its legal name, tax identifier and billing email. We use them to verify the request, to decide whether to approve it, to arrange payment where a license requires one, and to reach the organization about its account. The email address is confirmed with a one-time code; the phone number is confirmed by our staff before approval. When an organization accepts our Terms of Service, with the Content Policy and the Data Processing Agreement that are part of them, at registration or later in its console, we keep a record of which version was accepted, by which account, when, and from which IP address and browser, as evidence of the agreement; that record is kept after the organization's account is closed. The contact form confirms your email address with a one-time code before your message is sent. Messages you send to our addresses or through the contact form, with any attachments, and our replies, are kept with your request so the conversation can continue.</p>
+      <p>To create an account we ask for your name, email address, phone number and the console address you choose; after you sign in, for the organization's name and postal address and, optionally, its legal name, tax identifier and billing email. We use them to verify the registration, to make sure each organization registers once (a new registration's email address and phone number are compared with those already registered, and its console address and organization name are checked against a list of words that are not allowed), to arrange payment where a plan requires one, and to reach the organization about its account. The email address is confirmed with a one-time code; the phone number with a code we text to it or, where we cannot text it, by our staff before the account is activated. When an organization accepts our Terms of Service, with the Content Policy and the Data Processing Agreement that are part of them, at registration or later in its console, we keep a record of which version was accepted, by which account, when, and from which IP address and browser, as evidence of the agreement; that record is kept after the organization's account is closed. The contact form confirms your email address with a one-time code before your message is sent. Messages you send to our addresses or through the contact form, with any attachments, and our replies, are kept with your request so the conversation can continue.</p>
 
       <h2>5. Automatic Bug Reports (Optional)</h2>
       <p>An organization's administrator may turn on Automatic Bug Reports. Only then, the workstation problems listed in Errors &amp; Warnings are sent, with network addresses, host names, e-mail addresses and identifiers masked, to an AI model on Cloudflare Workers AI for triage, and published as issues in a GitHub repository, which may be public. Organization names, workstation names, staff accounts, browsing and screen content are never sent. The <a href="/terms/bug-reports">Automatic Bug Report Terms</a> describe exactly what is sent and how to have a report removed.</p>
@@ -323,7 +323,7 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
   <main>
     <div class="legal-card">
       <h1>Terms of Service</h1>
-      <div class="updated-date">Last updated: November 8, 2026 &bull; Version 2026-11-08</div>
+      <div class="updated-date">Last updated: November 9, 2026 &bull; Version 2026-11-09</div>
 
       <div class="highlight-box">
         <strong>In short</strong>
@@ -345,7 +345,8 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
       </ul>
 
       <h2>3. Registration and Accounts</h2>
-      <p>You agree to give accurate registration details and to keep them current. We review each registration and may approve or decline it at our discretion. Your organization's owner is responsible for the account and for every action taken by its staff.</p>
+      <p>You agree to give accurate registration details and to keep them current. We may refuse or close a registration whose details are false, or whose name or subdomain breaks the <a href="/content-policy">Content Policy</a>. Your organization's owner is responsible for the account and for every action taken by its staff.</p>
+      <p>Each organization registers once: one account per contact email address and per phone number, with one Free plan and one trial. You must not register more than one organization, or use several accounts, to get more workstations, staff or trial time than one organization's plan allows; we may combine, restrict or close accounts that do, and tell the owner why. The Free plan is for an organization that runs its own workstations. A vendor, reseller or IT service provider that runs workstations for other organizations needs a paid plan for them, at the same prices as any other organization.</p>
       <p>You must keep passwords, recovery codes and your enrollment key confidential, give staff only the permissions they need, and tell us at once at <a href="mailto:security@labkiosk.org">security@labkiosk.org</a> if you suspect that any of them has been compromised. We recommend two-factor sign-in for every staff account.</p>
 
       <h2>4. Licensing</h2>
@@ -443,7 +444,7 @@ export function renderDataProcessingAgreementHtml(options: LegalPageOptions = {}
   <main>
     <div class="legal-card">
       <h1>Data Processing Agreement</h1>
-      <div class="updated-date">Last updated: November 8, 2026 &bull; Part of the Terms of Service, Version 2026-11-08</div>
+      <div class="updated-date">Last updated: November 9, 2026 &bull; Part of the Terms of Service, Version 2026-11-09</div>
 
       <div class="highlight-box">
         <strong>Part of the Terms of Service</strong>
@@ -555,7 +556,7 @@ export function renderContentPolicyHtml(options: LegalPageOptions = {}): string 
   <main>
     <div class="legal-card">
       <h1>Content Policy</h1>
-      <div class="updated-date">Last updated: October 13, 2026 &bull; Version 2026-10-13</div>
+      <div class="updated-date">Last updated: November 9, 2026 &bull; Version 2026-11-09</div>
 
       <div class="highlight-box">
         <strong>Part of the Terms of Service</strong>
@@ -601,6 +602,7 @@ export function renderContentPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Every organization homepage and User Portal has a <strong>Report this page</strong> link. You can also write to <a href="mailto:abuse@labkiosk.org">abuse@labkiosk.org</a>, naming the address of the page and what is wrong with it. We review every report. If you are reporting an infringement of your rights, tell us which work or mark is infringed and how to reach you.</p>
 
       <h2>5. What We Do</h2>
+      <p>A subdomain and an organization name are checked when they are registered, against a list of words that are sexual, hateful or abusive, or that impersonate a bank, payment service or public authority; one that matches is refused. You can contest a refusal as described in section 6.</p>
       <p>When Hosted Content breaks this policy, we may:</p>
       <ul>
         <li>take down the organization's homepage or a User Portal card, which then shows to visitors as taken down;</li>

@@ -10,7 +10,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 
 | Capability | Why it is reserved |
 | :--- | :--- |
-| Approve or reject organization registrations | Anyone can register; nothing works until a human approves |
+| Approve or reject registrations whose phone was not proved by a texted code | With phone verification (Firebase) on, an account is active on the Free plan at once; without it, nothing works until a human confirms the phone and approves |
 | Suspend or reactivate an organization | The platform's kill switch |
 | Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
 | Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
@@ -61,7 +61,9 @@ POST /api/super/tenants/approve
 
 Before approving, check that the subdomain is plausible for the organization, that it is not a [reserved slug](Configuration-Reference#reserved-subdomains), and that the admin email belongs to that organization's domain.
 
-On approval the organization can sign in, configure its portal, generate an enrollment key, and enrol workstations.
+Signup has two steps. The account first, at `/register`: name, email (proved by a code), phone, password and the console address, checked against reserved names and a word list (`src/name_screen.ts`); one organization per email address and per phone number. With Firebase phone verification on, the account is active at once on the Free plan and no task is opened. Then, signed in, the owner enters the organization's name, address and tax ID at `/admin/setup`; until then the console, enrolment and billing stay closed and the public pages say the organization is being set up.
+
+Without Firebase, a registration waits as a task. On approval the organization can sign in and enter its details, then configure its portal and enrol workstations.
 
 A registration is activated from **Tasks**, with a **workstation limit** (prefilled from the number the organization expects; 45 is the most the license allows without a paid one). Enrolment past it answers `403`; a workstation that still holds a valid token always enrols again, so lowering the limit later under **Organizations → ⋯ → Workstation Limit** stops new enrolments only. Each organization's row shows `N of M enrolled`, and its console header shows the same.
 

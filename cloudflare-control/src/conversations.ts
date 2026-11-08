@@ -610,6 +610,88 @@ export async function findOrganizationProfile(db: D1Database, tenantId: string):
   return db.prepare("SELECT * FROM organization_profiles WHERE tenant_id = ?").bind(tenantId).first<OrganizationProfile>();
 }
 
+/**
+ * The organization's half of the profile: what step 2 of signup asks for
+ * (src/signup.ts). `name` is the tenant's; the rest is stored on the profile.
+ */
+export type OrganizationDetails = { name: string } & Pick<
+  OrganizationProfile,
+  | "legal_name"
+  | "address_line1"
+  | "address_line2"
+  | "city"
+  | "region"
+  | "postal_code"
+  | "country"
+  | "tax_id"
+  | "billing_email"
+  | "workstation_estimate"
+  | "organization_type"
+  | "notes"
+>;
+
+/**
+ * What a profile holds before step 2: the address columns are NOT NULL, so an
+ * account that has not entered them yet stores empty text, and
+ * tenants.profile_completed_at (not the profile) says whether they are entered.
+ */
+export const EMPTY_ORGANIZATION_DETAILS: Omit<OrganizationDetails, "name"> = Object.freeze({
+  legal_name: null,
+  address_line1: "",
+  address_line2: null,
+  city: "",
+  region: null,
+  postal_code: "",
+  country: "",
+  tax_id: null,
+  billing_email: null,
+  workstation_estimate: null,
+  organization_type: null,
+  notes: null
+});
+
+export async function saveOrganizationDetails(db: D1Database, tenantId: string, d: OrganizationDetails): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE organization_profiles SET legal_name = ?, address_line1 = ?, address_line2 = ?, city = ?, region = ?, postal_code = ?,
+         country = ?, tax_id = ?, billing_email = ?, workstation_estimate = ?, organization_type = ?, notes = ?, updated_at = ?
+       WHERE tenant_id = ?`
+    )
+    .bind(
+      d.legal_name,
+      d.address_line1,
+      d.address_line2,
+      d.city,
+      d.region,
+      d.postal_code,
+      d.country,
+      d.tax_id,
+      d.billing_email,
+      d.workstation_estimate,
+      d.organization_type,
+      d.notes,
+      now(),
+      tenantId
+    )
+    .run();
+}
+
+/**
+ * Whether another organization already registered this contact email or phone
+ * number: one organization per each (migration 0061 indexes both). The phone
+ * is compared in the international form normalizePhone() stores.
+ */
+export async function organizationContactTaken(db: D1Database, email: string, phone: string): Promise<"email" | "phone" | null> {
+  const row = await db
+    .prepare(
+      `SELECT CASE WHEN contact_email = ?1 THEN 'email' ELSE 'phone' END AS hit
+       FROM organization_profiles WHERE contact_email = ?1 OR contact_phone = ?2 LIMIT 1`
+    )
+    .bind(email.toLowerCase(), phone)
+    .first<{ hit: "email" | "phone" }>();
+  return row?.hit ?? null;
+}
+
 export async function markPhoneVerified(db: D1Database, tenantId: string, userId: string): Promise<void> {
   const ts = now();
   await db

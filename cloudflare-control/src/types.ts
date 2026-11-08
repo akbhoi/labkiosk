@@ -117,6 +117,8 @@ export interface Tenant {
   license_plan?: LicensePlan | null;
   /** Unix seconds the license ends; NULL: no end date (0037). */
   license_expires_at?: number | null;
+  /** When the owner entered the organization's details, signup's second step; NULL until then (0061). */
+  profile_completed_at?: number | null;
   /** When the organization started its one free trial (0058, src/plans.ts). */
   trial_started_at?: number | null;
   /** The paid tier of a subscriber; NULL for every other plan (0059, src/plans.ts). */

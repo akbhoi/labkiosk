@@ -410,6 +410,7 @@ import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from 
 import {
   handleContactEmailCode,
   handleContactForm,
+  handleCompleteOrganization,
   handleRegister,
   handleRemoteControlRequest,
   handleSignupEmailCode,
@@ -1926,8 +1927,9 @@ export default {
       return handleSignupEmailCode(routeContext);
     }
 
-    // POST /api/auth/register: an organization asks to join. It is created as
-    // pending and nothing works until the platform approves it (Tasks).
+    // POST /api/auth/register: signup's first step, the account (src/signup.ts).
+    // Active on the Free plan when the phone was proved by a texted code; pending
+    // for the platform owner's approval (Tasks) otherwise.
     if (path === "/api/auth/register" && method === "POST") {
       try {
         return await handleRegister(routeContext);
@@ -4230,6 +4232,20 @@ export default {
       }
     }
 
+    // POST /api/tenant/organization: signup's second step, the organization's
+    // name, address and tax ID, entered by the account's owner once.
+    if (path === "/api/tenant/organization" && method === "POST") {
+      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      if (denied) return denied;
+      if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+      try {
+        return await handleCompleteOrganization(routeContext, currentTenant!);
+      } catch (err: any) {
+        console.error("[Worker] Saving the organization's details failed:", err);
+        return jsonError("The organization's details could not be saved. Please try again.", 500, jsonHeaders);
+      }
+    }
+
     if (path === "/api/tenant/settings" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -4366,6 +4382,9 @@ export default {
 
         if (tenant.status !== "active") {
           return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
+        }
+        if (!tenant.profile_completed_at) {
+          return jsonError("Finish setting up the organization in its console before enrolling workstations.", 403, jsonHeaders);
         }
 
         const plan = entitlement(tenant);
@@ -5865,6 +5884,29 @@ export default {
       }
 
       const tenant = currentTenant!;
+      // Signup's second step: until the organization's details are entered, the
+      // console is that one page (src/signup.ts). A platform demo has nothing to enter.
+      const setupPending = !tenant.profile_completed_at && !isDemoTenant(tenant, session.user_id);
+      if (setupPending !== (path === "/admin/setup")) {
+        const target = new URL(url.toString());
+        target.pathname = setupPending ? "/admin/setup" : "/admin";
+        target.search = isDev || url.searchParams.has("tenant") ? `?tenant=${encodeURIComponent(tenant.subdomain)}` : "";
+        return Response.redirect(target.toString(), 302);
+      }
+      if (setupPending) {
+        return new Response(
+          renderLandingHtml({
+            openModal: "organization",
+            organization: { subdomain: tenant.subdomain, host: `${tenant.subdomain}.${baseDomain}`, owner: tenant.user_id === session.user_id },
+            isoDownloadUrl: env.ISO_DOWNLOAD_URL,
+            baseDomain,
+            contactEmail: "contact@labkiosk.org",
+            ...formChecks,
+            nonce
+          }),
+          { headers: { ...htmlHeaders, "Cache-Control": "no-store" } }
+        );
+      }
       let activePage: AdminPageId = "workstations";
       if (path === "/admin" || path === "/admin/overview") activePage = "overview";
       else if (path === "/admin/reports") activePage = "reports";
@@ -6037,6 +6079,19 @@ export default {
             tone: "warning"
           }),
           { status: 403, headers: htmlHeaders }
+        );
+      }
+      // An account that has not entered its organization's details yet has nothing to show.
+      if (!currentTenant.profile_completed_at) {
+        return new Response(
+          renderStatusPageHtml({
+            title: "Being Set Up",
+            heading: "This Organization Is Being Set Up",
+            messageHtml: `<code>${escapeHtml(currentTenant.subdomain)}</code> is registered and is being set up. Check back soon.`,
+            homeHref: `${url.origin}/`,
+            tone: "warning"
+          }),
+          { status: 404, headers: htmlHeaders }
         );
       }
 

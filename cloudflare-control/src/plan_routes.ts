@@ -127,6 +127,11 @@ async function organizationPlan(ctx: PlanRouteContext): Promise<Response | null>
   const denied = await requireTenantPermission(db, session, ctx.tenant, "settings", jsonHeaders);
   if (denied) return denied;
   const tenant = ctx.tenant!;
+  // Plans are bought for an organization whose name and address are entered:
+  // invoices carry them, and the place of supply comes from the state.
+  if (!tenant.profile_completed_at && method !== "GET") {
+    return jsonError("Enter your organization's details in the console first", 409, jsonHeaders);
+  }
   const userId = session!.user_id;
   const nowMs = Date.now();
   const now = Math.floor(nowMs / 1000);

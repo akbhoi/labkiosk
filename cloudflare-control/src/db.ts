@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   billing_legal_name TEXT,
   billing_gstin TEXT,
   billing_address TEXT,
-  billing_state TEXT
+  billing_state TEXT,
+  profile_completed_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -423,6 +424,9 @@ CREATE TABLE IF NOT EXISTS organization_profiles (
   phone_link_hash TEXT,
   phone_link_expires_at INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS idx_organization_profiles_email ON organization_profiles(contact_email);
+CREATE INDEX IF NOT EXISTS idx_organization_profiles_phone ON organization_profiles(contact_phone);
 
 CREATE TABLE IF NOT EXISTS email_codes (
   id TEXT PRIMARY KEY,
@@ -1201,7 +1205,9 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT kind, tier, remote_seats, subscription_id, expires_at FROM payments LIMIT 1",
   // 0060: proforma invoices and private document links.
   "SELECT id, number, reason, valid_until, payment_id, status FROM proformas LIMIT 1",
-  "SELECT token_hash, kind, document_id, expires_at FROM document_links LIMIT 1"
+  "SELECT token_hash, kind, document_id, expires_at FROM document_links LIMIT 1",
+  // 0061: two-step signup.
+  "SELECT profile_completed_at FROM tenants LIMIT 1"
 ];
 
 /**
@@ -1400,6 +1406,13 @@ export async function createTenant(
     portalFooter?: string | null;
     /** The address was generated at registration, not chosen (src/addresses.ts). */
     addressGenerated?: boolean;
+    /**
+     * Whether the organization's details are entered. Only signup's first step
+     * creates one without them (src/signup.ts); the console asks for them next.
+     */
+    profileCompleted?: boolean;
+    /** The workstation limit; the column's default when left out. */
+    workstationLimit?: number;
   }
 ): Promise<Tenant> {
   const id = crypto.randomUUID();
@@ -1413,8 +1426,8 @@ export async function createTenant(
 
   await db
     .prepare(
-      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at, address_generated)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at, address_generated, profile_completed_at, workstation_limit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 45))`
     )
     .bind(
       id,
@@ -1432,7 +1445,9 @@ export async function createTenant(
       data.portalFooter || null,
       now,
       now,
-      data.addressGenerated ? 1 : 0
+      data.addressGenerated ? 1 : 0,
+      data.profileCompleted === false ? null : now,
+      data.workstationLimit ?? null
     )
     .run();
 
@@ -1458,7 +1473,9 @@ export async function createTenant(
     created_at: now,
     updated_at: now,
     address_generated: data.addressGenerated ? 1 : 0,
-    chosen_subdomain: null
+    chosen_subdomain: null,
+    profile_completed_at: data.profileCompleted === false ? null : now,
+    workstation_limit: data.workstationLimit ?? 45
   };
 }
 
@@ -1584,6 +1601,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "license_expires_at",
   "remote_control_revoked_at",
   "trial_started_at",
+  "profile_completed_at",
   "plan_tier",
   "staff_limit",
   "remote_seats_paid",

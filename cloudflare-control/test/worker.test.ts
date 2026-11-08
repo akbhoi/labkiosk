@@ -50,7 +50,8 @@ import {
   postalCodeProblem,
   taxIdProblem
 } from "../src/geo";
-import { normalizePhone } from "../src/signup";
+import { normalizePhone, readOrganization, subdomainProblem } from "../src/signup";
+import { ADDRESS_REFUSAL, screenName } from "../src/name_screen";
 import { FIREBASE_JWKS_URL, firebaseConfigProblem, resetFirebaseKeys, verifyPhoneToken } from "../src/phone_verify";
 import { checkComponents, componentStatuses, recordStatusChecks } from "../src/status";
 import { monthlySummaryFor } from "../src/monthly_summary";
@@ -247,7 +248,26 @@ async function firebaseSigner(kid = "test-kid") {
   };
 }
 
+/**
+ * A phone number of this email's own: one organization per number, so each
+ * signup in the suite needs its own unless the test names one.
+ */
+function phoneFor(email: string): string {
+  let hash = 0;
+  for (const c of email) hash = (hash * 31 + c.charCodeAt(0)) >>> 0;
+  return `+91 9${String(hash % 1_000_000_000).padStart(9, "0")}`;
+}
+
 function signupBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const email = String(overrides.email ?? "jane@example.com");
+  return {
+    phone: phoneFor(email),
+    ...signupDefaults(),
+    ...overrides
+  };
+}
+
+function signupDefaults(): Record<string, unknown> {
   return {
     name: "Example Organization",
     legalName: "Example Organization Pvt Ltd",
@@ -255,7 +275,6 @@ function signupBody(overrides: Record<string, unknown> = {}): Record<string, unk
     contactName: "Jane Smith",
     email: "jane@example.com",
     emailCode: "000000",
-    phone: "+91 98765 43210",
     password: "OrganizationPassword123!",
     subdomain: "example",
     addressLine1: "12 Market Road",
@@ -265,8 +284,7 @@ function signupBody(overrides: Record<string, unknown> = {}): Record<string, unk
     country: "India",
     taxId: "21ABCDE1234F1Z5",
     workstationEstimate: 40,
-    acceptTerms: true,
-    ...overrides
+    acceptTerms: true
   };
 }
 
@@ -303,16 +321,18 @@ async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = 
   assert.ok(code, "the code is in the subject");
   const res = await worker.fetch(request("/api/auth/register", { ...json({ ...body, emailCode: code }), headers: from }), env);
   const data = (await res.json()) as any;
-  // Registration generates the console address (src/addresses.ts). The fixtures
-  // name theirs, as organizations registered before that did: give it to them,
-  // unless the test asks for the generated one.
-  if (res.status === 200 && body.subdomain && !body.keepGeneratedAddress) {
-    await getDatabase(env)
-      .prepare("UPDATE tenants SET subdomain = ?, address_generated = 0 WHERE user_id = (SELECT id FROM users WHERE email = ?)")
-      .bind(String(body.subdomain), String(body.email).toLowerCase())
-      .run();
-  }
   return { res, data };
+}
+
+/** Signup's second step, as the signed-in owner: the organization's name, address and tax ID. */
+async function completeOrganization(cookie: string, subdomain: string, overrides: Record<string, unknown> = {}) {
+  const body = signupBody(overrides);
+  const organization = Object.fromEntries(
+    ["name", "legalName", "organizationType", "addressLine1", "addressLine2", "city", "region", "postalCode", "country", "taxId", "billingEmail", "workstationEstimate", "notes"]
+      .filter((key) => key in body)
+      .map((key) => [key, body[key]])
+  );
+  return callJson(`/api/tenant/organization?tenant=${encodeURIComponent(subdomain)}`, { ...json(organization), cookie });
 }
 
 /**
@@ -378,8 +398,19 @@ async function taskByReference(cookie: string, reference: string, box: "tasks" |
   return item;
 }
 
-/** Register, confirm the phone, approve, and sign in: the organization's session cookie. */
+/** Register, confirm the phone, approve, sign in and enter the organization's details: its session cookie. */
 async function registerApprovedOrganization(overrides: Record<string, unknown>): Promise<string> {
+  const cookie = await registerApprovedAccount(overrides);
+  const { res, data } = await completeOrganization(cookie, String(signupBody(overrides).subdomain), overrides);
+  assert.equal(res.status, 200, JSON.stringify(data));
+  return cookie;
+}
+
+/**
+ * Register without a texted phone code (pending), confirm the phone, approve and
+ * sign in: the session of an account whose organization's details are not entered yet.
+ */
+async function registerApprovedAccount(overrides: Record<string, unknown>): Promise<string> {
   const { res, data } = await submitSignup(overrides);
   assert.equal(res.status, 200, JSON.stringify(data));
   const admin = await superCookie();
@@ -662,15 +693,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(data.error, /at least 12 characters/);
   });
 
-  test("Registration needs a phone number, an address and the email code", async () => {
+  test("Registration needs a phone number, a console address and the email code", async () => {
     const noPhone = await callJson("/api/auth/register", json(signupBody({ phone: "" })));
     assert.equal(noPhone.res.status, 400);
     assert.match(noPhone.data.error, /country code/);
     const localPhone = await callJson("/api/auth/register", json(signupBody({ phone: "98765 43210" })));
     assert.equal(localPhone.res.status, 400, "a number without its country code is refused");
-    const noAddress = await callJson("/api/auth/register", json(signupBody({ city: "" })));
-    assert.equal(noAddress.res.status, 400);
-    assert.match(noAddress.data.error, /address/);
+    for (const subdomain of ["", "ab", "-greenwood", "greenwood-", "admin", "sexy-shop", "p0rn-hub", "sbi-netbanking"]) {
+      const { res, data } = await callJson("/api/auth/register", json(signupBody({ subdomain })));
+      assert.equal(res.status, 400, `the console address ${JSON.stringify(subdomain)} is refused`);
+      assert.match(data.error, /console address|not available/);
+    }
     const noTerms = await callJson("/api/auth/register", json(signupBody({ acceptTerms: false })));
     assert.equal(noTerms.res.status, 400);
     const disposable = await callJson("/api/auth/register/email-code", json({ email: "someone@mailinator.com" }));
@@ -682,32 +715,27 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("A registration's country decides its state, postal code and tax ID", async () => {
-    // Each attempt from its own address, so the per-address limit stays out of the way.
-    let attempt = 0;
-    const register = (overrides: Record<string, unknown>) =>
-      callJson("/api/auth/register", { ...json(signupBody(overrides)), headers: { "CF-Connecting-IP": `203.0.113.${++attempt}` } });
-    const refused = async (overrides: Record<string, unknown>, pattern: RegExp, why: string) => {
-      const { res, data } = await register(overrides);
-      assert.equal(res.status, 400, why);
-      assert.match(data.error, pattern, why);
+    // Signup's second step reads these (src/signup.ts readOrganization); the route is tested below.
+    const refused = (overrides: Record<string, unknown>, pattern: RegExp, why: string) => {
+      const read = readOrganization(signupBody(overrides));
+      assert.ok(read.problem !== null, why);
+      assert.match(read.problem!, pattern, why);
     };
-    await refused({ country: "Atlantis" }, /country/, "a country that is not on the list");
-    await refused({ country: "" }, /country/, "no country");
-    await refused({ postalCode: "7510" }, /postal code/, "a PIN code has six digits");
-    await refused({ postalCode: "" }, /postal code/, "India's addresses carry one");
-    await refused({ region: "Atlantis" }, /state or union territory/, "a state India does not have");
-    await refused({ region: "" }, /state or union territory/, "India's states are listed, so one is chosen");
-    await refused({ taxId: "12345" }, /GSTIN/, "a GSTIN has fifteen characters");
-    await refused({ country: "US", region: "California", postalCode: "751001", taxId: "" }, /postal code/, "the code is checked against the country sent");
-    // The ISO code and the name are the same country; what passes these checks fails only on the email code.
+    refused({ country: "Atlantis" }, /country/, "a country that is not on the list");
+    refused({ country: "" }, /country/, "no country");
+    refused({ city: "" }, /address/, "no city");
+    refused({ postalCode: "7510" }, /postal code/, "a PIN code has six digits");
+    refused({ postalCode: "" }, /postal code/, "India's addresses carry one");
+    refused({ region: "Atlantis" }, /state or union territory/, "a state India does not have");
+    refused({ region: "" }, /state or union territory/, "India's states are listed, so one is chosen");
+    refused({ taxId: "12345" }, /GSTIN/, "a GSTIN has fifteen characters");
+    refused({ country: "US", region: "California", postalCode: "751001", taxId: "" }, /postal code/, "the code is checked against the country sent");
+    // The ISO code and the name are the same country.
     for (const country of ["IN", "in", "India"]) {
-      const { data } = await register({ country, email: "geo@example.com", subdomain: "geo-check" });
-      assert.match(data.error, /expired/, `${country} is accepted`);
+      assert.equal(readOrganization(signupBody({ country })).problem, null, `${country} is accepted`);
     }
-    const emirates = await register({
-      country: "AE", region: "Dubai", postalCode: "", taxId: "100123456700003", email: "geo@example.com", subdomain: "geo-check"
-    });
-    assert.match(emirates.data.error, /expired/, "a country without postal codes needs none");
+    const emirates = readOrganization(signupBody({ country: "AE", region: "Dubai", postalCode: "", taxId: "100123456700003" }));
+    assert.equal(emirates.problem, null, "a country without postal codes needs none");
 
     // The table is consistent with itself: every example passes its own pattern.
     const codes = new Set(COUNTRIES.map((row) => row[0]));
@@ -737,8 +765,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(((await table.json()) as { countries: unknown[] }).countries.length, COUNTRIES.length);
     assert.equal((await call("/assets/geo-00000000.json")).headers.get("Cache-Control"), "no-store");
     const landing = await (await call("/register")).text();
-    assert.ok(landing.includes(GEO_DATA_PATH), "the registration form asks for the current table");
-    assert.match(landing, /<select class="form-input" id="reg-country"/);
+    assert.ok(landing.includes(GEO_DATA_PATH), "the registration form asks for the current table, for its calling codes");
+    assert.doesNotMatch(landing, /id="reg-country"/, "the address is asked for after sign-in");
   });
 
   test("A wrong code is refused and stops working after five guesses", async () => {
@@ -771,11 +799,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.notEqual(row!.code_hash, await oneTimeCodeHash("another-pepper-of-sufficient-length-0123456789", `signup:${email}:${code}`));
   });
 
-  test("Registers a new organization as pending, emails the customer, and signs nobody in", async () => {
+  test("Without a texted phone code, registers a new organization as pending, emails the customer, and signs nobody in", async () => {
     const { res, data } = await submitSignup({
       name: "Greenwood Holdings",
       contactName: "Gwen Wood",
       email: "operator@greenwood.example",
+      phone: "+91 98765 43210",
       subdomain: "greenwood"
     });
     assert.equal(res.status, 200, JSON.stringify(data));
@@ -826,7 +855,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(detail.profile.contact_phone, "+919876543210", "the phone number is stored in international form");
     assert.ok(detail.profile.email_verified_at, "the email was verified by its code");
     assert.equal(detail.profile.phone_verified_at, null);
-    assert.equal(detail.profile.city, "Bhubaneswar");
+    assert.equal(detail.profile.city, "", "the address comes with the second step, after sign-in");
     assert.ok(detail.messages.some((m: any) => m.direction === "outbound" && /We received your registration/.test(m.subject)));
 
     const tooEarly = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
@@ -887,6 +916,45 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(replay.headers.get("Location"), "/?signin=expired", "a spent code is refused");
     assert.equal(replay.headers.getSetCookie().length, 0);
     orgSessionCookie = cookie.split(";")[0];
+
+    // Signup's second step: until the organization's details are entered, the console is that one page.
+    for (const page of ["/admin", "/admin/workstations", "/admin/plan"]) {
+      const gated = await call(`${page}?tenant=greenwood`, { cookie: orgSessionCookie });
+      assert.equal(gated.status, 302, `${page} waits for the organization's details`);
+      assert.equal(new URL(gated.headers.get("Location")!).pathname, "/admin/setup");
+    }
+    const setup = await call("/admin/setup?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(setup.status, 200);
+    const setupHtml = await setup.text();
+    assert.match(setupHtml, /<form id="organization-form">/);
+    assert.match(setupHtml, /<select class="form-input" id="reg-country"/);
+    assert.equal((await call("/home?tenant=greenwood")).status, 404, "nothing public before the organization has a name");
+    const keyRow = await getDatabase(mockEnv).prepare("SELECT enrollment_key FROM tenants WHERE subdomain = 'greenwood'").first<{ enrollment_key: string }>();
+    const early = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", clientId: "PC-EARLY", enrollmentKey: keyRow!.enrollment_key }));
+    assert.equal(early.res.status, 403, "no workstation enrols before the organization is set up");
+    assert.match(early.data.error, /Finish setting up/);
+    assert.equal((await call("/api/plan/trial?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).status, 409, "nothing is bought before it either");
+
+    assert.equal((await call("/api/tenant/organization?tenant=greenwood", json({ name: "Anon" }))).status === 200, false, "anonymous callers are refused");
+    const badName = await completeOrganization(orgSessionCookie, "greenwood", { name: "XXX Videos" });
+    assert.equal(badName.res.status, 400);
+    assert.match(badName.data.error, /cannot be used/);
+    const noCity = await completeOrganization(orgSessionCookie, "greenwood", { name: "Greenwood Holdings", city: "" });
+    assert.equal(noCity.res.status, 400);
+    const done = await completeOrganization(orgSessionCookie, "greenwood", { name: "Greenwood Holdings" });
+    assert.equal(done.res.status, 200, JSON.stringify(done.data));
+    const twice = await completeOrganization(orgSessionCookie, "greenwood", { name: "Greenwood Again" });
+    assert.equal(twice.res.status, 409, "the details are entered once; support changes them after");
+    const after = await call("/admin/setup?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(after.status, 302);
+    assert.equal(new URL(after.headers.get("Location")!).pathname, "/admin");
+    const tenantRow = await getDatabase(mockEnv)
+      .prepare("SELECT t.name, t.profile_completed_at, p.city, p.tax_id FROM tenants t JOIN organization_profiles p ON p.tenant_id = t.id WHERE t.subdomain = 'greenwood'")
+      .first<{ name: string; profile_completed_at: number | null; city: string; tax_id: string }>();
+    assert.equal(tenantRow!.name, "Greenwood Holdings");
+    assert.ok(tenantRow!.profile_completed_at);
+    assert.equal(tenantRow!.city, "Bhubaneswar");
+    assert.equal(tenantRow!.tax_id, "21ABCDE1234F1Z5");
   });
 
   test("Registers a second, unrelated organization for isolation checks", async () => {
@@ -977,7 +1045,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.match(other.data.error, /number was changed/);
 
       // The right one: registered, and the phone is verified by SMS (no one marked it).
-      const good = await submitSignup({ email: "sms-good@example.com", subdomain: "sms-good", phoneToken: await token("+919876543210") }, firebaseEnv);
+      const good = await submitSignup({ email: "sms-good@example.com", subdomain: "sms-good", phone: "+91 99999 00015", phoneToken: await token("+919999900015") }, firebaseEnv);
       assert.equal(good.res.status, 200, JSON.stringify(good.data));
       const tenant = await findTenantBySubdomain(getDatabase(mockEnv), "sms-good");
       const profile = await getDatabase(mockEnv)
@@ -987,6 +1055,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(profile!.phone_verified_at && Math.abs(profile!.phone_verified_at - now) < 60);
       assert.equal(profile!.phone_verified_by, null);
       assert.doesNotMatch(lastMailTo("sms-good@example.com").text, /We will confirm your phone number/);
+
+      // A texted code is the proof approval used to wait for: the account is active on Free at once.
+      assert.equal(good.data.active, true);
+      assert.equal(good.data.reference, undefined, "no task is opened");
+      assert.equal(tenant!.status, "active");
+      const limits = await getDatabase(mockEnv).prepare("SELECT workstation_limit, license_plan FROM tenants WHERE id = ?").bind(tenant!.id).first<any>();
+      assert.deepEqual({ ...limits }, { workstation_limit: PRICING.freeWorkstations, license_plan: null });
+      const welcome = lastMailTo("sms-good@example.com");
+      assert.match(welcome.subject, /Your Lab Kiosk account is ready/);
+      assert.match(welcome.text, /sms-good\.labkiosk\.org/);
+      const tasks = await getDatabase(mockEnv).prepare("SELECT COUNT(*) AS n FROM conversations WHERE tenant_id = ?").bind(tenant!.id).first<{ n: number }>();
+      assert.equal(tasks!.n, 0);
+      const login = await signIn({ email: "sms-good@example.com", password: "OrganizationPassword123!" });
+      assert.equal(login.status, 200, "the account signs in without anyone approving it");
+      const cookie = await sessionOf(login);
+      const gate = await call("/admin?tenant=sms-good", { cookie });
+      assert.equal(new URL(gate.headers.get("Location")!).pathname, "/admin/setup", "and lands on its second step");
+      const done = await completeOrganization(cookie, "sms-good", { name: "Sms Good Ltd" });
+      assert.equal(done.res.status, 200, JSON.stringify(done.data));
+      assert.equal((await call("/admin?tenant=sms-good", { cookie })).status, 200, "then the console opens");
 
       // Half a configuration refuses rather than skip the check.
       const half = await submitSignup({ email: "sms-half@example.com", subdomain: "sms-half" }, { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test" } as Env);
@@ -1024,7 +1112,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     resetFirebaseKeys();
     try {
       // Registered before phones were checked by text message: not verified.
-      const { data: signup } = await submitSignup({ name: "Linked Org", email: "linked@example.org", subdomain: "linked-org" });
+      const { data: signup } = await submitSignup({ name: "Linked Org", email: "linked@example.org", subdomain: "linked-org", phone: "+91 88888 43210" });
       const admin = await superCookie();
       const task = await taskByReference(admin, signup.reference);
       const db = getDatabase(mockEnv);
@@ -1062,7 +1150,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal(page.res.status, 200);
       assert.match(page.res.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/www\.gstatic\.com\/firebasejs\//);
       const html = await page.res.text();
-      assert.ok(html.includes("Linked Org") && html.includes("3210"));
+      assert.ok(html.includes("linked-org") && html.includes("3210"), "the account is named by its address until its details are entered");
 
       const now = Math.floor(Date.now() / 1000);
       const idToken = (phone: string) =>
@@ -1071,17 +1159,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
           iat: now, exp: now + 3600, auth_time: now, phone_number: phone, firebase: { sign_in_provider: "phone" }
         });
       const verify = (body: unknown) => fb("/api/verify-phone", { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.90" } });
-      assert.equal((await verify({ token: firstToken, phoneToken: await idToken("+919876543210") })).res.status, 410);
+      assert.equal((await verify({ token: firstToken, phoneToken: await idToken("+918888843210") })).res.status, 410);
       const wrong = await verify({ token, phoneToken: await idToken("+919999999999") });
       assert.equal(wrong.res.status, 400, "a token for another number does not verify this one");
       assert.equal((await verify({ token, phoneToken: "not.a.token" })).res.status, 400);
-      const done = await verify({ token, phoneToken: await idToken("+919876543210") });
+      const done = await verify({ token, phoneToken: await idToken("+918888843210") });
       assert.equal(done.res.status, 200, JSON.stringify(done.data));
       const profile = await db.prepare("SELECT phone_verified_at, phone_verified_by, phone_link_hash FROM organization_profiles WHERE tenant_id = ?").bind(tenant!.id).first<any>();
       assert.ok(profile.phone_verified_at);
       assert.equal(profile.phone_verified_by, null, "verified by text message, not by a person");
       assert.equal(profile.phone_link_hash, null, "the link is spent");
-      assert.equal((await verify({ token, phoneToken: await idToken("+919876543210") })).res.status, 410, "the link works once");
+      assert.equal((await verify({ token, phoneToken: await idToken("+918888843210") })).res.status, 410, "the link works once");
       const events = await db.prepare("SELECT body FROM conversation_messages WHERE conversation_id = ? AND direction = 'event'").bind(task.id).all<{ body: string }>();
       assert.ok(events.results.some((m) => /verified by text message/.test(m.body)));
       assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409, "a verified number needs no link");
@@ -1558,7 +1646,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(rejected.status, 200);
     const mail = lastMailTo("declined@example.org");
-    assert.match(mail.text, /not able to activate Declined Org/);
+    assert.match(mail.text, /not able to activate declined-org/, "named by its address: the details come after sign-in");
     assert.match(mail.text, /could not confirm the phone number/);
     const login = await callJson("/api/auth/login", json({ email: "declined@example.org", password: "OrganizationPassword123!" }));
     assert.equal(login.res.status, 403);
@@ -2974,13 +3062,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Escapes a hostile organization name in the Super Admin Console", async () => {
     const hostileName = '<img src=x onerror=alert(1)>';
-    const { res } = await submitSignup({
+    await registerApprovedOrganization({
       name: hostileName,
       email: "attacker@evil.test",
       password: "AttackerPass789!",
       subdomain: "evilorganization"
     });
-    assert.equal(res.status, 200);
 
     const html = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(!html.includes(hostileName), "raw script-bearing tag must never reach the super admin console");
@@ -5598,17 +5685,38 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------ registration rules
 
-  test("Registration generates the console address, and refuses implausible emails", async () => {
-    // A requested address is ignored: the address is generated from the name (src/addresses.ts).
-    const { res, data } = await submitSignup({ name: "Admin & Co. Learning Centre", email: "generated@example.com", subdomain: "admin", keepGeneratedAddress: true });
+  test("Console addresses and organization names are screened against a word list, without refusing real places", () => {
+    for (const name of ["porn-hub", "P0RN Studio", "xxx-videos", "Hot Sex Shop", "s3xy-girls", "p-o-r-n", "fuuuck", "onlyfans-agency", "sbi-netbanking", "UIDAI Aadhaar Help", "chutiya"]) {
+      assert.notEqual(screenName(name), null, `${name} is refused`);
+    }
+    assert.equal(screenName("sbi-netbanking"), "impersonation");
+    for (const name of ["Greenwood Holdings", "Essex County Library", "Middlesex School", "Scunthorpe College", "Sbitech Solutions", "Sussex-it", "Max X Xavier", "Analytics Hub", "Classic Assets", "Bhubaneswar Public Library", "unit-5"]) {
+      assert.equal(screenName(name), null, `${name} passes`);
+    }
+    assert.equal(subdomainProblem("sexy-shop"), ADDRESS_REFUSAL, "the refusal does not name the word");
+    assert.equal(subdomainProblem("greenwood"), null);
+  });
+
+  test("Registration takes the chosen console address, once, and refuses implausible emails", async () => {
+    const { res, data } = await submitSignup({ email: "chosen@example.com", subdomain: "Chosen-Co" });
     assert.equal(res.status, 200, JSON.stringify(data));
     const tenant = await getDatabase(mockEnv)
-      .prepare("SELECT subdomain, address_generated, chosen_subdomain FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'generated@example.com')")
+      .prepare("SELECT name, subdomain, address_generated, chosen_subdomain, profile_completed_at FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'chosen@example.com')")
       .first<any>();
-    assert.match(tenant.subdomain, /^admin-co-learning-ce-[a-z2-9]{4}$/);
-    assert.equal(tenant.address_generated, 1);
-    assert.equal(tenant.chosen_subdomain, null);
-    assert.ok(lastMailTo("generated@example.com").text.includes(`${tenant.subdomain}.labkiosk.org`), "the receipt names the generated address");
+    assert.equal(tenant.subdomain, "chosen-co");
+    assert.equal(tenant.name, "chosen-co", "named by its address until the second step");
+    assert.equal(tenant.address_generated, 0, "a chosen address, with its public homepage");
+    assert.equal(tenant.profile_completed_at, null);
+    assert.ok(lastMailTo("chosen@example.com").text.includes("chosen-co.labkiosk.org"), "the receipt names the address");
+
+    const taken = await submitSignup({ email: "second@example.com", subdomain: "chosen-co" });
+    assert.equal(taken.res.status, 409);
+    assert.match(taken.data.error, /already taken/);
+    const samePhone = await submitSignup({ email: "third@example.com", subdomain: "third-co", phone: signupBody({ email: "chosen@example.com" }).phone });
+    assert.equal(samePhone.res.status, 409, "one organization per phone number");
+    assert.match(samePhone.data.error, /phone number is already registered/);
+    const sameEmail = await call("/api/auth/register/email-code", json({ email: "chosen@example.com" }));
+    assert.equal(sameEmail.status, 409, "one organization per email address");
 
     const badEmail = await callJson(
       "/api/auth/register",
@@ -7260,13 +7368,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
-    // Registration no longer takes an address, so a demo name cannot be registered.
-    const squatter = await submitSignup({ name: "Web Demo", email: "squatter@example.com", subdomain: "web-demo", keepGeneratedAddress: true });
-    assert.equal(squatter.res.status, 200);
-    const squatted = await getDatabase(mockEnv)
-      .prepare("SELECT subdomain FROM tenants WHERE user_id = (SELECT id FROM users WHERE email = 'squatter@example.com')")
-      .first<{ subdomain: string }>();
-    assert.match(squatted!.subdomain, /^web-demo-[a-z2-9]{4}$/);
+    for (const subdomain of ["demo", ...DEMO_SLUGS]) {
+      const squatter = await callJson("/api/auth/register", json(signupBody({ email: "squatter@example.com", subdomain })));
+      assert.equal(squatter.res.status, 400, `${subdomain} cannot be registered`);
+    }
     for (const subdomain of ["demo", ...DEMO_SLUGS]) {
       const rename = await call("/api/tenant/subdomain?tenant=greenwood", {
         ...json({ subdomain }), cookie: orgSessionCookie
@@ -11528,6 +11633,23 @@ describe("Schema sources agree", () => {
     assert.deepEqual({ ...seats("on") }, { n: 5, r: null });
     assert.deepEqual({ ...seats("off") }, { n: 1, r: null });
     assert.throws(() => db.exec("UPDATE tenants SET remote_control_seats = 1001 WHERE id = 'on'"), /CHECK/);
+  });
+
+  test("0061 marks every organization registered before it as set up", () => {
+    const db = migratedDb("0061");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('old', 'u1', 'Old', 'old', 'active', 1234, 5678);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('waiting', 'u1', 'Waiting', 'waiting', 'pending', 99, 99);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0061_two_step_signup.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const completed = (id: string) => (db.prepare("SELECT profile_completed_at AS at FROM tenants WHERE id = ?").get(id) as { at: number | null }).at;
+    assert.equal(completed("old"), 1234, "its details were entered with its registration");
+    assert.equal(completed("waiting"), 99, "a pending registration entered them too");
+    const indexes = (db.prepare("PRAGMA index_list(organization_profiles)").all() as { name: string }[]).map((i) => i.name);
+    assert.ok(indexes.includes("idx_organization_profiles_email") && indexes.includes("idx_organization_profiles_phone"));
   });
 
   test("0032 gives every organization a workstation limit of 45, or what it already has when that is more", () => {
