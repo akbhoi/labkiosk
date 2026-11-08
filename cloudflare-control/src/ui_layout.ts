@@ -2731,9 +2731,9 @@ ${FONT_LINKS}
             <div class="profile-menu-actions">
               ${
                 brandHref.startsWith("/super")
-                  ? `<a href="/super/system" class="profile-menu-link">
+                  ? `<a href="/super/platform" class="profile-menu-link">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                      <span>System Settings</span>
+                      <span>Platform</span>
                     </a>`
                   : `<a href="${escapeAttr(brandHref.includes("?") ? "/admin/account?" + brandHref.split("?")[1] : "/admin/account")}" class="profile-menu-link">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -2742,7 +2742,7 @@ ${FONT_LINKS}
               }
               <a href="${escapeAttr(
                 brandHref.startsWith("/super")
-                  ? "/super/system?tab=system-two-factor"
+                  ? "/super/account"
                   : brandHref.includes("?")
                     ? "/admin/account?" + brandHref.split("?")[1] + "#pane-two-factor-section"
                     : "/admin/account#pane-two-factor-section"

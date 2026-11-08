@@ -2271,14 +2271,30 @@ export default {
         redirectUrl.pathname = path === "/super/approvals" ? "/super/tasks" : "/super/mail";
         return Response.redirect(redirectUrl.toString(), 302);
       }
-      let activeTab: "organizations" | "tasks" | "support" | "billing" | "releases" | "catalogs" | "system" = "organizations";
-      if (path === "/super/tasks") activeTab = "tasks";
+      // System and Catalogs became Platform: an old link lands on the same view.
+      if (path === "/super/system" || path === "/super/catalogs") {
+        const moved = new URL(request.url);
+        const tab = moved.searchParams.get("tab") || "";
+        moved.pathname = "/super/platform";
+        if (path === "/super/catalogs") moved.searchParams.set("tab", tab.startsWith("catalogs-") ? tab : "catalogs-list");
+        else if (tab === "system-two-factor") {
+          moved.pathname = "/super/account";
+          moved.searchParams.delete("tab");
+        } else if (tab === "system-audit") {
+          moved.pathname = "/super/organizations";
+          moved.searchParams.set("tab", "org-audit");
+        } else if (tab === "system-arch") moved.searchParams.delete("tab");
+        return Response.redirect(moved.toString(), 301);
+      }
+      let activeTab: "overview" | "organizations" | "tasks" | "support" | "billing" | "releases" | "catalogs" | "system" | "account" = "overview";
+      if (path === "/super/organizations") activeTab = "organizations";
+      else if (path === "/super/tasks") activeTab = "tasks";
       else if (path === "/super/billing") activeTab = "billing";
       else if (path === "/super/releases") activeTab = "releases";
       else if (path === "/super/mail") activeTab = "support";
-      else if (path === "/super/catalogs") activeTab = "catalogs";
-      else if (path === "/super/system") activeTab = "system";
-      else if (path.startsWith("/super/") && path !== "/super/organizations") {
+      else if (path === "/super/platform") activeTab = "system";
+      else if (path === "/super/account") activeTab = "account";
+      else if (path.startsWith("/super/") && path !== "/super/overview") {
         // A mistyped console address is not the Organizations page.
         return new Response(
           renderStatusPageHtml({

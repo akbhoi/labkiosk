@@ -2861,7 +2861,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(superRes.status, 200);
     const html = await superRes.text();
     assert.match(html, /Super Admin Master Console/);
-    assert.match(html, /Greenwood Holdings/);
+    assert.match(html, /id="pane-overview"/, "the console opens on its Overview");
+    assert.match(await (await call("/super/organizations", { cookie: superSessionCookie })).text(), /Greenwood Holdings/);
   });
 
   test("Refuses the Super Admin Console without a super admin session", async () => {
@@ -2883,7 +2884,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
-      ["/super/catalogs", superSessionCookie]
+      ["/super/platform", superSessionCookie]
     ];
     for (const [page, cookie] of pages) {
       const html = await (await call(page, { cookie })).text();
@@ -2975,7 +2976,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200);
 
-    const html = await (await call("/super", { cookie: superSessionCookie })).text();
+    const html = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(!html.includes(hostileName), "raw script-bearing tag must never reach the super admin console");
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   });
@@ -3190,8 +3191,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     for (const [page, cookie] of pages) {
@@ -3260,7 +3262,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie, true],
       ["/admin/settings?tenant=greenwood", orgSessionCookie, true],
       ["/super/organizations", superSessionCookie, true],
-      ["/super/system", superSessionCookie, true],
+      ["/super/platform", superSessionCookie, true],
       ["/", undefined, true],
       ["/home?tenant=greenwood", undefined, false],
       ["/?tenant=greenwood", undefined, false],
@@ -3292,8 +3294,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie],
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie],
       ["/", undefined],
       ["/home?tenant=greenwood", undefined],
       ["/?tenant=greenwood", undefined],
@@ -3331,8 +3334,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     for (const [page, cookie] of pages) {
@@ -3358,7 +3362,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // The allowlist tab called /api/settings/whitelist, which never existed: add,
     // remove and every preset pack answered 404, and the markup tests were happy.
     const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
-    const router = ["index.ts", "plan_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
+    const router = ["index.ts", "plan_routes.ts", "billing_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
     const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
     const called = new Set<string>();
     for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
@@ -3392,8 +3396,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     let parsed = 0;
@@ -3440,8 +3445,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie]
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie]
     ];
 
     for (const [page, cookie] of pages) {
@@ -3457,7 +3463,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         assert.match(item, /<span class="rail-tooltip"[^>]*>[^<]+<\/span>/, `${page}: a rail item has no tooltip`);
         assert.doesNotMatch(item.slice(0, item.indexOf(">")), /\stitle=/, `${page}: a rail item carries a native title as well`);
       }
-      assert.equal((html.match(/aria-current="page"/g) || []).length, 1, `${page} marks one rail item as the current page`);
+      // My account opens from the profile menu, not the rail: no rail item is current there.
+      const current = page.includes("/account") ? 0 : 1;
+      assert.equal((html.match(/aria-current="page"/g) || []).length, current, `${page} marks ${current} rail item as the current page`);
     }
   });
 
@@ -7142,7 +7150,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: superSessionCookie
     });
 
-    const page = await call("/super/catalogs", { cookie: superSessionCookie });
+    const page = await call("/super/platform?tab=catalogs-list", { cookie: superSessionCookie });
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.ok(html.includes("Workstation Interface Catalogs (i18n)"));
@@ -7162,7 +7170,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const organizations = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(organizations.includes(directoryHeading), "organizations tab shows the directory");
 
-    for (const tab of ["/super/tasks", "/super/mail", "/super/catalogs", "/super/system"]) {
+    for (const tab of ["/", "/super/tasks", "/super/mail", "/super/platform", "/super/account"].map((t) => (t === "/" ? "/super" : t))) {
       const res = await call(tab, { cookie: superSessionCookie });
       assert.equal(res.status, 200);
       const body = await res.text();
@@ -7173,11 +7181,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(tasks.includes('data-box="tasks"'), "Tasks shows the task list");
     const support = await (await call("/super/mail", { cookie: superSessionCookie })).text();
     assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
-    const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
-    assert.ok(system.includes("Platform Architecture"));
-    // Two-factor sign-in is a tab, and every console's profile menu links to it.
-    assert.ok(system.includes('id="pane-system-two-factor"') && system.includes('id="two-factor-email"'));
-    assert.ok(system.includes('href="/super/system?tab=system-two-factor"'));
+    const system = await (await call("/super/platform", { cookie: superSessionCookie })).text();
+    assert.ok(!system.includes("Platform Architecture"), "the static architecture card is gone");
+    assert.ok(system.includes('id="pane-system-status"') && system.includes('id="pane-catalogs-list"'), "Platform holds status and catalogs");
+    // Two-factor sign-in is the account's own page, and every console's profile menu links to it.
+    const superAccount = await (await call("/super/account", { cookie: superSessionCookie })).text();
+    assert.ok(superAccount.includes('id="two-factor-email"'));
+    assert.ok(system.includes('href="/super/account"'));
+    // The old addresses land where their views are now.
+    for (const [from, to] of [
+      ["/super/system", "/super/platform"],
+      ["/super/system?tab=system-two-factor", "/super/account"],
+      ["/super/system?tab=system-audit", "/super/organizations?tab=org-audit"],
+      ["/super/catalogs", "/super/platform?tab=catalogs-list"]
+    ]) {
+      const moved = await call(from, { cookie: superSessionCookie });
+      assert.equal(moved.status, 301, from);
+      assert.ok((moved.headers.get("location") || "").endsWith(to), `${from} lands on ${to}`);
+    }
+    const orgs = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    assert.ok(orgs.includes('id="pane-org-audit"') && orgs.includes('id="platform-audit-rows"'), "the audit log is under Organizations");
     const workstations = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.match(workstations, /href="\/admin\/account(\?tenant=greenwood)?#pane-two-factor-section"/, "the profile menu links to My account");
     // Two-factor sign-in is on My account now; its old Settings address lands there.
@@ -8446,8 +8469,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
-      ["/super/catalogs", superSessionCookie],
-      ["/super/system", superSessionCookie],
+      ["/super/platform", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/account", superSessionCookie],
       ["/home?tenant=greenwood"],
       ["/?tenant=greenwood"]
     ];
