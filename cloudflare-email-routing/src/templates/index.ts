@@ -9,6 +9,7 @@
  *   letter    a formal letter to a company
  *   alert     a security notice about the recipient's account
  *   billing   a payment, renewal or cancellation of an organization's plan
+ *   invoice   a proforma or tax invoice, with a QR code for paying a proforma
  *   notice    plain text in the scaffold (the fallback)
  *
  * The plain-text part is written by the sender and is the body of the
@@ -25,6 +26,7 @@ import { AlertTemplate, renderAlert } from "./alert";
 import { BillingTemplate, renderBilling } from "./billing";
 import { codeSubject, CodeTemplate, renderCode } from "./code";
 import { DecisionTemplate, renderDecision } from "./decision";
+import { InvoiceTemplate, renderInvoice } from "./invoice";
 import { Brand } from "./layout";
 import { LetterTemplate, renderLetter } from "./letter";
 import { NoticeTemplate, renderNotice } from "./notice";
@@ -32,19 +34,20 @@ import { ReceiptTemplate, renderReceipt } from "./receipt";
 import { ReplyTemplate, renderReply } from "./reply";
 
 export type { Brand } from "./layout";
-export type { AlertTemplate, BillingTemplate, CodeTemplate, DecisionTemplate, LetterTemplate, NoticeTemplate, ReceiptTemplate, ReplyTemplate };
+export type { AlertTemplate, BillingTemplate, CodeTemplate, DecisionTemplate, InvoiceTemplate, LetterTemplate, NoticeTemplate, ReceiptTemplate, ReplyTemplate };
 
 export type MailTemplate =
   | AlertTemplate
   | BillingTemplate
   | CodeTemplate
   | DecisionTemplate
+  | InvoiceTemplate
   | LetterTemplate
   | NoticeTemplate
   | ReceiptTemplate
   | ReplyTemplate;
 
-export const TEMPLATE_NAMES = ["alert", "billing", "code", "decision", "letter", "notice", "receipt", "reply"] as const;
+export const TEMPLATE_NAMES = ["alert", "billing", "code", "decision", "invoice", "letter", "notice", "receipt", "reply"] as const;
 
 export interface RenderInput {
   template: MailTemplate;
@@ -74,6 +77,8 @@ export function renderMailHtml(input: RenderInput): string {
       return renderCode(template, subject, brand);
     case "decision":
       return renderDecision(template, subject, text, brand);
+    case "invoice":
+      return renderInvoice(template, subject, brand);
     case "letter":
       return renderLetter(template, subject, text, brand);
     case "receipt":

@@ -95,17 +95,7 @@ function renderPlanPageHtml(contactHref: string): string {
       .summary-total { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 10px; font-size: 1rem; color: var(--text-main); }
       .summary-now { font-size: 0.875rem; margin: 12px 0; }
       .money { font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .invoice-sheet { max-width: 760px; }
-      .invoice-top { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
-      .invoice-top h2 { margin: 0 0 4px; }
-      .invoice-parties { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); margin: 20px 0; font-size: 0.875rem; }
-      .invoice-parties p { margin: 2px 0; white-space: pre-line; }
-      @media print {
-        body * { visibility: hidden; }
-        #invoice-view, #invoice-view * { visibility: visible; }
-        #invoice-view { position: absolute; left: 0; top: 0; width: 100%; border: 0; box-shadow: none; }
-        #invoice-view .no-print { display: none; }
-      }
+      .doc-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
       @container canvas (max-width: 760px) {
         .overview, .config-grid { grid-template-columns: minmax(0, 1fr); }
         .overview-actions { justify-content: flex-start; }
@@ -338,6 +328,15 @@ function renderPlanPageHtml(contactHref: string): string {
       </div>
       <div class="card" id="section-invoices">
         <h2 class="card-title">Invoices</h2>
+        <div class="callout callout-warning mb-md hidden" id="proformas-due">
+          <strong>Payment due</strong>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Proforma</th><th>Pay by</th><th>Amount</th><th class="th-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+              <tbody id="proforma-rows"></tbody>
+            </table>
+          </div>
+        </div>
         <p class="card-sub" id="invoices-empty">No payments yet.</p>
         <div class="table-container table-scrollable hidden" id="invoices-table">
           <table>
@@ -346,31 +345,6 @@ function renderPlanPageHtml(contactHref: string): string {
           </table>
         </div>
       </div>
-    </div>
-
-    <div class="card mt-lg hidden invoice-sheet" id="invoice-view" aria-live="polite">
-      <div class="invoice-top">
-        <div>
-          <h2 id="inv-title">Tax invoice</h2>
-          <div class="mono" id="inv-number"></div>
-          <div class="text-muted" id="inv-date"></div>
-        </div>
-        <div class="form-actions no-print">
-          <button type="button" class="btn btn-secondary" id="btn-inv-print">Print or save as PDF</button>
-          <button type="button" class="btn btn-ghost" id="btn-inv-close">Close</button>
-        </div>
-      </div>
-      <div class="invoice-parties">
-        <div><div class="stat-tile-label">From</div><p id="inv-seller"></p></div>
-        <div><div class="stat-tile-label">Billed to</div><p id="inv-buyer"></p></div>
-      </div>
-      <div class="table-container">
-        <table>
-          <thead><tr><th>Description</th><th class="money">Amount</th></tr></thead>
-          <tbody id="inv-lines"></tbody>
-        </table>
-      </div>
-      <p class="text-muted" id="inv-foot"></p>
     </div>
 
     <div class="card mt-lg hidden" id="section-payments">
@@ -729,6 +703,15 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           select.value = bill.details.state;
         }
 
+        /** A document opens as its own page, to read, print or save as PDF. */
+        function docLink(kind, id, label) {
+          const a = el("a", "btn btn-sm btn-ghost", label);
+          a.href = window.labkioskApi("/api/billing/documents/" + kind + "/" + encodeURIComponent(id));
+          a.target = "_blank";
+          a.rel = "noopener";
+          return a;
+        }
+
         function renderInvoices() {
           const list = bill.invoices;
           show($("invoices-empty"), list.length === 0);
@@ -738,40 +721,29 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           for (const inv of list) {
             const row = document.createElement("tr");
             const actions = document.createElement("td");
-            const b = el("button", "btn btn-sm btn-ghost", "View");
-            b.type = "button";
-            b.addEventListener("click", () => openInvoice(inv.id));
-            actions.append(b);
+            actions.append(docLink("invoice", inv.id, "View"));
             row.append(cell(inv.number, "mono"), cell(day(inv.issuedAt)), cell(money(inv.total), "money"), actions);
             body.append(row);
           }
-        }
-
-        async function openInvoice(id) {
-          try {
-            const inv = await api("/api/billing/invoices/" + encodeURIComponent(id));
-            $("inv-title").textContent = inv.taxInvoice ? "Tax invoice" : "Receipt";
-            $("inv-number").textContent = inv.number;
-            $("inv-date").textContent = day(inv.issuedAt);
-            $("inv-seller").textContent = [inv.seller.name, inv.seller.address, inv.seller.gstin ? "GSTIN " + inv.seller.gstin : ""].filter(Boolean).join("\\n");
-            $("inv-buyer").textContent = [inv.buyer.name, inv.buyer.address, inv.buyer.gstin ? "GSTIN " + inv.buyer.gstin : "", inv.placeOfSupply ? "Place of supply: " + inv.placeOfSupply : ""].filter(Boolean).join("\\n");
-            const body = $("inv-lines");
-            body.replaceChildren();
-            const add = (label, amount, strong) => {
-              const row = document.createElement("tr");
-              row.append(cell(label, strong ? "cell-title" : null), cell(money(amount), "money" + (strong ? " cell-title" : "")));
-              body.append(row);
-            };
-            for (const line of inv.lines) add(line.description + (inv.seller.sac ? " (SAC " + inv.seller.sac + ")" : ""), line.amount);
-            if (inv.cgst) add("CGST 9%", inv.cgst);
-            if (inv.sgst) add("SGST 9%", inv.sgst);
-            if (inv.igst) add("IGST 18%", inv.igst);
-            add("Total", inv.total, true);
-            $("inv-foot").textContent = "Paid through Razorpay, payment " + inv.razorpayPaymentId + "." + (inv.taxInvoice ? "" : " The seller was not registered for GST when this was issued, so no GST was charged.");
-            show($("invoice-view"), true);
-            $("invoice-view").scrollIntoView({ behavior: "smooth", block: "start" });
-          } catch (err) {
-            lkToast("Could not open the invoice: " + err.message, "error");
+          const due = (bill.proformas || []).filter((p) => p.status === "open");
+          show($("proformas-due"), due.length > 0);
+          const rows = $("proforma-rows");
+          rows.replaceChildren();
+          for (const p of due) {
+            const row = document.createElement("tr");
+            const actions = document.createElement("td");
+            const box = el("div", "doc-actions");
+            if (p.payUrl) {
+              const pay = el("a", "btn btn-sm btn-primary", "Pay");
+              pay.href = p.payUrl;
+              pay.target = "_blank";
+              pay.rel = "noopener";
+              box.append(pay);
+            }
+            box.append(docLink("proforma", p.id, "View"));
+            actions.append(box);
+            row.append(cell(p.number, "mono"), cell(day(p.validUntil)), cell(money(p.total), "money"), actions);
+            rows.append(row);
           }
         }
 
@@ -974,8 +946,6 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             lkToast(err.message, "error");
           }
         });
-        $("btn-inv-print").addEventListener("click", () => window.print());
-        $("btn-inv-close").addEventListener("click", () => show($("invoice-view"), false));
 
         $("btn-trial").addEventListener("click", async () => {
           const ok = await lkConfirm({

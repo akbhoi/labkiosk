@@ -12,7 +12,8 @@
  *   POST /api/billing/resume             a new authorisation that starts when the paid period ends
  *   POST /api/billing/refresh            look at Razorpay now (the payer is back from authorising)
  *   POST /api/billing/details            {legalName, gstin, address, state}
- *   GET  /api/billing/invoices/:id       one invoice, to print
+ *   GET  /api/billing/invoices/:id       one invoice, as JSON
+ *   GET  /api/billing/documents/:kind/:id  an invoice or proforma as its printable page
  *   POST /api/billing/remote-seats       {clientId, assigned}
  *   POST /api/billing/staff              {userId, suspended} (also the `staff` permission)
  * Platform:
@@ -22,9 +23,29 @@
  *   POST /api/super/billing/cancel       {subscriptionId, immediately}
  *   POST /api/super/billing/extend       {tenantId, days}
  *   POST /api/super/billing/payment-link {tenantId, tier, period, extraWorkstations, remoteSeats, mode, note}
+ *   GET  /api/super/billing/gstr1?month=YYYY-MM&section=b2b|b2cl|b2cs|hsn|docs  the month's GSTR-1 as CSV
+ *
+ * And, with no session: GET /billing/document/:token, a private link to one
+ * invoice or proforma, emailed to the organization (src/billing_documents.ts).
  */
 
-import { billingEnabled, createPaymentLink, RazorpayError, rupees } from "./billing";
+import { generateNonce } from "./auth";
+import { billingEnabled, RazorpayError, rupees } from "./billing";
+import {
+  createProforma,
+  documentHeaders,
+  documentView,
+  emailDocument,
+  emailPaidInvoice,
+  GSTR1_SECTIONS,
+  gstr1Csv,
+  listProformas,
+  renderDocumentPage,
+  resolveDocumentLink,
+  type DocumentKind,
+  type Gstr1Section,
+  type Proforma
+} from "./billing_documents";
 import { findTenantById, findUserById, getTenantUserPermissions, updateTenant, writeAuditLog } from "./db";
 import { isDemoTenant } from "./demo";
 import { jsonError, requireSuperAdmin, requireTenantPermission } from "./guard";
@@ -99,11 +120,62 @@ function refusal(err: unknown, headers: Record<string, string>): Response {
 
 export function handleBillingRoutes(ctx: BillingRouteContext): Promise<Response> | null {
   const { path } = ctx;
+  const link = /^\/billing\/document\/([0-9a-f]{64})$/.exec(path);
+  if (link && ctx.method === "GET") return linkedDocument(ctx, link[1]);
   if (path === "/api/billing" || (path.startsWith("/api/billing/") && path !== "/api/billing/return" && !path.startsWith("/api/billing/razorpay/"))) {
     return organizationBilling(ctx);
   }
   if (path === "/api/super/billing" || path.startsWith("/api/super/billing/")) return platformBilling(ctx);
   return null;
+}
+
+// ------------------------------------------------------------------ documents
+
+const DOCUMENT_ID: Record<DocumentKind, RegExp> = { invoice: /^in[0-9a-f]{32}$/, proforma: /^pf[0-9a-f]{32}$/ };
+
+/** The document as its page; null when this organization has no such document. */
+async function documentPage(ctx: RouteContext, tenantId: string, kind: DocumentKind, id: string): Promise<Response | null> {
+  const view = await documentView(ctx.db, tenantId, kind, id);
+  if (!view) return null;
+  const nonce = generateNonce();
+  return new Response(renderDocumentPage(view, sellerFrom(ctx.env), nonce), { headers: documentHeaders(nonce, ctx.url.protocol === "https:") });
+}
+
+/** GET /billing/document/<token>: the private link in an email. The token is the only credential. */
+async function linkedDocument(ctx: BillingRouteContext, token: string): Promise<Response> {
+  const now = Math.floor(Date.now() / 1000);
+  const found = await resolveDocumentLink(ctx.db, token, now);
+  const page = found ? await documentPage(ctx, found.tenantId, found.kind, found.documentId) : null;
+  if (page) return page;
+  return new Response("This link is not valid or has expired. Every invoice is under Plan & billing in your organization's console.", {
+    status: 404,
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer" }
+  });
+}
+
+function proformaJson(p: Proforma, payUrl: string | null) {
+  return {
+    id: p.id,
+    number: p.number,
+    reason: p.reason,
+    status: p.status,
+    createdAt: Number(p.created_at),
+    validUntil: Number(p.valid_until),
+    total: Number(p.total_paise),
+    payUrl: p.status === "open" ? payUrl : null
+  };
+}
+
+async function proformasJson(db: D1Database, tenantId: string) {
+  const out = [];
+  for (const p of await listProformas(db, tenantId, 20)) {
+    const pay =
+      p.payment_id && p.status === "open"
+        ? await db.prepare("SELECT short_url FROM payments WHERE id = ? AND tenant_id = ?").bind(p.payment_id, tenantId).first<{ short_url: string | null }>()
+        : null;
+    out.push(proformaJson(p, pay?.short_url ?? null));
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------- shared JSON
@@ -269,7 +341,7 @@ async function emailOwner(
   }
 }
 
-function describePlan(r: Pick<SubscriptionRow, "tier" | "period" | "extra_workstations" | "remote_seats">): string {
+export function describePlan(r: Pick<SubscriptionRow, "tier" | "period" | "extra_workstations" | "remote_seats">): string {
   const q = quoteTier(quoteOf(r), 0);
   const seats = q.remoteSeatsTotal ? `, ${q.remoteSeatsTotal} Remote Control seat${q.remoteSeatsTotal === 1 ? "" : "s"}` : "";
   return `${CATALOGUE[r.tier].label}, ${r.period === "month" ? "monthly" : "yearly"}, ${q.workstations} workstations${seats}`;
@@ -306,18 +378,18 @@ export async function afterSubscriptionChange(
       body: `Thank you. ${tenant.name} is on ${describePlan(fresh)}${ends ? `, paid until ${licenseDate(ends)}` : ""}.${latest ? ` Invoice ${latest.number}.` : ""}`,
       createdBy: null
     });
-    await emailOwner(env, db, tenant, {
-      subject: `Payment received: Lab Kiosk ${CATALOGUE[fresh.tier].label}`,
-      title: "Payment received",
-      lead: `Thank you. ${tenant.name}'s plan is paid${ends ? ` until ${licenseDate(ends)}` : ""}.`,
-      details: [
-        ["Plan", describePlan(fresh)],
-        ...(latest ? ([["Amount", rupees(Number(latest.total_paise))], ["Invoice", latest.number]] as Array<[string, string]>) : [])
-      ],
-      action: url ? { label: "View invoices", url } : null,
-      tone: "success",
-      text: "Invoices are under Plan & billing in your console."
-    });
+    const sent = await emailPaidInvoice(env, db, tenant, before.id, now, null, { plan: describePlan(fresh), paidUntil: ends ? licenseDate(ends) : null });
+    if (!sent) {
+      await emailOwner(env, db, tenant, {
+        subject: `Payment received: Lab Kiosk ${CATALOGUE[fresh.tier].label}`,
+        title: "Payment received",
+        lead: `Thank you. ${tenant.name}'s plan is paid${ends ? ` until ${licenseDate(ends)}` : ""}.`,
+        details: [["Plan", describePlan(fresh)]],
+        action: url ? { label: "View invoices", url } : null,
+        tone: "success",
+        text: "Invoices are under Plan & billing in your console."
+      });
+    }
   }
   if (status !== before.status && status === "halted") {
     await emailOwner(env, db, tenant, {
@@ -393,6 +465,7 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
         waitingCheckout: waiting ? subscriptionJson(waiting) : null,
         catalogue: catalogueJson(gstPercent),
         invoices: (await listInvoices(db, tenant.id, 50)).map(invoiceJson),
+        proformas: await proformasJson(db, tenant.id),
         details: {
           legalName: tenant.billing_legal_name ?? "",
           gstin: tenant.billing_gstin ?? "",
@@ -566,6 +639,13 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
     return json({ status: "ok" }, jsonHeaders);
   }
 
+  if (path.startsWith("/api/billing/documents/") && method === "GET") {
+    const match = /^\/api\/billing\/documents\/(invoice|proforma)\/([a-z0-9]{34})$/.exec(path);
+    const kind = match?.[1] as DocumentKind | undefined;
+    if (!match || !kind || !DOCUMENT_ID[kind].test(match[2])) return jsonError("Document not found", 404, jsonHeaders);
+    return (await documentPage(ctx, tenant.id, kind, match[2])) ?? jsonError("Document not found", 404, jsonHeaders);
+  }
+
   const invoiceMatch = /^\/api\/billing\/invoices\/(in[0-9a-f]{32})$/.exec(path);
   if (invoiceMatch && method === "GET") {
     const invoice = await findInvoice(db, tenant.id, invoiceMatch[1]);
@@ -694,10 +774,29 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
         subscriptions: (await listSubscriptions(db, tenant.id, 50)).map(subscriptionJson),
         events: events.results ?? [],
         invoices: (await listInvoices(db, tenant.id, 100)).map(invoiceJson),
+        proformas: await proformasJson(db, tenant.id),
         payments: payments.results ?? []
       },
       jsonHeaders
     );
+  }
+
+  if (path === "/api/super/billing/gstr1" && method === "GET") {
+    const month = ctx.url.searchParams.get("month") || "";
+    const section = (ctx.url.searchParams.get("section") || "") as Gstr1Section;
+    if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(month) || !GSTR1_SECTIONS.includes(section)) {
+      return jsonError(`Give a month (YYYY-MM) and a section: ${GSTR1_SECTIONS.join(", ")}`, 400, jsonHeaders);
+    }
+    const csv = await gstr1Csv(env, db, month, section);
+    await writeAuditLog(db, { userId, action: "billing.gstr1_export", details: `month=${month} section=${section}` });
+    return new Response(csv, {
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="gstr1-${month}-${section}.csv"`,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff"
+      }
+    });
   }
 
   const body = method === "POST" ? await readJson(request) : null;
@@ -768,6 +867,7 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
     if (!owner) return jsonError("The organization has no owner to send the link to", 409, jsonHeaders);
     const quote = quoteTier(parsed.value, gstPercentFor(env));
     let url: string | null;
+    let proforma: Proforma | null = null;
     try {
       if (mode === "subscription") {
         const rows = await listSubscriptions(db, tenant.id);
@@ -777,18 +877,21 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
         const row = await startCheckout(env, db, { tenant, userId, quote, replaces: change.immediate ? null : real, startsAt: change.startsAt, upfront: change.upfront, now });
         url = row.short_url;
       } else {
-        const payment = await createPaymentLink(env, db, {
-          tenantId: tenant.id,
-          organization: tenant.name,
+        // A one-off payment is a proforma: a numbered document with the link and its QR code.
+        proforma = await createProforma(env, db, {
+          tenant,
+          input: parsed.value,
+          reason: "platform",
+          validUntil: now + PLATFORM_LINK_HOURS * 3600,
+          coversFrom: null,
+          coversTo: null,
           userId,
-          email: owner.email,
-          name: owner.name,
-          quote,
           callbackUrl: `${ctx.url.origin}/api/billing/return`,
-          nowSeconds: now,
-          platform: { tier: quote.tier, remoteSeats: quote.remoteSeats, note, hours: PLATFORM_LINK_HOURS }
+          note,
+          now
         });
-        url = payment.short_url;
+        const payment = await db.prepare("SELECT short_url FROM payments WHERE id = ?").bind(proforma.payment_id).first<{ short_url: string | null }>();
+        url = payment?.short_url ?? null;
       }
     } catch (err) {
       if (err instanceof Error && !(err instanceof BillingRefusal) && !(err instanceof RazorpayError)) {
@@ -797,7 +900,15 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
       return refusal(err, jsonHeaders);
     }
     if (!url) return jsonError("Razorpay did not return a link", 502, jsonHeaders);
-    const emailed = await emailOwner(env, db, tenant, {
+    const planText = describePlan({ tier: quote.tier, period: quote.period, extra_workstations: quote.extraWorkstations, remote_seats: quote.remoteSeats });
+    const emailed = proforma
+      ? await emailDocument(env, db, tenant, "proforma", proforma.id, now, ctx.url.origin, {
+          subject: `Proforma invoice ${proforma.number}: your Lab Kiosk ${CATALOGUE[quote.tier].label} plan`,
+          title: "Your payment link",
+          lead: `Lab Kiosk has prepared a payment for ${tenant.name}'s plan: ${planText}.`,
+          text: `${note ? `${note}\n\n` : ""}The link is open for 7 days. Questions? Reply to this email.`
+        })
+      : await emailOwner(env, db, tenant, {
       subject: `Your Lab Kiosk ${CATALOGUE[quote.tier].label} plan: payment link`,
       title: mode === "subscription" ? "Set up your subscription" : "Your payment link",
       lead:
@@ -815,9 +926,10 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
       tenantId: tenant.id,
       userId,
       action: "billing.payment_link",
-      details: `mode=${mode} tier=${quote.tier} period=${quote.period} total=${quote.total} emailed=${emailed}`
+      details: `mode=${mode} tier=${quote.tier} period=${quote.period} total=${quote.total} emailed=${emailed}${proforma ? ` proforma=${proforma.number}` : ""}`
     });
-    return json({ status: "ok", url, emailed }, jsonHeaders);
+    if (proforma && emailed) await db.prepare("UPDATE proformas SET emailed_at = ? WHERE id = ?").bind(now, proforma.id).run();
+    return json({ status: "ok", url, emailed, proforma: proforma ? proforma.number : null }, jsonHeaders);
   }
 
   return jsonError("Not found", 404, jsonHeaders);

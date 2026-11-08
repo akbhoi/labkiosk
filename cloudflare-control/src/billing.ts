@@ -347,6 +347,8 @@ export async function recordPayment(
     });
   }
   await db.prepare("UPDATE payments SET period_ends_at = ? WHERE id = ?").bind(tier === "education" ? null : ends, payment.id).run();
+  // A proforma paid through this link is settled; one past its date was still paid.
+  await db.prepare("UPDATE proformas SET status = 'paid' WHERE payment_id = ? AND status IN ('open', 'expired')").bind(payment.id).run();
   if (env && ref.paymentId) {
     const q = quoteTier({ tier, period: payment.period, extraWorkstations: extra, remoteSeats: seats }, 0);
     const lines = invoiceLines(q);

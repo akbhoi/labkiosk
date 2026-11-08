@@ -1,6 +1,6 @@
 /**
  * Tax invoices for what organizations pay: one per captured Razorpay charge,
- * numbered without gaps per Indian financial year ("LK/2026-27/000001").
+ * numbered without gaps per Indian financial year ("LK/26-27/000001").
  *
  * The figures are copied from what was sold (a subscriptions or payments row),
  * never recomputed. GST is charged only once the seller is registered: until
@@ -102,6 +102,14 @@ export function gstPercentFor(env: Env): number {
   return sellerFrom(env).gstin ? GST_PERCENT : 0;
 }
 
+/**
+ * GST Rule 46 caps an invoice's serial number at 16 characters: "LK/26-27/000001"
+ * is 15. The counter is kept per financial year under its long name.
+ */
+export function shortFinancialYear(unixSeconds: number): string {
+  return financialYear(unixSeconds).slice(2);
+}
+
 /** "2026-27" for any moment from 1 April 2026 to 31 March 2027, in IST. */
 export function financialYear(unixSeconds: number): string {
   const d = new Date((unixSeconds + IST_OFFSET_SECONDS) * 1000);
@@ -179,7 +187,7 @@ export function invoiceStatements(
   const seller = sellerFrom(env);
   const fy = financialYear(input.issuedAt);
   const split = splitGst(input.gst, seller.state, input.tenant.billing_state ?? null);
-  const prefix = `${INVOICE_PREFIX}/${fy}/`;
+  const prefix = `${INVOICE_PREFIX}/${shortFinancialYear(input.issuedAt)}/`;
   return [
     db
       .prepare(

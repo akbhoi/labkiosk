@@ -227,6 +227,7 @@ import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, li
 import { handlePlanRoutes } from "./plan_routes";
 import { billingEnabled } from "./billing";
 import { gstPercentFor } from "./invoices";
+import { runProformas } from "./billing_documents";
 import { handleBillingRoutes, sendRenewalNotices } from "./billing_routes";
 import { claimRemoteSeat, staffCapRefusal } from "./limits";
 import { reconcileSubscriptions } from "./subscriptions";
@@ -1462,6 +1463,9 @@ export default {
         if (changed.length) console.log(`[Billing] Reconciled subscriptions of ${changed.length} organization(s).`);
         const notices = await sendRenewalNotices(env, db, nowSeconds);
         if (notices) console.log(`[Billing] Sent ${notices} renewal notice(s).`);
+        // Plans that will not renew by themselves get a proforma a week before they end.
+        const proformas = await runProformas(env, db, nowSeconds, null);
+        if (proformas) console.log(`[Billing] Sent ${proformas} proforma email(s).`);
       } catch (err) {
         console.error("[Billing] Reconciling subscriptions failed:", err);
       }

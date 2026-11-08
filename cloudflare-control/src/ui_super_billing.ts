@@ -113,7 +113,7 @@ export function renderBillingPaneHtml(organizations: BillingPaneOrganization[]):
                 <label class="form-label" for="link-mode">Payment</label>
                 <select class="form-select" id="link-mode">
                   <option value="subscription">Subscription that renews by itself</option>
-                  <option value="once">One payment for one period</option>
+                  <option value="once">One payment for one period, sent as a proforma invoice</option>
                 </select>
               </div>
             </div>
@@ -146,6 +146,28 @@ export function renderBillingPaneHtml(organizations: BillingPaneOrganization[]):
             <p class="form-hint" id="link-result"></p>
           </form>
         </div>
+
+        <div class="card mt-lg" id="billing-gstr1">
+          <h2 class="card-title">GSTR-1 export</h2>
+          <p class="card-sub">A month's tax invoices, by their date in India, as the CSV files the GST portal's offline tool imports. Proformas are not invoices and are never included. Check the figures before you file.</p>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="gstr1-month">Month</label>
+              <input type="month" class="form-input" id="gstr1-month" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="gstr1-section">Section</label>
+              <select class="form-select" id="gstr1-section">
+                <option value="b2b">B2B: buyers with a GSTIN</option>
+                <option value="b2cl">B2C (Large): other states, above ₹1,00,000</option>
+                <option value="b2cs">B2C (Small): every other sale, by state</option>
+                <option value="hsn">HSN/SAC summary</option>
+                <option value="docs">Documents issued</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions"><a class="btn btn-secondary" id="gstr1-download" href="/api/super/billing/gstr1" download>Download CSV</a></div>
+        </div>
       </div>`;
 }
 
@@ -171,6 +193,24 @@ export function renderBillingScript(nonce: string, organizations: BillingPaneOrg
           if (className) td.className = className;
           return td;
         }
+        // GSTR-1 is filed for the month before.
+        (function gstr1() {
+          const month = $("gstr1-month");
+          const section = $("gstr1-section");
+          const link = $("gstr1-download");
+          const d = new Date();
+          d.setDate(1);
+          d.setMonth(d.getMonth() - 1);
+          month.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+          const update = () => {
+            link.href = "/api/super/billing/gstr1?month=" + encodeURIComponent(month.value) + "&section=" + encodeURIComponent(section.value);
+            link.setAttribute("download", "gstr1-" + month.value + "-" + section.value + ".csv");
+          };
+          month.addEventListener("change", update);
+          section.addEventListener("change", update);
+          update();
+        })();
+
         function empty(body, cols, text) {
           const row = document.createElement("tr");
           const td = cell(text, "text-muted");

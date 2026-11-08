@@ -9,7 +9,22 @@ import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { createTenant, createUser, findTenantById, initSchema, updateTenant } from "../src/db";
-import { financialYear, splitGst, validGstin, gstPercentFor, invoiceStatements } from "../src/invoices";
+import { recordPayment } from "../src/billing";
+import {
+  amountInWords,
+  createDocumentLink,
+  createProforma,
+  documentUrl,
+  gstr1Csv,
+  indianWords,
+  invoiceView,
+  proformaView,
+  renderDocumentPage,
+  resolveDocumentLink,
+  runProformas
+} from "../src/billing_documents";
+import { financialYear, splitGst, validGstin, gstPercentFor, invoiceStatements, sellerFrom } from "../src/invoices";
+import { encodeQr, qrRows, qrSvg } from "../src/qr";
 import { claimRemoteSeat, enforceRemoteSeats, enforceStaffCap, setStaffSuspended } from "../src/limits";
 import { CATALOGUE, entitlement, parseTierQuoteInput, prorate, quoteTier, type TierQuoteInput } from "../src/plans";
 import {
@@ -119,6 +134,7 @@ interface FakeSubscription {
 class FakeRazorpay {
   plans = new Map<string, number>();
   subs = new Map<string, FakeSubscription>();
+  links = new Map<string, any>();
   calls: string[] = [];
   private n = 0;
   private id(prefix: string) {
@@ -166,6 +182,11 @@ class FakeRazorpay {
       const sub = this.subs.get(url.searchParams.get("subscription_id")!)!;
       const skip = Number(url.searchParams.get("skip"));
       return ok({ items: sub.invoices.slice(skip, skip + 100) });
+    }
+    if (method === "POST" && url.pathname === "/v1/payment_links") {
+      const id = this.id("plink");
+      this.links.set(id, body);
+      return ok({ id, short_url: `https://rzp.io/rzp/${id.slice(-8)}` });
     }
     return new Response(JSON.stringify({ error: { description: "not faked" } }), { status: 400 });
   };
@@ -238,7 +259,8 @@ describe("The subscription engine", () => {
     for (let i = 0; i < 3; i++) assert.equal((await syncSubscription(env, db, (await findSubscription(db, row.id))!, now)).granted, 0, "a repeat grants nothing");
     const list = await invoices();
     assert.equal(list.length, 1);
-    assert.match(list[0].number, new RegExp(`^LK/${financialYear(now)}/000001$`));
+    assert.match(list[0].number, new RegExp(`^LK/${financialYear(now).slice(2)}/000001$`));
+    assert.ok(list[0].number.length <= 16, "GST Rule 46: at most 16 characters");
     assert.equal(list[0].total_paise, row.total_paise);
     assert.equal(list[0].cgst_paise + list[0].sgst_paise + list[0].igst_paise, row.gst_paise);
     assert.equal(list[0].igst_paise, 0, "a buyer with no state on record is taxed in the seller's state");
@@ -392,3 +414,198 @@ describe("The subscription engine", () => {
   });
 });
 
+// ------------------------------------------------------- billing documents
+
+describe("Proformas, tax invoice pages and GSTR-1", () => {
+  let db: D1Database;
+  let tenant: Tenant;
+  let rzp: FakeRazorpay;
+  let realFetch: typeof fetch;
+  const env = { RAZORPAY_KEY_ID: "rzp_test_x", RAZORPAY_KEY_SECRET: "secret", SELLER_GSTIN: "21CWZPB0039H2ZO", SELLER_STATE: "21", SELLER_SAC: "998315" } as Env;
+  const now = Math.floor(Date.now() / 1000);
+
+  beforeEach(async () => {
+    db = createLocalD1Database();
+    await initSchema(db);
+    const user = await createUser(db, { email: "owner@riverside.example", password: "OwnerPassword123!", name: "Owner" }, PEPPER);
+    tenant = await createTenant(db, { userId: user.id, name: "Riverside", subdomain: "riverside", status: "active" });
+    await updateTenant(db, tenant.id, { workstation_limit: 45, billing_state: "27", billing_legal_name: "Riverside Trust" });
+    tenant = (await findTenantById(db, tenant.id))!;
+    rzp = new FakeRazorpay();
+    realFetch = globalThis.fetch;
+    globalThis.fetch = rzp.fetch as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const proforma = (overrides: Partial<Parameters<typeof createProforma>[2]> = {}) =>
+    createProforma(env, db, {
+      tenant,
+      input: { tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 2 },
+      reason: "renewal",
+      validUntil: now + 5 * DAY,
+      coversFrom: now + 5 * DAY,
+      coversTo: now + 35 * DAY,
+      userId: null,
+      callbackUrl: "https://labkiosk.org/api/billing/return",
+      now,
+      ...overrides
+    });
+
+  test("Amounts are written in words the Indian way, rupees and paise", () => {
+    assert.equal(amountInWords(235_882), "Rupees Two Thousand Three Hundred Fifty Eight and Eighty Two Paise Only");
+    assert.equal(amountInWords(100), "Rupees One Only");
+    assert.equal(amountInWords(0), "Rupees Zero Only");
+    assert.equal(amountInWords(5), "Rupees Zero and Five Paise Only");
+    assert.equal(indianWords(10_500_001), "One Crore Five Lakh One");
+    assert.equal(indianWords(123_456_789), "Twelve Crore Thirty Four Lakh Fifty Six Thousand Seven Hundred Eighty Nine");
+    assert.equal(indianWords(1_000_000_000_000), "One Lakh Crore");
+    assert.throws(() => indianWords(-1));
+    assert.throws(() => indianWords(1.5));
+  });
+
+  test("The QR code for a payment link is the one an independent decoder read back", () => {
+    // Verified with zxing-cpp when the encoder was written: version 3, level M, mask chosen by penalty.
+    const golden =
+      "11111110010100110111101111111/10000010100011110011001000001/10111010011011110011001011101/10111010111010101111001011101/10111010101001111011001011101/10000010010010100000001000001/11111110101010101010101111111/00000000101101111110100000000/01011110100101000000111011010/10101100000100110111010010110/10111110010101011000111000100/11101101000110101110000110001/00100011000000011000011001010/01000100011100010010001010111/01111011001000011011011101001/00111100101100010001111011100/00011010101110100110010111011/11010101000101100001110011100/11011110110110101111000100001/11110000001100011000111010111/11011011100101100101111111010/00000000101111010111100011110/11111110000000011001101010100/10000010101101110011100011000/10111010101101000101111110011/10111010101100000110000101110/10111010010000110100110110011/10000010100100001001001011101/11111110001011110010111110000";
+    const m = encodeQr("https://rzp.io/rzp/AbC123xy", "M");
+    assert.equal(m.version, 3);
+    assert.equal(m.modules.map((row) => row.map((c) => (c ? "1" : "0")).join("")).join("/"), golden);
+    const rows = qrRows(m);
+    assert.equal(rows.length, 29 + 8, "the quiet zone is four modules each side");
+    assert.ok(rows[0].every((c) => !c) && rows[4][4], "light border, then the finder pattern");
+    const svg = qrSvg(m, 'Pay "PI/26-27/000001"');
+    assert.match(svg, /^<svg [^>]*viewBox="0 0 37 37"/);
+    assert.ok(!svg.includes('"PI/') && svg.includes("&#34;PI/"), "the label is escaped");
+    assert.equal(encodeQr("x".repeat(400), "L").version > 10, true);
+  });
+
+  test("A proforma has its own numbers, links a payment for exactly what it lists, and is settled by that payment", async () => {
+    const first = await proforma();
+    const fy = financialYear(now).slice(2);
+    assert.equal(first.number, `PI/${fy}/000001`);
+    assert.ok(first.number.length <= 16, "Rule 46 allows 16 characters");
+    assert.equal(first.status, "open");
+    assert.equal(first.seller_gstin, "21CWZPB0039H2ZO");
+    assert.equal(first.buyer_name, "Riverside Trust");
+    const q = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 2 }, 18);
+    assert.deepEqual([first.subtotal_paise, first.igst_paise, first.cgst_paise, first.total_paise].map(Number), [q.subtotal, q.gst, 0, q.total], "a buyer in Maharashtra pays IGST");
+    const payment = (await db.prepare("SELECT * FROM payments WHERE id = ?").bind(first.payment_id).first<any>())!;
+    assert.deepEqual([payment.kind, payment.tier, Number(payment.remote_seats), Number(payment.total_paise)], ["platform_link", "standard", 2, q.total]);
+    const sent = rzp.links.get(payment.link_id);
+    assert.equal(sent.amount, q.total, "Razorpay is asked for the proforma's total");
+    assert.equal(sent.expire_by, now + 5 * DAY, "the link closes when the proforma does");
+    assert.equal((await proforma()).number, `PI/${fy}/000002`);
+
+    const paid = await recordPayment(db, { referenceId: payment.id, linkId: payment.link_id, paymentId: "pay_00000000000001" }, now + 60, env);
+    assert.ok(paid);
+    const settled = await db.prepare("SELECT status FROM proformas WHERE id = ?").bind(first.id).first<{ status: string }>();
+    assert.equal(settled!.status, "paid");
+    const invoice = (await db.prepare("SELECT * FROM invoices WHERE source_id = ?").bind(payment.id).first<any>())!;
+    assert.equal(invoice.number, `LK/${fy}/000001`, "the tax invoice's series is not the proforma's");
+    assert.equal(Number(invoice.total_paise), q.total);
+
+    const view = await invoiceView(db, tenant.id, invoice.id);
+    const page = renderDocumentPage(view!, sellerFrom(env), "n0nce");
+    for (const shown of ["Tax Invoice", invoice.number, "21CWZPB0039H2ZO", "27 - Maharashtra", "998315", "IGST @ 18%", amountInWords(q.total), "pay_00000000000001", "reverse charge: No"]) {
+      assert.ok(page.includes(shown), `the tax invoice shows ${shown}`);
+    }
+    assert.ok(!page.includes('class="qr-code"') && !page.includes("Pay online"), "a tax invoice has nothing to pay");
+    assert.equal(await invoiceView(db, "another-tenant", invoice.id), null, "another organization's id finds nothing");
+    const pfPage = renderDocumentPage((await proformaView(db, tenant.id, (await proforma()).id))!, sellerFrom(env), "n0nce");
+    assert.ok(pfPage.includes("Proforma Invoice") && pfPage.includes("not a tax invoice") && pfPage.includes('class="qr-code"') && pfPage.includes("https://rzp.io/rzp/"));
+    for (const tag of pfPage.match(/<(script|style)\b[^>]*>/g) ?? []) assert.ok(tag.includes('nonce="n0nce"'), `${tag} carries the nonce`);
+  });
+
+  test("Organization data on a document is escaped", async () => {
+    await updateTenant(db, tenant.id, { billing_legal_name: `"><script>alert(1)</script>`, billing_address: "<img src=x onerror=alert(2)>" });
+    tenant = (await findTenantById(db, tenant.id))!;
+    const p = await proforma();
+    const page = renderDocumentPage((await proformaView(db, tenant.id, p.id))!, sellerFrom(env), "n0nce");
+    assert.ok(!page.includes("<script>alert") && !page.includes("<img"), "nothing an organization typed becomes markup");
+  });
+
+  test("A private link opens one document, until it expires, and stores only its hash", async () => {
+    const p = await proforma();
+    const token = await createDocumentLink(db, tenant.id, "proforma", p.id, now);
+    assert.match(token, /^[0-9a-f]{64}$/);
+    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM document_links WHERE token_hash = ?").bind(token).first("n"), 0, "the token itself is not stored");
+    assert.deepEqual(await resolveDocumentLink(db, token, now + 1), { tenantId: tenant.id, kind: "proforma", documentId: p.id });
+    assert.equal(await resolveDocumentLink(db, token, now + 401 * DAY), null, "expired");
+    assert.equal(await resolveDocumentLink(db, "f".repeat(64), now), null);
+    assert.equal(await resolveDocumentLink(db, token.toUpperCase(), now), null);
+    assert.equal(await resolveDocumentLink(db, "' OR 1=1 --", now), null);
+    assert.equal(documentUrl({ DEFAULT_DOMAIN: "labkiosk.org" } as Env, "https://riverside.labkiosk.org", token), `https://labkiosk.org/billing/document/${token}`);
+    assert.equal(documentUrl({ DEFAULT_DOMAIN: "labkiosk.org" } as Env, "http://localhost:8787", token), `http://localhost:8787/billing/document/${token}`);
+  });
+
+  test("The hourly run sends one proforma for a plan that will not renew by itself, and closes it when its date passes", async () => {
+    await updateTenant(db, tenant.id, { license_plan: "subscriber", license_expires_at: now + 3 * DAY, plan_tier: "standard" });
+    await db
+      .prepare(
+        `INSERT INTO payments (id, tenant_id, period, extra_workstations, subtotal_paise, gst_paise, total_paise, status, created_at, paid_at, kind, tier, remote_seats)
+         VALUES ('lkold', ?, 'year', 5, 100, 18, 118, 'paid', ?, ?, 'legacy', 'standard', 1)`
+      )
+      .bind(tenant.id, now - 360 * DAY, now - 360 * DAY)
+      .run();
+    // An organization with a live subscription renews by itself and gets none.
+    const other = await createTenant(db, { userId: tenant.user_id!, name: "Auto", subdomain: "auto", status: "active" });
+    await updateTenant(db, other.id, { license_plan: "subscriber", license_expires_at: now + 3 * DAY });
+    await db
+      .prepare(
+        `INSERT INTO subscriptions (id, tenant_id, tier, period, catalogue_version, extra_workstations, remote_seats, subtotal_paise, gst_paise, total_paise, status, current_end, created_at, updated_at)
+         VALUES ('subauto', ?, 'standard', 'month', 1, 0, 0, 1, 0, 1, 'active', ?, ?, ?)`
+      )
+      .bind(other.id, now + 3 * DAY, now, now)
+      .run();
+
+    await runProformas(env, db, now, null);
+    await runProformas(env, db, now + 3600, null);
+    const rows = (await db.prepare("SELECT * FROM proformas").all<any>()).results ?? [];
+    assert.equal(rows.length, 1, "one proforma, for the organization that pays by link");
+    assert.deepEqual([rows[0].tenant_id, rows[0].reason, rows[0].period, Number(rows[0].extra_workstations), Number(rows[0].remote_seats)], [tenant.id, "renewal", "year", 5, 1], "it renews what was paid last");
+    assert.equal(Number(rows[0].valid_until), now + 3 * DAY, "payable until the plan ends");
+    assert.equal(Number(rows[0].covers_from), now + 3 * DAY);
+    assert.ok(Number(rows[0].covers_to) >= now + 3 * DAY + 365 * DAY, "it covers the next year");
+
+    await runProformas(env, db, now + 3 * DAY + 1, null);
+    assert.equal((await db.prepare("SELECT status FROM proformas").first<{ status: string }>())!.status, "expired");
+  });
+
+  test("GSTR-1: B2B by buyer, B2C (Large) above one lakh across states, the rest by state, with the SAC summary and the series", async () => {
+    // 08 Nov 2026, 12:00 IST.
+    const day = Date.parse("2026-11-08T12:00:00+05:30") / 1000;
+    const add = async (n: number, at: number, buyer: { gstin?: string; state: string }, subtotal: number) => {
+      const gst = Math.round(subtotal * 0.18);
+      const split = splitGst(gst, "21", buyer.state);
+      await db
+        .prepare(
+          `INSERT INTO invoices (id, number, tenant_id, source, source_id, razorpay_payment_id, subtotal_paise, cgst_paise, sgst_paise, igst_paise, total_paise,
+                                 seller_gstin, buyer_name, buyer_gstin, buyer_address, place_of_supply, lines_json, issued_at)
+           VALUES (?, ?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?, '21CWZPB0039H2ZO', ?, ?, NULL, ?, '[]', ?)`
+        )
+        .bind(`in${String(n).padStart(32, "0")}`, `LK/26-27/${String(n).padStart(6, "0")}`, tenant.id, `p${n}`, `pay_${n}`, subtotal, split.cgst, split.sgst, split.igst, subtotal + gst, `Buyer, ${n}`, buyer.gstin ?? null, buyer.state, at)
+        .run();
+    };
+    await add(1, day, { gstin: "27AAPFU0939F1ZV", state: "27" }, 199_900);
+    await add(2, day, { state: "21" }, 99_900);
+    await add(3, day, { state: "21" }, 99_900);
+    await add(4, day, { state: "29" }, 9_000_000);
+    await add(5, Date.parse("2026-10-31T23:59:00+05:30") / 1000, { state: "21" }, 100);
+    await add(6, Date.parse("2026-11-30T23:30:00+05:30") / 1000, { state: "29" }, 50_000);
+
+    const b2b = (await gstr1Csv(env, db, "2026-11", "b2b")).trim().split("\r\n");
+    assert.equal(b2b[0], "GSTIN/UIN of Recipient,Receiver Name,Invoice Number,Invoice date,Invoice Value,Place Of Supply,Reverse Charge,Applicable % of Tax Rate,Invoice Type,E-Commerce GSTIN,Rate,Taxable Value,Cess Amount");
+    assert.deepEqual(b2b.slice(1), ['27AAPFU0939F1ZV,"Buyer, 1",LK/26-27/000001,08-Nov-2026,2358.82,27-Maharashtra,N,,Regular B2B,,18,1999.00,0.00']);
+    const b2cl = (await gstr1Csv(env, db, "2026-11", "b2cl")).trim().split("\r\n");
+    assert.deepEqual(b2cl.slice(1), ["LK/26-27/000004,08-Nov-2026,106200.00,29-Karnataka,,18,90000.00,0.00,"]);
+    const b2cs = (await gstr1Csv(env, db, "2026-11", "b2cs")).trim().split("\r\n");
+    assert.deepEqual(b2cs.slice(1), ["OE,21-Odisha,,18,1998.00,0.00,", "OE,29-Karnataka,,18,500.00,0.00,"], "the invoice of 30 Nov in IST is November's; 31 Oct is not");
+    const hsn = (await gstr1Csv(env, db, "2026-11", "hsn")).trim().split("\r\n");
+    assert.equal(hsn[1].split(",").slice(0, 4).join(","), "998315,Lab Kiosk subscription,NA,5");
+    const docs = (await gstr1Csv(env, db, "2026-11", "docs")).trim().split("\r\n");
+    assert.deepEqual(docs.slice(1), ["Invoices for outward supply,LK/26-27/000001,LK/26-27/000006,5,0"]);
+    await assert.rejects(gstr1Csv(env, db, "2026-13x", "b2b"));
+  });
+});

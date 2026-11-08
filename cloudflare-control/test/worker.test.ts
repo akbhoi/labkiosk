@@ -57,6 +57,7 @@ import { monthlySummaryFor } from "../src/monthly_summary";
 import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
 import { PRICING, entitlement, quote, rebalanceLicences } from "../src/plans";
 import { periodEnd, razorpayRoute } from "../src/billing";
+import { createDocumentLink } from "../src/billing_documents";
 import { handleRelay, relaySignature } from "../relay/razorpay/handler.js";
 import { emailMatchesWebsite } from "../src/education";
 import nodeCrypto from "node:crypto";
@@ -3368,7 +3369,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // remove and every preset pack answered 404, and the markup tests were happy.
     const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
     const router = ["index.ts", "plan_routes.ts", "billing_routes.ts"].map((f) => fs.readFileSync(path.join(srcDir, f), "utf8")).join("\n");
-    const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
+    // `path === "…"` for one route, `path.startsWith("…/")` for a family of them.
+    const routes = [...router.matchAll(/path(?: ===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
     const called = new Set<string>();
     for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
       const source = fs.readFileSync(path.join(srcDir, f), "utf8");
@@ -10928,6 +10930,70 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Monthly recurring revenue/);
     await updateTenant(db, tenantId, { billing_legal_name: null, billing_gstin: null, billing_address: null, billing_state: null });
+    await restorePlan();
+  });
+
+  test("A billing document opens from its private link alone, from the console for its organization, and GSTR-1 for the platform", async () => {
+    const { db, tenantId } = await restorePlan();
+    const now = Math.floor(Date.now() / 1000);
+    const id = "in" + "a1".repeat(16);
+    await db
+      .prepare(
+        `INSERT INTO invoices (id, number, tenant_id, source, source_id, razorpay_payment_id, subtotal_paise, cgst_paise, sgst_paise, igst_paise, total_paise,
+                               seller_gstin, buyer_name, buyer_gstin, buyer_address, place_of_supply, lines_json, issued_at)
+         VALUES (?, 'LK/99-00/000001', ?, 'payment', 'pdoc', 'pay_doc', 199900, 17991, 17991, 0, 235882, '21CWZPB0039H2ZO', 'Greenwood <b>Trust</b>', NULL, NULL, '21', ?, ?)`
+      )
+      .bind(id, tenantId, JSON.stringify([{ description: "Lab Kiosk Standard", amount: 199900 }]), now)
+      .run();
+    const consolePath = `/api/billing/documents/invoice/${id}?tenant=greenwood`;
+
+    // The console: the organization's own staff with settings, nobody else.
+    const page = await call(consolePath, { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.ok(html.includes("LK/99-00/000001") && html.includes("Greenwood &lt;b&gt;Trust&lt;/b&gt;") && html.includes("Rupees Two Thousand Three Hundred Fifty Eight and Eighty Two Paise Only"));
+    const csp = page.headers.get("Content-Security-Policy") || "";
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+    assert.ok(nonce && html.includes(`<script nonce="${nonce}">`) && csp.includes("default-src 'none'") && csp.includes("frame-ancestors 'none'"));
+    assert.equal(page.headers.get("Cache-Control"), "no-store");
+    assert.ok(!/\son[a-z]+=/i.test(html), "no inline handlers");
+    assert.ok([401, 403].includes((await call(consolePath)).status), "anonymous");
+    assert.ok([403, 404].includes((await call(consolePath, { cookie: rivalSessionCookie })).status), "another organization");
+    assert.equal((await call(`/api/billing/documents/proforma/${id}?tenant=greenwood`, { cookie: orgSessionCookie })).status, 404, "an invoice id is not a proforma");
+    assert.equal((await call(`/api/billing/documents/receipt/${id}?tenant=greenwood`, { cookie: orgSessionCookie })).status, 404);
+
+    // The private link: the token is the credential, and only its own document opens.
+    const token = await createDocumentLink(db, tenantId, "invoice", id, now);
+    const linked = await call(`/billing/document/${token}`);
+    assert.equal(linked.status, 200);
+    assert.equal(linked.headers.get("Referrer-Policy"), "no-referrer");
+    assert.match(linked.headers.get("X-Robots-Tag") || "", /noindex/);
+    assert.ok((await linked.text()).includes("LK/99-00/000001"));
+    assert.equal((await call(`/billing/document/${"0".repeat(64)}`)).status, 404);
+    assert.equal((await call(`/billing/document/${token.slice(1)}`)).status, 404);
+    await db.prepare("UPDATE document_links SET expires_at = ? WHERE tenant_id = ?").bind(now - 1, tenantId).run();
+    assert.equal((await call(`/billing/document/${token}`)).status, 404, "an expired link opens nothing");
+
+    // The overview lists proformas beside invoices.
+    const overview = await callJson("/api/billing?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.ok(Array.isArray(overview.data.proformas));
+    assert.ok(overview.data.invoices.some((i: any) => i.id === id));
+
+    // GSTR-1 is the platform's.
+    assert.ok([401, 403].includes((await call("/api/super/billing/gstr1?month=2026-11&section=b2b")).status));
+    assert.equal((await call("/api/super/billing/gstr1?month=2026-11&section=b2b", { cookie: orgSessionCookie })).status, 403);
+    const admin = await superCookie();
+    assert.equal((await call("/api/super/billing/gstr1?month=2026-13&section=b2b", { cookie: admin })).status, 400);
+    assert.equal((await call("/api/super/billing/gstr1?month=2026-11&section=exports", { cookie: admin })).status, 400);
+    const istMonth = new Date((now + 19_800) * 1000).toISOString().slice(0, 7);
+    const csv = await call(`/api/super/billing/gstr1?month=${istMonth}&section=b2cs`, { cookie: admin });
+    assert.equal(csv.status, 200);
+    assert.match(csv.headers.get("Content-Type") || "", /^text\/csv/);
+    assert.match(csv.headers.get("Content-Disposition") || "", new RegExp(`attachment; filename="gstr1-${istMonth}-b2cs.csv"`));
+    assert.ok((await csv.text()).includes("OE,21-Odisha,,18,1999.00,0.00,"));
+
+    await db.prepare("DELETE FROM document_links WHERE tenant_id = ?").bind(tenantId).run();
+    await db.prepare("DELETE FROM invoices WHERE id = ?").bind(id).run();
     await restorePlan();
   });
 

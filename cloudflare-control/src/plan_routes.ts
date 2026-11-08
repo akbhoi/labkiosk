@@ -49,7 +49,8 @@ import { licenseDate } from "./license";
 import { sendMail, mailConfigProblem } from "./mail";
 import { createNotification } from "./notifications";
 import { moveLicence, syncLicences } from "./plan_sync";
-import { afterSubscriptionChange } from "./billing_routes";
+import { afterSubscriptionChange, describePlan } from "./billing_routes";
+import { emailPaidInvoice } from "./billing_documents";
 import { CATALOGUE, entitlement, listEnrolledWorkstations, MAX_ONLINE_EXTRA, parseQuoteInput, PRICING, trialRefusal } from "./plans";
 import { findSubscriptionByRazorpayId, syncSubscription } from "./subscriptions";
 import { notifyPlatformOwner, type RouteContext } from "./signup";
@@ -297,6 +298,16 @@ async function activate(ctx: PlanRouteContext, ref: { referenceId: string; linkI
       createdBy: payment.created_by
     });
     await syncLicences(ctx.env, ctx.db, tenant.id, nowMs);
+    const plan = describePlan({
+      tier: payment.tier ?? "standard",
+      period: payment.period,
+      extra_workstations: Number(payment.extra_workstations),
+      remote_seats: Number(payment.remote_seats) || 0
+    });
+    await emailPaidInvoice(ctx.env, ctx.db, tenant, payment.id, Math.floor(nowMs / 1000), ctx.url.origin, {
+      plan,
+      paidUntil: payment.period_ends_at ? licenseDate(Number(payment.period_ends_at)) : null
+    });
   }
   return payment;
 }
