@@ -83,7 +83,10 @@ cloudflare-control/
 │   ├── ui_status_public.ts             # /status body: component strips and incidents
 │   ├── ui_super_status.ts              # Super Admin -> System -> Status & incidents
 │   ├── ui_admin_exams.ts               # Admin -> Exams: schedule, live board, CSV report
-│   ├── ui_admin_plan.ts                # Admin -> Plan: trial, subscribe, apply for Education, move licences
+│   ├── ui_admin_overview.ts            # Admin -> Overview (/admin): what needs attention, numbers, shortcuts
+│   ├── ui_admin_reports.ts             # Admin -> Reports: Usage, Errors & Warnings, Activity log
+│   ├── ui_admin_account.ts             # Admin -> My account: the signed-in account's password and two-factor sign-in
+│   ├── ui_admin_plan.ts                # Admin -> Plan & billing: plan, tiers, seats, staff cap, invoices, trial, Education, licences
 │   ├── ui_super_education.ts           # Super Admin -> Tasks -> Education: review applications
 │   ├── ui_verify_phone.ts              # /verify-phone: texts the number on record and sends Firebase's token
 │   └── types.ts                        # Strict TypeScript interfaces
@@ -346,7 +349,7 @@ cloudflare-control/
 ### Rule 5b: Icon Rail, No Context Panel & Strict View-Switching Tabs
 
 - The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) share one shell: an **icon-only navigation rail** and a canvas that holds everything else.
-  - **Icon rail (`.nav-sidebar`, `--sidebar-width: 68px`)**: navigation only. Each module (Workstations, Apps & Web, Staff, Settings) is a 24 px icon named by a `.rail-tooltip` on hover and keyboard focus and by `aria-label` (no native `title`: the name would show twice); the current one carries `aria-current="page"`. The bottom-left avatar opens the profile menu beside the rail (user details, role badge, password/settings shortcut, theme, POST sign-out). At ≤ 1024 px the rail is a `--drawer-width` (240px) drawer with the names written out, since a phone has nothing to hover with.
+  - **Icon rail (`.nav-sidebar`, `--sidebar-width: 68px`)**: navigation only. Each module (Overview, Workstations, Exams, Apps & Web, Staff, Reports, Plan & billing, Settings) is a 24 px icon named by a `.rail-tooltip` on hover and keyboard focus and by `aria-label` (no native `title`: the name would show twice); the current one carries `aria-current="page"`. The bottom-left avatar opens the profile menu beside the rail (user details, role badge, password/settings shortcut, theme, POST sign-out). At ≤ 1024 px the rail is a `--drawer-width` (240px) drawer with the names written out, since a phone has nothing to hover with.
   - **No context panel.** The sidebar used to carry a second panel under the navigation that repeated each page's view tabs and filters; tabs and sub-tabs read as one merged list. A page's view tabs (`.segmented-nav`), filters (`.filter-chips`, or a labelled `.chip-row`) and shortcuts (a button in `.page-head`) live in its canvas. Never render page controls in the rail, and never render one control in two places.
   - **Strict View-Switching Tabs (`.segmented-nav`)**: Top tabs in all consoles (`ui_admin_workstations.ts`, `ui_admin_apps_web.ts`, `ui_admin_staff.ts`, `ui_admin_settings.ts`, `ui_super.ts`) strictly switch view panes client-side without anchor jumping, synchronizing `?tab=...` via `history.replaceState`.
     - **Workstations Page Layout (`/admin/workstations`)**:

@@ -3147,7 +3147,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Dashboard markup is well formed so every modal is reachable", async () => {
-    const html = await (await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    const html = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     const body = html.split("<body>")[1].split("<script>")[0];
     const opened = (body.match(/<div\b/g) || []).length;
     const closed = (body.match(/<\/div>/g) || []).length;
@@ -3184,6 +3184,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/admin/plan?tenant=greenwood", orgSessionCookie],
+      ["/admin?tenant=greenwood", orgSessionCookie],
+      ["/admin/reports?tenant=greenwood", orgSessionCookie],
+      ["/admin/account?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
       ["/super/mail", superSessionCookie],
@@ -5276,7 +5279,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(found.title, "GitHub Room");
 
     // 4. Admin console includes the preset in rendered HTML
-    const adminHtml = await (await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    const adminHtml = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.ok(adminHtml.includes("GitHub Room"));
 
     // 5. Deletes preset
@@ -7176,9 +7179,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(system.includes('id="pane-system-two-factor"') && system.includes('id="two-factor-email"'));
     assert.ok(system.includes('href="/super/system?tab=system-two-factor"'));
     const workstations = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(workstations, /href="\/admin\/settings\?(tenant=greenwood&amp;)?tab=two-factor"/, "the profile menu links to the tab");
-    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.ok(settings.includes('data-action="tab-two-factor"') && settings.includes('id="pane-two-factor"') && settings.includes('id="two-factor-email"'));
+    assert.match(workstations, /href="\/admin\/account(\?tenant=greenwood)?#pane-two-factor-section"/, "the profile menu links to My account");
+    // Two-factor sign-in is on My account now; its old Settings address lands there.
+    const settings = await (await call("/admin/account?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(settings.includes('id="pane-two-factor-section"') && settings.includes('id="two-factor-email"') && settings.includes('id="section-password"'));
+    assert.ok(settings.includes('<span class="breadcrumb-page">My account</span>'), "the header names the page");
+    const oldTab = await call("/admin/settings?tenant=greenwood&tab=two-factor", { cookie: orgSessionCookie });
+    assert.equal(oldTab.status, 301);
+    assert.match(oldTab.headers.get("location") || "", /\/admin\/account\?tenant=greenwood$/);
+    for (const [tab, to] of [["usage", "usage"], ["issues", "issues"]]) {
+      const moved = await call(`/admin/settings?tenant=greenwood&tab=${tab}`, { cookie: orgSessionCookie });
+      assert.equal(moved.status, 301);
+      assert.match(moved.headers.get("location") || "", new RegExp(`/admin/reports\\?tenant=greenwood&tab=${to}$`));
+    }
     for (const page of [system, workstations, settings]) {
       assert.ok(!page.includes("two-factor-modal") && !page.includes("open-two-factor"), "no dialog any more");
     }
@@ -7285,7 +7298,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const demoRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
-    assert.match(demoHtml, /<h1 class="page-title">Workstations<\/h1>/);
+    assert.match(demoHtml, /<h1 class="page-title">Overview<\/h1>/, "the console opens on its Overview");
   });
 
   test("Sign-in lands where the request came from, not always on /super", async () => {
@@ -7558,9 +7571,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(ownSettings.status, 200);
     const ownSettingsHtml = await ownSettings.text();
     assert.ok(ownSettingsHtml.includes('id="two-factor-email"'));
-    for (const marker of ['id="section-enrollment"', 'id="section-password"', 'id="pane-general"', 'id="org-name"']) {
+    for (const marker of ['id="section-enrollment"', 'id="pane-general"', 'id="org-name"']) {
       assert.ok(!ownSettingsHtml.includes(marker), `${marker} needs the settings permission`);
     }
+    // Her own password is hers to change, on My account.
+    const ownAccount = await call("/admin/account?tenant=greenwood", { cookie: operatorCookie });
+    assert.equal(ownAccount.status, 200);
+    assert.ok((await ownAccount.text()).includes('id="section-password"'));
+    // Overview opens for her, without the organization's plan or reports.
+    const overview = await (await call("/admin?tenant=greenwood", { cookie: operatorCookie })).text();
+    assert.match(overview, /<h1 class="page-title">Overview<\/h1>/);
+    assert.ok(overview.includes('id="ov-online"') && !overview.includes('id="ov-plan"') && !overview.includes('id="ov-problem-list"'));
+    assert.notEqual((await call("/admin/reports?tenant=greenwood", { cookie: operatorCookie, redirect: "manual" })).status, 200, "Reports needs the settings permission");
     assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
 
     // 4. Allowed: Operator can view workstations list via /api/clients
@@ -8417,6 +8439,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/admin/plan?tenant=greenwood", orgSessionCookie],
+      ["/admin?tenant=greenwood", orgSessionCookie],
+      ["/admin/reports?tenant=greenwood", orgSessionCookie],
+      ["/admin/account?tenant=greenwood", orgSessionCookie],
       ["/super", superSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],

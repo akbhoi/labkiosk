@@ -1381,6 +1381,13 @@ function buildHtmlHeaders(
 }
 
 /** The cron that runs the status checks; wrangler.jsonc names it beside the hourly one. */
+/** Settings tabs that became pages of their own: an old link or bookmark lands where they are now. */
+const MOVED_SETTINGS_TABS: Record<string, { path: string; tab: string | null }> = {
+  usage: { path: "/admin/reports", tab: "usage" },
+  issues: { path: "/admin/reports", tab: "issues" },
+  "two-factor": { path: "/admin/account", tab: null }
+};
+
 export const STATUS_CRON = "*/5 * * * *";
 
 /** The registration page: /register, or the public landing routes opened with ?register. */
@@ -5839,11 +5846,23 @@ export default {
 
       const tenant = currentTenant!;
       let activePage: AdminPageId = "workstations";
-      if (path === "/admin/apps-web") activePage = "apps-web";
+      if (path === "/admin" || path === "/admin/overview") activePage = "overview";
+      else if (path === "/admin/reports") activePage = "reports";
+      else if (path === "/admin/account") activePage = "account";
+      else if (path === "/admin/apps-web") activePage = "apps-web";
       else if (path === "/admin/exams") activePage = "exams";
       else if (path === "/admin/staff") activePage = "staff";
       else if (path === "/admin/plan") activePage = "plan";
       else if (path === "/admin/settings") activePage = "settings";
+
+      const movedTab = activePage === "settings" ? MOVED_SETTINGS_TABS[url.searchParams.get("tab") || ""] : undefined;
+      if (movedTab) {
+        const moved = new URL(url.toString());
+        moved.pathname = movedTab.path;
+        if (movedTab.tab) moved.searchParams.set("tab", movedTab.tab);
+        else moved.searchParams.delete("tab");
+        return Response.redirect(moved.toString(), 301);
+      }
 
       const userPerms = session.role === "super_admin"
         ? ["*"]
@@ -5852,7 +5871,8 @@ export default {
       const checkPermission = (page: AdminPageId) => {
         if (userPerms.includes("*") || userPerms.includes(page)) return true;
         if (page === "exams") return userPerms.includes("workstations");
-        if (page === "plan") return userPerms.includes("settings");
+        if (page === "overview" || page === "account") return true;
+        if (page === "plan" || page === "reports") return userPerms.includes("settings");
         if (page === "apps-web") {
           return (
             userPerms.includes("broadcast") ||
@@ -5868,10 +5888,10 @@ export default {
       const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
-        const pages: AdminPageId[] = ["workstations", "exams", "apps-web", "staff", "plan", "settings"];
+        const pages: AdminPageId[] = ["overview", "workstations", "exams", "apps-web", "staff", "plan", "settings"];
         const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
-          const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;
+          const redirectPath = allowedPage === "overview" ? "/admin" : `/admin/${allowedPage}`;
           const targetUrl = isDev
             ? `${url.origin}${redirectPath}?tenant=${encodeURIComponent(tenant.subdomain)}`
             : `https://${tenant.subdomain}.${baseDomain}${redirectPath}`;

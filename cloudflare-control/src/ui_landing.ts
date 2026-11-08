@@ -2941,6 +2941,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
             ${row("Live screens, lock and broadcast", [yes, yes, yes, yes])}
             ${row("User Portal and domain allowlist", [yes, yes, yes, yes])}
             ${row("Exam mode, power schedules, usage reports", [yes, yes, yes, yes])}
+            ${row("Single sign-on with Google or Microsoft", [yes, yes, yes, yes])}
             ${row("Invoices for every payment", [no, yes, yes, yes])}
             ${row("Support", ["Docs", "Email", "Email", "Priority"])}
           </tbody>

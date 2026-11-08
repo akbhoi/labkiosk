@@ -31,6 +31,8 @@ export interface AdminPageInput {
   monthlySummary?: MonthlySummary | null;
   /** The account is an administrator of the organization (its owner or an `org_admin`): Remote Control. */
   canRemoteControl?: boolean;
+  /** The account's permissions (`*` for an administrator), for pages that show only what it may open. */
+  permissions?: string[];
   nonce: string;
 }
 
@@ -126,3 +128,41 @@ export const WHEN_PANE_SHOWN_JS = `
         seen.observe(pane, { attributes: true, attributeFilter: ["class"] });
       }
 `;
+
+/**
+ * Client code, written into a page script: the page's `.segmented-nav` tabs
+ * switch its `.tab-pane`s (`data-action="tab-<id>"`, `id="pane-<id>"`), the
+ * open tab rides in `?tab=` (replaceState, no jump), and an unknown tab opens
+ * `fallback`. Sets `window.labkioskSwitchTab`, as Settings does.
+ */
+export function tabSwitchScript(fallback: string): string {
+  return `
+      (function () {
+        function switchTab(tabId) {
+          var valid = Array.from(document.querySelectorAll(".tab-pane[id^='pane-']")).map(function (p) { return p.id.slice(5); });
+          if (valid.indexOf(tabId) < 0) tabId = ${JSON.stringify(fallback)};
+          document.querySelectorAll(".segmented-nav .segmented-tab").forEach(function (tab) {
+            var active = tab.getAttribute("data-action") === "tab-" + tabId;
+            tab.classList.toggle("active", active);
+            if (active && typeof tab.scrollIntoView === "function") tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+          });
+          document.querySelectorAll(".tab-pane").forEach(function (pane) { pane.classList.toggle("active", pane.id === "pane-" + tabId); });
+          try {
+            var url = new URL(window.location.href);
+            url.searchParams.set("tab", tabId);
+            window.history.replaceState({}, "", url.toString());
+          } catch (err) {
+            console.warn("Could not record the tab in the address:", err);
+          }
+        }
+        window.labkioskSwitchTab = switchTab;
+        var nav = document.querySelector(".segmented-nav");
+        if (nav) nav.addEventListener("click", function (e) {
+          var tab = e.target && e.target.closest ? e.target.closest(".segmented-tab") : null;
+          var action = tab ? tab.getAttribute("data-action") : null;
+          if (action && action.indexOf("tab-") === 0) { e.preventDefault(); switchTab(action.slice(4)); }
+        });
+        switchTab(new URLSearchParams(window.location.search).get("tab") || ${JSON.stringify(fallback)});
+      })();
+`;
+}

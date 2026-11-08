@@ -42,6 +42,8 @@ export interface LayoutOptions {
   brandHref?: string;
   navItems: NavItem[];
   activeNavId: string;
+  /** The page's name in the header, for a page the rail does not list (My account). */
+  breadcrumbLabel?: string;
   stats?: StatItem[];
   userMeta?: { name: string; email?: string; role: string };
   logoutAction?: string;
@@ -2638,7 +2640,7 @@ export function renderLayoutHtml(options: LayoutOptions): string {
 
   const brandHref = options.brandHref || "/admin";
   const activeItem = navItems.find((item) => item.id === activeNavId) || navItems[0];
-  const activeNavLabel = activeItem ? activeItem.label : "Dashboard";
+  const activeNavLabel = options.breadcrumbLabel || (activeItem ? activeItem.label : "Dashboard");
 
   // Primary Navigation items
   const railItemsHtml = navItems
@@ -2733,17 +2735,17 @@ ${FONT_LINKS}
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                       <span>System Settings</span>
                     </a>`
-                  : `<a href="${escapeAttr(brandHref.includes("?") ? "/admin/settings?" + brandHref.split("?")[1] + "#section-password" : "/admin/settings#section-password")}" class="profile-menu-link">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                      <span>Change Password</span>
+                  : `<a href="${escapeAttr(brandHref.includes("?") ? "/admin/account?" + brandHref.split("?")[1] : "/admin/account")}" class="profile-menu-link">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      <span>My account</span>
                     </a>`
               }
               <a href="${escapeAttr(
                 brandHref.startsWith("/super")
                   ? "/super/system?tab=system-two-factor"
                   : brandHref.includes("?")
-                    ? "/admin/settings?" + brandHref.split("?")[1] + "&tab=two-factor"
-                    : "/admin/settings?tab=two-factor"
+                    ? "/admin/account?" + brandHref.split("?")[1] + "#pane-two-factor-section"
+                    : "/admin/account#pane-two-factor-section"
               )}" class="profile-menu-link">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
                 <span>Two-factor sign-in</span>
