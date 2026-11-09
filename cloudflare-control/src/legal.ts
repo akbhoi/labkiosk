@@ -11,6 +11,9 @@
  *
  * legal_acceptances is append-only and has no foreign keys: it is the evidence
  * of what was agreed, and outlives the organization and the user.
+ *
+ * Every customer hears about a new version of any document here, accepted or
+ * not, by email (src/legal_notices.ts).
  */
 
 /** A document an organization accepts. */
@@ -40,6 +43,29 @@ export const LEGAL_DOCUMENTS: readonly LegalDocument[] = [
   { id: "privacy", title: "Privacy Policy", path: "/privacy", version: "2026-11-09", required: false }
 ];
 
+/** A document organizations are only told about when it changes: they neither accept nor acknowledge it. */
+export type NoticeDocumentId = "refunds";
+export type AnnouncedDocumentId = LegalDocumentId | NoticeDocumentId;
+
+export interface AnnouncedDocument extends Omit<LegalDocument, "id"> {
+  id: AnnouncedDocumentId;
+}
+
+/**
+ * The documents announced by email but not accepted. The version is the date
+ * the page gives as "Last updated"; keep it in step with src/ui_legal.ts.
+ */
+export const NOTICE_DOCUMENTS: readonly AnnouncedDocument[] = [
+  { id: "refunds", title: "Refund & Cancellation Policy", path: "/refunds", version: "2026-11-08", required: false }
+];
+
+/** Every document whose new versions are emailed to customers. */
+export const ANNOUNCED_DOCUMENTS: readonly AnnouncedDocument[] = [...LEGAL_DOCUMENTS, ...NOTICE_DOCUMENTS];
+
+export function isAnnouncedDocumentId(value: unknown): value is AnnouncedDocumentId {
+  return ANNOUNCED_DOCUMENTS.some((d) => d.id === value);
+}
+
 /** Days between a version's first publication and the console asking before anything else. */
 export const LEGAL_NOTICE_DAYS = 30;
 const DAY = 86_400;
@@ -48,7 +74,9 @@ export function isLegalDocumentId(value: unknown): value is LegalDocumentId {
   return LEGAL_DOCUMENTS.some((d) => d.id === value);
 }
 
-export interface PublishedVersion extends LegalDocument {
+export type PublishedVersion<D extends AnnouncedDocument = LegalDocument> = D & PublicationDates;
+
+interface PublicationDates {
   /** Unix seconds: when the Worker first served this version. */
   publishedAt: number;
   /** Unix seconds: from when an organization that has not accepted it is asked before anything else. */
@@ -61,13 +89,22 @@ export interface PublishedVersion extends LegalDocument {
  * a version the first time it is seen.
  */
 export async function publishedLegalVersions(db: D1Database, now = Math.floor(Date.now() / 1000)): Promise<PublishedVersion[]> {
+  return publishedVersionsOf(db, LEGAL_DOCUMENTS, now);
+}
+
+/** Every announced document in force, accepted or not, with its publication dates. */
+export async function publishedAnnouncedVersions(db: D1Database, now = Math.floor(Date.now() / 1000)): Promise<PublishedVersion<AnnouncedDocument>[]> {
+  return publishedVersionsOf(db, ANNOUNCED_DOCUMENTS, now);
+}
+
+async function publishedVersionsOf<D extends AnnouncedDocument>(db: D1Database, documents: readonly D[], now: number): Promise<PublishedVersion<D>[]> {
   const rows = (
     await db
       .prepare("SELECT document, version, published_at, notified_at FROM legal_versions")
       .all<{ document: string; version: string; published_at: number; notified_at: number | null }>()
   ).results || [];
-  const result: PublishedVersion[] = [];
-  for (const doc of LEGAL_DOCUMENTS) {
+  const result: PublishedVersion<D>[] = [];
+  for (const doc of documents) {
     let row = rows.find((r) => r.document === doc.id && r.version === doc.version);
     if (!row) {
       await db

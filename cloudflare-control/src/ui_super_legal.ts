@@ -13,7 +13,7 @@ export function renderLegalPaneHtml(): string {
   return `
         <div class="card">
           <h2 class="card-title">Legal documents</h2>
-          <p class="card-sub">A new version of a document is published the first time the platform serves it. Organizations that have not accepted it see a notice in their console, and after the notice period the console asks for it before anything else. Workstations, homepages and User Portals keep working. The record of every acceptance is kept even after an organization is deleted.</p>
+          <p class="card-sub">A new version of a document is published the first time the platform serves it, and within the hour the owner of every organization registered before then is emailed about it, once. Organizations that have not accepted the current Terms of Service or Content Policy see a notice in their console, and after the notice period the console asks for it before anything else. Workstations, homepages and User Portals keep working. The record of every acceptance is kept even after an organization is deleted.</p>
           <div class="table-container">
             <table>
               <thead>
@@ -93,10 +93,10 @@ export function renderLegalScript(nonce: string): string {
             row.appendChild(title);
             row.appendChild(cell(d.version, "mono"));
             row.appendChild(cell(day(d.publishedAt), "mono text-xs nowrap"));
-            row.appendChild(cell(d.required ? day(d.effectiveAt) : "Acknowledged at registration", d.required ? "mono text-xs nowrap" : "text-xs"));
+            row.appendChild(cell(d.required ? day(d.effectiveAt) : d.acknowledged ? "Acknowledged at registration" : "Announced by email", d.required ? "mono text-xs nowrap" : "text-xs"));
             row.appendChild(cell(d.required ? d.acceptedBy + " of " + total + " active organizations" : "", "nowrap"));
             const actions = document.createElement("td");
-            if (d.required) {
+            {
               const b = document.createElement("button");
               b.type = "button";
               b.className = "btn btn-sm btn-secondary";
@@ -135,7 +135,7 @@ export function renderLegalScript(nonce: string): string {
           if (!b) return;
           const ok = await lkConfirm({
             title: "Email organizations about the " + b.dataset.title + "?",
-            message: "The owner of every active organization that has not accepted the current version is emailed a link to it and the date its console starts asking for it.",
+            message: "The owner of every active organization the current version concerns is emailed a link to it now, again if they were emailed before. New versions are emailed once by themselves within the hour.",
             confirmLabel: "Send emails"
           });
           if (!ok) return;

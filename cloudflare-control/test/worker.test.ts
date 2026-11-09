@@ -9803,7 +9803,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(await csv.text(), /"terms","[0-9-]+","console"/);
     assert.equal((await call("/api/super/legal/acceptances?tenantId=nope", { cookie: admin })).status, 404);
     assert.equal((await call("/api/super/legal/notify", { ...json({ document: "cookies" }), cookie: admin })).status, 400);
-    assert.equal((await call("/api/super/legal/notify", { ...json({ document: "privacy" }), cookie: admin })).status, 400);
+    // Documents organizations do not accept are announced too, from the same button.
+    const refunds = overview.data.documents.find((d: any) => d.id === "refunds");
+    assert.deepEqual([refunds.required, refunds.acknowledged, refunds.path], [false, false, "/refunds"]);
+    assert.equal(overview.data.documents.find((d: any) => d.id === "privacy").acknowledged, true);
+    for (const document of ["privacy", "refunds"]) {
+      assert.equal((await call("/api/super/legal/notify", { ...json({ document }), cookie: admin })).status, 200, document);
+    }
     await db.prepare("DELETE FROM legal_acceptances WHERE tenant_id = ? AND source = 'console'").bind(tenantId).run();
     const owner = await db.prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?").bind(tenantId).first<{ email: string }>();
     const notified = await callJson("/api/super/legal/notify", { ...json({ document: "terms" }), cookie: admin });

@@ -152,7 +152,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/releases/revoke` | `POST` | Super Admin | `{"version"}`: withdraw a release for good; `409` when already revoked |
 | `/api/super/legal` | `GET` | Super Admin | The legal documents in force: version, when it was published, from when consoles require it, how many active organizations accepted it |
 | `/api/super/legal/acceptances` | `GET` | Super Admin | `?tenantId=&format=csv`: the acceptance record of one organization or all, as JSON or CSV |
-| `/api/super/legal/notify` | `POST` | Super Admin | `{"document"}`: email the owner of every active organization that has not accepted its current version |
+| `/api/super/legal/notify` | `POST` | Super Admin | `{"document"}`: email the current version of any legal document (`terms`, `content`, `privacy`, `refunds`) now to the owner of every active organization it concerns, again if emailed before; the hourly run emails each new version once by itself |
 | `/api/super/link-blocklist` | `GET`, `POST` | Super Admin | The domains no homepage link or User Portal card may point to; `POST {"domain", "reason"?}` adds one |
 | `/api/super/link-blocklist/remove` | `POST` | Super Admin | `{"domain"}`: remove one; `404` when it is not listed |
 | `/api/super/tenants/license` | `POST` | Super Admin | `{"tenantId", "plan": "education"\|"evaluation"\|"subscriber"\|"commercial", "expiresOn": "YYYY-MM-DD"\|null}`: the license an organization runs under. Once the end date (00:00 UTC) has passed, enrolment answers `403` for any workstation not already holding a valid token, and Remote Control is refused; audited as `tenant.license` |

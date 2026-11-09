@@ -9,7 +9,7 @@
 import { findTenantById, setClientsBroadcast, updateTenant, writeAuditLog } from "./db";
 import { notifyConfigChanged } from "./hub";
 import { enforceRemoteSeats, enforceStaffCap } from "./limits";
-import { createNotification } from "./notifications";
+import { notifyOwner } from "./notifications";
 import { isDemoSlug } from "./demo";
 import { entitlement, moveLicenceTo, rebalanceLicences, type Entitlement, type Rebalance } from "./plans";
 import type { Env, Tenant } from "./types";
@@ -26,13 +26,13 @@ export async function syncLicences(env: Env, db: D1Database, tenantId: string, n
   const tenant = await findTenantById(db, tenantId);
   if (!tenant) return { unlicensed: [], relicensed: [] };
   const plan = entitlement(tenant, Math.floor(nowMs / 1000));
-  await syncAddOns(db, tenant, plan, Math.floor(nowMs / 1000));
+  await syncAddOns(env, db, tenant, plan, Math.floor(nowMs / 1000));
   const result = await rebalanceLicences(db, tenantId, plan.limit, Math.floor(nowMs / 1000));
   if (!result.unlicensed.length && !result.relicensed.length) return result;
   await releaseNotice(db, tenantId, result.relicensed, nowMs);
   if (result.unlicensed.length) {
     const n = result.unlicensed.length;
-    await createNotification(db, {
+    await notifyOwner(env, db, {
       tenantId,
       kind: "license",
       title: "Workstations over the plan's limit",
@@ -52,13 +52,13 @@ export async function syncLicences(env: Env, db: D1Database, tenantId: string, n
  * suspended, seats over the count released, and seats bought turn Remote
  * Control on unless the platform turned it off.
  */
-async function syncAddOns(db: D1Database, tenant: Tenant, plan: Entitlement, now: number): Promise<void> {
+async function syncAddOns(env: Env, db: D1Database, tenant: Tenant, plan: Entitlement, now: number): Promise<void> {
   if (isDemoSlug(tenant.subdomain)) return;
   const suspended = await enforceStaffCap(db, tenant, plan.staffLimit, now);
   if (suspended.length) {
     const n = suspended.length;
     await writeAuditLog(db, { tenantId: tenant.id, action: "staff.suspended_over_cap", details: `users=${suspended.join(",")} limit=${plan.staffLimit}` });
-    await createNotification(db, {
+    await notifyOwner(env, db, {
       tenantId: tenant.id,
       kind: "license",
       title: "Staff over the plan's limit",

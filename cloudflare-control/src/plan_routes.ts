@@ -49,7 +49,7 @@ import {
 import { jsonError, requireSuperAdmin, requireTenantPermission } from "./guard";
 import { licenseDate } from "./license";
 import { sendMail, mailConfigProblem } from "./mail";
-import { createNotification } from "./notifications";
+import { createNotification, notifyOwner } from "./notifications";
 import { moveLicence, syncLicences } from "./plan_sync";
 import { afterSubscriptionChange, describePlan } from "./billing_routes";
 import { emailPaidInvoice } from "./billing_documents";
@@ -174,7 +174,7 @@ async function organizationPlan(ctx: PlanRouteContext): Promise<Response | null>
       trial_started_at: now
     });
     await writeAuditLog(db, { tenantId: tenant.id, userId, action: "plan.trial", details: `ends=${licenseDate(ends)}` });
-    await createNotification(db, {
+    await notifyOwner(env, db, {
       tenantId: tenant.id,
       kind: "license",
       title: "Free trial started",

@@ -48,10 +48,10 @@ import {
   type Proforma
 } from "./billing_documents";
 import { findTenantById, findUserById, getTenantUserPermissions, updateTenant, writeAuditLog } from "./db";
-import { isDemoTenant } from "./demo";
+import { isDemoSlug, isDemoTenant } from "./demo";
 import { jsonError, requireSuperAdmin, requireTenantPermission } from "./guard";
 import { findInvoice, GST_STATES, gstPercentFor, listInvoices, sellerFrom, sellerName, validGstin, type Invoice } from "./invoices";
-import { licenseDate } from "./license";
+import { licenseDate, licensePlanLabel } from "./license";
 import { activeStaffCount, assignRemoteSeat, listRemoteSeats, listStaff, setStaffSuspended } from "./limits";
 import { mailConfigProblem, sendMail } from "./mail";
 import { createNotification } from "./notifications";
@@ -357,6 +357,26 @@ export function describePlan(r: Pick<SubscriptionRow, "tier" | "period" | "extra
 }
 
 /**
+ * Claim an email that must go out once per occasion, whichever of the
+ * webhook, the payer's return, the platform or the hourly run sees it first.
+ * The claim is a processed billing_events row, so it never needs attention.
+ */
+async function claimOnce(db: D1Database, key: string, event: string, entityId: string, tenantId: string, now: number): Promise<boolean> {
+  const claimed = await db
+    .prepare("INSERT OR IGNORE INTO billing_events (event_id, event, entity_id, tenant_id, received_at, processed_at, outcome) VALUES (?, ?, ?, ?, ?, ?, 'sent')")
+    .bind(key, event, entityId, tenantId, now, now)
+    .run();
+  return Boolean(claimed.meta.changes);
+}
+
+function samePlan(a: SubscriptionRow, b: SubscriptionRow): boolean {
+  return describePlan(a) === describePlan(b);
+}
+
+/** A subscription that charged, or was set to, and so can be told apart from a checkout never authorised. */
+const LIVE: readonly SubscriptionStatus[] = ["authenticated", "active", "pending", "halted", "paused"];
+
+/**
  * After a subscription changed (webhook, return, cron, platform): apply the
  * plan to workstations, staff and seats, and tell the organization what
  * happened, once per change.
@@ -373,12 +393,57 @@ export async function afterSubscriptionChange(
   const tenant = await findTenantById(db, before.tenant_id);
   if (!tenant) return;
   const url = env.DEFAULT_DOMAIN ? `https://${tenant.subdomain}.${env.DEFAULT_DOMAIN}/admin/plan` : "";
+  const fresh = (await findSubscription(db, before.id)) ?? before;
+  const every = (r: SubscriptionRow) => `${rupees(Number(r.total_paise))} a ${r.period === "month" ? "month" : "year"}`;
+
+  // A change of plan (or a resumed subscription) is confirmed when the payer authorises it.
+  if (before.status === "created" && before.replaces_id && (status === "authenticated" || status === "active")) {
+    const old = await findSubscription(db, before.replaces_id);
+    if (old && old.tenant_id === tenant.id && (await claimOnce(db, `plan_change:${before.id}`, "plan_change", before.id, tenant.id, now))) {
+      const resumed = old.cancel_reason !== "replaced" && samePlan(old, fresh);
+      const upfront = Number(fresh.upfront_paise);
+      const startsAt = fresh.starts_at ?? fresh.current_start;
+      const applies = upfront > 0 ? "Now" : startsAt ? licenseDate(Number(startsAt)) : "Now";
+      const details: Array<[string, string]> = resumed
+        ? [["Plan", describePlan(fresh)], ["Next charge", `${every(fresh)}${startsAt ? `, from ${licenseDate(Number(startsAt))}` : ""}`]]
+        : [
+            ["Previous plan", describePlan(old)],
+            ["New plan", describePlan(fresh)],
+            ["New plan applies", applies],
+            ...(upfront > 0 ? ([["Charged now", `${rupees(upfront)} for the rest of the current period`]] as Array<[string, string]>) : []),
+            ["Then", `${every(fresh)}${startsAt ? `, from ${licenseDate(Number(startsAt))}` : ""}`]
+          ];
+      const title = resumed ? "Subscription resumed" : "Plan change confirmed";
+      const lead = resumed
+        ? `${tenant.name}'s subscription will renew again as before.`
+        : `${tenant.name} is moving from ${CATALOGUE[old.tier].label} to ${describePlan(fresh)}.`;
+      await createNotification(db, {
+        tenantId: tenant.id,
+        kind: "license",
+        title,
+        body: `${lead} ${details.map(([k, v]) => `${k}: ${v}.`).join(" ")}`,
+        createdBy: fresh.created_by
+      });
+      await emailOwner(env, db, tenant, {
+        subject: resumed ? "Your Lab Kiosk subscription is resumed" : "Your Lab Kiosk plan change is confirmed",
+        title,
+        lead,
+        details,
+        action: url ? { label: "View plan", url } : null,
+        tone: "success",
+        text:
+          upfront > 0
+            ? "The tax invoice for the amount charged now is emailed separately and is under Plan & billing in your console."
+            : "Nothing more is charged until the date above. Your plan, invoices and any change are under Plan & billing in your console."
+      });
+    }
+  }
+
   if (granted) {
     const latest = await db
       .prepare("SELECT * FROM invoices WHERE tenant_id = ? AND source_id = ? ORDER BY issued_at DESC, number DESC LIMIT 1")
       .bind(tenant.id, before.id)
       .first<Invoice>();
-    const fresh = (await findSubscription(db, before.id)) ?? before;
     const ends = entitlement(tenant, now).expiresAt;
     await createNotification(db, {
       tenantId: tenant.id,
@@ -419,6 +484,41 @@ export async function afterSubscriptionChange(
       body: `Razorpay could not charge ${rupees(Number(before.total_paise))} for ${tenant.name}'s renewal and will try again. Check the card or UPI mandate under Plan & billing.`,
       createdBy: null
     });
+    await emailOwner(env, db, tenant, {
+      subject: "Your Lab Kiosk renewal payment failed",
+      title: "Renewal payment failed",
+      lead: `Razorpay could not charge ${rupees(Number(before.total_paise))} for ${tenant.name}'s renewal. It will try again over the next few days, and the plan stays as it is meanwhile.`,
+      details: [["Plan", describePlan(before)], ["Amount", rupees(Number(before.total_paise))]],
+      action: url ? { label: "Check payment method", url } : null,
+      tone: "warning",
+      text: "Check that the card or UPI mandate is valid and has enough balance. If every attempt fails, you get 7 more days to update it before the organization moves to the Free plan."
+    });
+  }
+  // Ended outside the console: the payer revoked the mandate at their bank or UPI app, or every charge was made.
+  // A cancellation from the console or the platform is recorded before Razorpay is read, so it is not seen here.
+  if (LIVE.includes(before.status) && (status === "cancelled" || status === "completed") &&
+    (await claimOnce(db, `ended:${before.id}`, "subscription_ended", before.id, tenant.id, now))) {
+    const endsAt = fresh.current_end;
+    const replacement = (await listSubscriptions(db, tenant.id)).find((r) => r.replaces_id === before.id && LIVE.includes(r.status));
+    if (!replacement) {
+      const lead = `${tenant.name}'s subscription ${status === "completed" ? "has made its last scheduled charge" : "was cancelled at the bank or payment app"} and will not renew.`;
+      await createNotification(db, {
+        tenantId: tenant.id,
+        kind: "license",
+        title: "Subscription ended",
+        body: `${lead}${endsAt ? ` The plan stays until ${licenseDate(Number(endsAt))}, then the organization moves to Free.` : ""} Choose a plan under Plan & billing to keep it.`,
+        createdBy: null
+      });
+      await emailOwner(env, db, tenant, {
+        subject: "Your Lab Kiosk subscription will not renew",
+        title: "Subscription ended",
+        lead,
+        details: [["Plan", describePlan(before)], ...(endsAt ? ([["Plan stays until", licenseDate(Number(endsAt))]] as Array<[string, string]>) : [])],
+        action: url ? { label: "Choose a plan", url } : null,
+        tone: "warning",
+        text: "Nothing more will be charged. To keep the plan after the date above, set up the subscription again under Plan & billing."
+      });
+    }
   }
 }
 
@@ -865,12 +965,30 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
       if (currentSubscription(rows, now)?.id !== row.id && !isFinal(row.status)) {
         return jsonError("That is not the organization's current subscription; cancel it from its own row", 409, jsonHeaders);
       }
-      if (!isFinal(row.status)) await cancelSubscription(env, db, { tenant, userId, reason: "cancelled by Lab Kiosk", now });
+      const wasLive = !isFinal(row.status);
+      const { endsAt } = wasLive ? await cancelSubscription(env, db, { tenant, userId, reason: "cancelled by Lab Kiosk", now }) : { endsAt: row.current_end };
       if (immediately) {
         await updateTenant(db, tenant.id, { license_expires_at: now, grace_ends_at: null });
         await syncLicences(env, db, tenant.id, now * 1000);
+        // The email below says the plan ended; the hourly run's "plan ended" would repeat it.
+        await claimOnce(db, `plan_ended:${tenant.id}:${now}`, "plan_ended", tenant.id, tenant.id, now);
       }
       await writeAuditLog(db, { tenantId: tenant.id, userId, action: "billing.platform_cancel", details: `subscription=${row.id} immediately=${immediately}` });
+      if (wasLive || immediately) {
+        const stays = !immediately && endsAt && endsAt > now ? licenseDate(Number(endsAt)) : null;
+        const lead = `Lab Kiosk cancelled ${tenant.name}'s subscription. Nothing more will be charged.`;
+        const after = stays ? `The plan stays until ${stays}, then the organization moves to Free.` : "The organization is on the Free plan from now.";
+        await createNotification(db, { tenantId: tenant.id, kind: "license", title: "Subscription cancelled by Lab Kiosk", body: `${lead} ${after}`, createdBy: userId });
+        await emailOwner(env, db, tenant, {
+          subject: "Lab Kiosk has cancelled your subscription",
+          title: "Subscription cancelled",
+          lead,
+          details: [["Plan", describePlan(row)], ["Plan stays until", stays ?? "Ended now"]],
+          action: env.DEFAULT_DOMAIN ? { label: "View plan", url: `https://${tenant.subdomain}.${env.DEFAULT_DOMAIN}/admin/plan` } : null,
+          tone: "warning",
+          text: `${after} Questions about this? Reply to this email.`
+        });
+      }
       return json({ status: "ok" }, jsonHeaders);
     } catch (err) {
       return refusal(err, jsonHeaders);
@@ -888,6 +1006,15 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
     await updateTenant(db, tenant.id, { license_expires_at: from + days * DAY });
     await writeAuditLog(db, { tenantId: tenant.id, userId, action: "billing.extend", details: `days=${days} until=${licenseDate(from + days * DAY)}` });
     await createNotification(db, { tenantId: tenant.id, kind: "license", title: "Plan extended", body: `Lab Kiosk extended ${tenant.name}'s plan by ${days} days, to ${licenseDate(from + days * DAY)}.`, createdBy: userId });
+    await emailOwner(env, db, tenant, {
+      subject: "Lab Kiosk has extended your plan",
+      title: "Plan extended",
+      lead: `Lab Kiosk extended ${tenant.name}'s plan by ${days} day${days === 1 ? "" : "s"}.`,
+      details: [["Plan", plan.label], ["Now ends on", licenseDate(from + days * DAY)]],
+      action: env.DEFAULT_DOMAIN ? { label: "View plan", url: `https://${tenant.subdomain}.${env.DEFAULT_DOMAIN}/admin/plan` } : null,
+      tone: "success",
+      text: "Nothing is needed from you."
+    });
     await syncLicences(env, db, tenant.id, now * 1000);
     return json({ status: "ok", expiresAt: from + days * DAY }, jsonHeaders);
   }
@@ -1013,3 +1140,104 @@ export async function sendRenewalNotices(env: Env, db: D1Database, now: number):
   return sent;
 }
 
+
+/** Days before a plan that does not renew by payment ends that its owner hears so. */
+const ENDING_NOTICE_DAYS = 7;
+/** How long after a plan ended its owner can still be told, should the hourly run have missed it. */
+const ENDED_NOTICE_WINDOW = 3 * DAY;
+
+function planName(t: Pick<Tenant, "license_plan" | "plan_tier">): string {
+  if (t.license_plan === "subscriber") return `${CATALOGUE[t.plan_tier ?? "standard"].label} subscription`;
+  return t.license_plan === "evaluation" ? "free trial" : `${licensePlanLabel(t.license_plan)} plan`;
+}
+
+/**
+ * The hourly run's plan end notices, each once per end date:
+ *
+ * - a week before a plan that does not renew by payment ends (the trial,
+ *   Education, Custom), what happens and how to keep it; a subscription is
+ *   told by its renewal notice, Razorpay or a proforma instead;
+ * - once a plan has ended with nothing set to renew it, that the organization
+ *   is on the Free plan now.
+ */
+export async function sendPlanEndNotices(env: Env, db: D1Database, now: number): Promise<number> {
+  let sent = 0;
+  const free = PRICING.freeWorkstations;
+  const { results: ending } = await db
+    .prepare(
+      `SELECT * FROM tenants
+        WHERE status = 'active' AND license_plan IN ('evaluation', 'education', 'commercial')
+          AND license_expires_at > ? AND license_expires_at <= ?
+        LIMIT 100`
+    )
+    .bind(now, now + ENDING_NOTICE_DAYS * DAY)
+    .all<Tenant>();
+  for (const t of ending ?? []) {
+    if (isDemoSlug(t.subdomain)) continue;
+    const ends = Number(t.license_expires_at);
+    if (!(await claimOnce(db, `plan_ending:${t.id}:${ends}`, "plan_ending", t.id, t.id, now))) continue;
+    const url = env.DEFAULT_DOMAIN ? `https://${t.subdomain}.${env.DEFAULT_DOMAIN}/admin/plan` : null;
+    const name = planName(t);
+    const lead = `${t.name}'s ${name} ends on ${licenseDate(ends)}.`;
+    const keep =
+      t.license_plan === "evaluation"
+        ? "Choose a plan under Plan & billing before then to keep every workstation."
+        : t.license_plan === "education"
+          ? "Apply again under Plan & billing before then to keep the Education plan."
+          : "Reply to this email or open Plan & billing before then to renew it.";
+    await createNotification(db, { tenantId: t.id, kind: "license", title: `Your ${name} ends soon`, body: `${lead} ${keep}`, createdBy: null });
+    if (
+      await emailOwner(env, db, t, {
+        subject: `Your Lab Kiosk ${name} ends on ${licenseDate(ends)}`,
+        title: `${name.charAt(0).toUpperCase()}${name.slice(1)} ending`,
+        lead,
+        details: [["Ends on", licenseDate(ends)], ["After that", `Free plan, ${free} workstations`]],
+        action: url ? { label: t.license_plan === "evaluation" ? "Choose a plan" : "Open Plan & billing", url } : null,
+        tone: "warning",
+        text: `${keep} After the date above, workstations beyond the Free plan's ${free} show a licence notice instead of your portal; nothing is deleted.`
+      })
+    ) {
+      sent++;
+    }
+  }
+
+  const { results: ended } = await db
+    .prepare(
+      `SELECT * FROM tenants t
+        WHERE t.status = 'active' AND t.license_plan IS NOT NULL
+          AND t.license_expires_at > ? AND t.license_expires_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.tenant_id = t.id AND s.status IN ('authenticated', 'active', 'pending'))
+        LIMIT 100`
+    )
+    .bind(now - ENDED_NOTICE_WINDOW, now)
+    .all<Tenant>();
+  for (const t of ended ?? []) {
+    if (isDemoSlug(t.subdomain)) continue;
+    const ends = Number(t.license_expires_at);
+    if (!(await claimOnce(db, `plan_ended:${t.id}:${ends}`, "plan_ended", t.id, t.id, now))) continue;
+    const url = env.DEFAULT_DOMAIN ? `https://${t.subdomain}.${env.DEFAULT_DOMAIN}/admin/plan` : null;
+    const name = planName(t);
+    const lead = `${t.name}'s ${name} ended on ${licenseDate(ends)}, and the organization is on the Free plan now.`;
+    await createNotification(db, {
+      tenantId: t.id,
+      kind: "license",
+      title: "Your plan has ended",
+      body: `${lead} Choose a plan under Plan & billing to get every workstation back.`,
+      createdBy: null
+    });
+    if (
+      await emailOwner(env, db, t, {
+        subject: `Your Lab Kiosk ${name} has ended`,
+        title: "Plan ended",
+        lead,
+        details: [["Ended on", licenseDate(ends)], ["Now", `Free plan, ${free} workstations`]],
+        action: url ? { label: "Choose a plan", url } : null,
+        tone: "danger",
+        text: `Workstations beyond the Free plan's ${free} show a licence notice instead of your portal, and Remote Control is off. Nothing is deleted: choosing a plan brings them back at once.`
+      })
+    ) {
+      sent++;
+    }
+  }
+  return sent;
+}

@@ -135,6 +135,8 @@ export interface OrganizationOwner {
   name: string;
   email: string;
   ownerName: string;
+  /** Unix seconds: when the organization registered. */
+  createdAt: number;
 }
 
 /**
@@ -146,17 +148,17 @@ export async function activeOrganizationOwners(db: D1Database, tenantId: string 
     (
       await db
         .prepare(
-          `SELECT t.id, t.name, t.subdomain, u.email, u.name AS owner_name, u.role
+          `SELECT t.id, t.name, t.subdomain, t.created_at, u.email, u.name AS owner_name, u.role
            FROM tenants t JOIN users u ON u.id = t.user_id
            WHERE t.status = 'active' ${tenantId ? "AND t.id = ?" : ""}
            ORDER BY t.name`
         )
         .bind(...(tenantId ? [tenantId] : []))
-        .all<{ id: string; name: string; subdomain: string; email: string; owner_name: string; role: string }>()
+        .all<{ id: string; name: string; subdomain: string; created_at: number; email: string; owner_name: string; role: string }>()
     ).results || [];
   return rows
     .filter((r) => !(isDemoSlug(r.subdomain) && r.role === "super_admin"))
-    .map((r) => ({ tenantId: r.id, name: r.name, email: r.email, ownerName: r.owner_name }));
+    .map((r) => ({ tenantId: r.id, name: r.name, email: r.email, ownerName: r.owner_name, createdAt: Number(r.created_at) }));
 }
 
 export interface EmailOutcome {
@@ -209,4 +211,16 @@ export async function emailOrganizations(
     });
   }
   return { emailed, emailFailed, emailProblem: null };
+}
+
+/**
+ * A notification for one organization that its owner is emailed as well, in
+ * the same words: for what the platform changes about the organization's
+ * plan or account, which nobody should learn about only by opening the console.
+ * The email is best effort; the notification is always written.
+ */
+export async function notifyOwner(env: Env, db: D1Database, n: NewNotification & { tenantId: string }): Promise<EmailOutcome> {
+  await createNotification(db, n);
+  const owners = await activeOrganizationOwners(db, n.tenantId);
+  return emailOrganizations(env, owners, `Lab Kiosk: ${n.title.trim()}`, () => n.body.trim());
 }

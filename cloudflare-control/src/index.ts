@@ -155,9 +155,32 @@ async function isOrganizationAdministrator(db: D1Database, session: Session, ten
   return (await getTenantUser(db, tenant.id, session.user_id))?.role === "org_admin";
 }
 
+/**
+ * Best effort: email an organization's owner whatever the organization's
+ * status (a suspended one is told too). Returns whether it was sent.
+ */
+async function emailTenantOwner(env: Env, db: D1Database, tenant: Tenant, subject: string, body: string): Promise<boolean> {
+  if (mailConfigProblem(env)) return false;
+  const owner = tenant.user_id ? await findUserById(db, tenant.user_id) : null;
+  if (!owner?.email) return false;
+  try {
+    await sendMail(env, {
+      to: owner.email,
+      toName: owner.name,
+      subject,
+      text: `Hello ${owner.name || ""},\n\n${body}\n\nLab Kiosk`,
+      template: { name: "notice", title: subject }
+    });
+    return true;
+  } catch (err) {
+    console.error(`[Worker] Could not email the owner of ${tenant.id} (${subject}):`, err);
+    return false;
+  }
+}
+
 /** The documents in force as the platform's Legal view shows them. */
 async function platformLegalOverview(db: D1Database, superAdminId: string) {
-  const [documents, counts, tenants] = await Promise.all([publishedLegalVersions(db), legalAcceptanceCounts(db), listAllTenants(db)]);
+  const [documents, counts, tenants] = await Promise.all([publishedAnnouncedVersions(db), legalAcceptanceCounts(db), listAllTenants(db)]);
   return {
     noticeDays: LEGAL_NOTICE_DAYS,
     // The platform's own demos accept nothing.
@@ -168,6 +191,8 @@ async function platformLegalOverview(db: D1Database, superAdminId: string) {
       path: d.path,
       version: d.version,
       required: d.required,
+      // Acknowledged at registration (accepted ones are too), or only announced by email.
+      acknowledged: isLegalDocumentId(d.id),
       publishedAt: d.publishedAt,
       effectiveAt: d.effectiveAt,
       notifiedAt: d.notifiedAt,
@@ -204,17 +229,20 @@ async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void
 import { addBlockedDomain, BLOCKLIST_DOMAIN_PATTERN, hostedLinkProblem, listLinkBlocklist, removeBlockedDomain } from "./link_rules";
 import {
   acceptancesCsv,
+  isAnnouncedDocumentId,
   isLegalDocumentId,
   LEGAL_NOTICE_DAYS,
   legalAcceptanceCounts,
   listLegalAcceptances,
   organizationLegalStatus,
-  publishedLegalVersions,
+  publishedAnnouncedVersions,
   recordLegalAcceptances
 } from "./legal";
+import { announceLegalChanges, emailLegalNotice } from "./legal_notices";
 import {
   activeOrganizationOwners,
   createNotification,
+  notifyOwner,
   emailOrganizations,
   isNotificationKind,
   listNotificationsFor,
@@ -229,7 +257,7 @@ import { openCustomPlanCount } from "./custom_plans";
 import { billingEnabled } from "./billing";
 import { gstPercentFor } from "./invoices";
 import { runProformas } from "./billing_documents";
-import { handleBillingRoutes, sendRenewalNotices } from "./billing_routes";
+import { afterSubscriptionChange, handleBillingRoutes, sendPlanEndNotices, sendRenewalNotices } from "./billing_routes";
 import { claimRemoteSeat, staffCapRefusal } from "./limits";
 import { reconcileSubscriptions } from "./subscriptions";
 import { syncLicences } from "./plan_sync";
@@ -1468,7 +1496,9 @@ export default {
     if (billingEnabled(env)) {
       try {
         const nowSeconds = Math.floor(Date.now() / 1000);
-        const changed = await reconcileSubscriptions(env, db, nowSeconds);
+        const changed = await reconcileSubscriptions(env, db, nowSeconds, (row, result) =>
+          afterSubscriptionChange(env, db, row, result.status, result.granted, nowSeconds)
+        );
         if (changed.length) console.log(`[Billing] Reconciled subscriptions of ${changed.length} organization(s).`);
         const notices = await sendRenewalNotices(env, db, nowSeconds);
         if (notices) console.log(`[Billing] Sent ${notices} renewal notice(s).`);
@@ -1478,6 +1508,13 @@ export default {
       } catch (err) {
         console.error("[Billing] Reconciling subscriptions failed:", err);
       }
+    }
+    // A plan about to end that does not renew by payment, and one that has ended: the owner is told by email.
+    try {
+      const ends = await sendPlanEndNotices(env, db, Math.floor(Date.now() / 1000));
+      if (ends) console.log(`[Billing] Sent ${ends} plan end notice(s).`);
+    } catch (err) {
+      console.error("[Billing] Plan end notices failed:", err);
     }
     // Plans that ended this hour drop to Free, and what Free does not cover
     // shows the licence notice (src/plans.ts); one organization failing does not stop the rest.
@@ -1540,6 +1577,17 @@ export default {
     } catch (err) {
       // The next hour, or the Releases page, records them.
       console.error("[Worker] Recording the releases in the bucket failed:", err);
+    }
+    // A new version of any legal document reaches every customer's inbox (src/legal_notices.ts).
+    if (env.DEFAULT_DOMAIN) {
+      try {
+        const legal = await announceLegalChanges(env, db, env.DEFAULT_DOMAIN, Math.floor(Date.now() / 1000));
+        if (legal.emailed || legal.failed) console.log(`[Legal] Emailed ${legal.emailed} organization(s) about updated documents, ${legal.failed} failed.`);
+      } catch (err) {
+        console.error("[Legal] Emailing organizations about updated documents failed:", err);
+      }
+    } else {
+      console.error("[Legal] No legal update emails sent: DEFAULT_DOMAIN is not set, so their links would not be absolute");
     }
     try {
       const reminded = await sendEndOfLifeReminders(env, db);
@@ -2370,6 +2418,15 @@ export default {
         });
         // A suspension closes every workstation's connection and refuses heartbeats.
         await notifyConfigChanged(env, target.id);
+        await emailTenantOwner(
+          env,
+          db,
+          target,
+          suspend ? `Lab Kiosk has suspended ${target.name}` : `Lab Kiosk has reactivated ${target.name}`,
+          suspend
+            ? `Lab Kiosk has suspended ${target.name}. Its console, workstations, homepage and User Portal stop working until it is reactivated; nothing is deleted.\n\nIf you think this is a mistake, or to ask what is needed to reactivate it, reply to this email.`
+            : `Lab Kiosk has reactivated ${target.name}. Its console, workstations, homepage and User Portal work again as before.`
+        );
         return new Response(JSON.stringify({ status: "ok", tenantStatus: suspend ? "suspended" : "active" }), {
           headers: jsonHeaders
         });
@@ -2438,7 +2495,7 @@ export default {
         action: "tenant.workstation_limit",
         details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
       });
-      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now use up to ${limit} workstation${limit === 1 ? "" : "s"} while its plan is in force; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations beyond the limit stay enrolled but show a licence notice.`, createdBy: session!.user_id });
+      await notifyOwner(env, db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now use up to ${limit} workstation${limit === 1 ? "" : "s"} while its plan is in force; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations beyond the limit stay enrolled but show a licence notice.`, createdBy: session!.user_id });
       await syncLicences(env, db, target.id);
       return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
     }
@@ -2477,7 +2534,7 @@ export default {
         action: "tenant.license",
         details: `plan=${plan ?? "free"} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
       });
-      await createNotification(db, { tenantId: target.id, kind: "license", title: "Plan updated", body: `Lab Kiosk recorded the plan of ${target.name}: ${licensePlanLabel(plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
+      await notifyOwner(env, db, { tenantId: target.id, kind: "license", title: "Plan updated", body: `Lab Kiosk recorded the plan of ${target.name}: ${licensePlanLabel(plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
       await syncLicences(env, db, target.id);
       return new Response(JSON.stringify({ status: "ok", plan: plan ?? "free", expiresAt }), { headers: jsonHeaders });
     }
@@ -2983,7 +3040,8 @@ export default {
     // GET /api/super/legal/acceptances?tenantId=&format=csv: the acceptance
     // record, of one organization or all, as JSON or CSV.
     // POST /api/super/legal/notify { document }: email the owner of every active
-    // organization that has not accepted the current version.
+    // organization the current version concerns now, again if it was emailed before
+    // (src/legal_notices.ts; the hourly run emails each one once by itself).
     if (path === "/api/super/legal" && method === "GET") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -3015,45 +3073,11 @@ export default {
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
-      if (!isLegalDocumentId(body?.document)) return jsonError("Name a legal document", 400, jsonHeaders);
+      if (!isAnnouncedDocumentId(body?.document)) return jsonError("Name a legal document", 400, jsonHeaders);
       const problem = mailConfigProblem(env);
       if (problem) return jsonError("This server cannot send email", 503, jsonHeaders);
-      const doc = (await publishedLegalVersions(db)).find((d) => d.id === body.document)!;
-      if (!doc.required) return jsonError(`The ${doc.title} is not accepted by organizations`, 400, jsonHeaders);
-      const date = new Date(doc.effectiveAt * 1000).toISOString().slice(0, 10);
-      let emailed = 0;
-      let failed = 0;
-      const accepted = new Set(
-        ((await db
-          .prepare("SELECT DISTINCT tenant_id FROM legal_acceptances WHERE document = ? AND version = ?")
-          .bind(doc.id, doc.version)
-          .all<{ tenant_id: string }>()).results || []).map((r) => r.tenant_id)
-      );
-      const pending = (await listAllTenants(db)).filter(
-        (t) => t.status === "active" && !isDemoTenant(t, session!.user_id) && !accepted.has(t.id)
-      );
-      for (const tenant of pending) {
-        try {
-          await sendMail(env, {
-            to: tenant.admin_email,
-            toName: tenant.admin_name,
-            subject: `Updated Lab Kiosk ${doc.title}`,
-            text:
-              `Hello ${tenant.admin_name || ""},\n\n` +
-              `We have updated the Lab Kiosk ${doc.title} (version ${doc.version}). You can read it at https://${baseDomain}${doc.path}.\n\n` +
-              `An administrator of ${tenant.name} needs to accept it in your console. From ${date} the console asks for it before anything else; ` +
-              `your workstations, homepage and User Portal keep working throughout.\n\nLab Kiosk`,
-            template: { name: "notice", title: `Updated ${doc.title}` }
-          });
-          emailed++;
-        } catch (err) {
-          failed++;
-          console.error(`[Worker] Could not email ${tenant.name} about the ${doc.title}:`, err);
-        }
-      }
-      await db.prepare("UPDATE legal_versions SET notified_at = ? WHERE document = ? AND version = ?")
-        .bind(Math.floor(Date.now() / 1000), doc.id, doc.version)
-        .run();
+      const doc = (await publishedAnnouncedVersions(db)).find((d) => d.id === body.document)!;
+      const { emailed, failed } = await emailLegalNotice(env, db, doc, baseDomain, Math.floor(Date.now() / 1000));
       await writeAuditLog(db, {
         tenantId: null,
         userId: session!.user_id,
@@ -3274,6 +3298,15 @@ export default {
           userId: session!.user_id,
           action: "tenant.remove_custom_domain"
         });
+        if (previous.hostname) {
+          await notifyOwner(env, db, {
+            tenantId: targetTenant.id,
+            kind: "account",
+            title: "Custom domain disconnected",
+            body: `Lab Kiosk has disconnected ${previous.hostname} from ${targetTenant.name}. Your homepage and User Portal stay at your Lab Kiosk address. To connect a domain again, open Settings in your console, or reply to this email to ask why.`,
+            createdBy: session!.user_id
+          });
+        }
         if (previous.hostname) {
           await startCustomHostnameJob(env, {
             operation: "delete",
@@ -4000,6 +4033,16 @@ export default {
       });
       await notifyConfigChanged(env, tenant.id);
       const host = isDev ? `${url.origin}/admin?tenant=${address}` : `https://${address}.${baseDomain}/admin`;
+      // The owner hears of it even when a member of staff made the change.
+      await notifyOwner(env, db, {
+        tenantId: tenant.id,
+        kind: "account",
+        title: "Console address changed",
+        body:
+          `${tenant.name}'s console address is now ${host}. The old address ${consoleSubdomain(tenant)}.${baseDomain} keeps reaching it, ` +
+          "so enrolled workstations need no change. Update any bookmarks and links you share. The address can be changed again in a week.",
+        createdBy: session!.user_id
+      });
       return new Response(
         JSON.stringify({ status: "ok", subdomain: address, consoleUrl: host, nextChangeAt: nowSeconds + ADDRESS_CHANGE_DAYS * 24 * 3600 }),
         { headers: jsonHeaders }

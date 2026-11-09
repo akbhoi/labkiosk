@@ -625,8 +625,17 @@ export async function subscriptionsToReconcile(db: D1Database, now: number, limi
   return results ?? [];
 }
 
-/** The hourly cron's look at subscriptions; returns the tenants it changed. */
-export async function reconcileSubscriptions(env: Env, db: D1Database, now: number): Promise<string[]> {
+/**
+ * The hourly cron's look at subscriptions; returns the tenants it changed.
+ * `onChange` is told of each change, as a webhook would have been, so a
+ * charge or a failure seen only here still reaches the organization.
+ */
+export async function reconcileSubscriptions(
+  env: Env,
+  db: D1Database,
+  now: number,
+  onChange?: (before: SubscriptionRow, result: SyncResult) => Promise<void>
+): Promise<string[]> {
   const changed = new Set<string>();
   for (const row of await subscriptionsToReconcile(db, now)) {
     try {
@@ -635,7 +644,10 @@ export async function reconcileSubscriptions(env: Env, db: D1Database, now: numb
         continue;
       }
       const result = await syncSubscription(env, db, row, now);
-      if (result.granted || result.status !== row.status) changed.add(row.tenant_id);
+      if (result.granted || result.status !== row.status) {
+        changed.add(row.tenant_id);
+        if (onChange) await onChange(row, result);
+      }
     } catch (err) {
       console.error(`[Billing] Could not reconcile subscription ${row.id}:`, err instanceof Error ? err.message : err);
       await db.prepare("UPDATE subscriptions SET updated_at = ? WHERE id = ?").bind(now, row.id).run();
