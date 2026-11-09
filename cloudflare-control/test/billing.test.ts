@@ -38,6 +38,12 @@ import {
   syncSubscription
 } from "../src/subscriptions";
 import type { Env, Tenant } from "../src/types";
+import { afterSubscriptionChange, sendPlanEndNotices } from "../src/billing_routes";
+import { LEGAL_DOCUMENTS, publishedAnnouncedVersions } from "../src/legal";
+import { announceLegalChanges, emailLegalNotice } from "../src/legal_notices";
+import { licenseDate } from "../src/license";
+import { localOutbox } from "../src/mail";
+import { notifyOwner } from "../src/notifications";
 
 const PEPPER = "p".repeat(40);
 const DAY = 86_400;
@@ -727,5 +733,227 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
     const docs = (await gstr1Csv(env, db, "2026-11", "docs")).trim().split("\r\n");
     assert.deepEqual(docs.slice(1), ["Invoices for outward supply,LK/26-27/000001,LK/26-27/000006,5,0"]);
     await assert.rejects(gstr1Csv(env, db, "2026-13x", "b2b"));
+  });
+});
+
+// ------------------------------------------------------- customer emails
+
+describe("What customers are told by email", () => {
+  let db: D1Database;
+  let tenant: Tenant;
+  let userId: string;
+  let rzp: FakeRazorpay;
+  let realFetch: typeof fetch;
+  const owner = "owner@harbour.example";
+  // ALLOW_LOCAL_DB keeps every message in the in-process outbox.
+  const env = {
+    ALLOW_LOCAL_DB: "1",
+    DEFAULT_DOMAIN: "labkiosk.org",
+    RAZORPAY_KEY_ID: "rzp_test_x",
+    RAZORPAY_KEY_SECRET: "secret",
+    SELLER_GSTIN: "27AAPFU0939F1ZV",
+    SELLER_STATE: "21"
+  } as Env;
+  const now = Math.floor(Date.now() / 1000);
+  const mailTo = (to: string, subject: RegExp) => localOutbox().filter((m) => m.to === to && subject.test(m.subject));
+
+  beforeEach(async () => {
+    db = createLocalD1Database();
+    await initSchema(db);
+    const user = await createUser(db, { email: owner, password: "OwnerPassword123!", name: "Owner" }, PEPPER);
+    userId = user.id;
+    tenant = await createTenant(db, { userId, name: "Harbour", subdomain: `harbour${Math.floor(Math.random() * 1e9)}`, status: "active" });
+    await updateTenant(db, tenant.id, { workstation_limit: 5 });
+    tenant = (await findTenantById(db, tenant.id))!;
+    rzp = new FakeRazorpay();
+    realFetch = globalThis.fetch;
+    globalThis.fetch = rzp.fetch as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  async function organization(email: string, name: string, createdAt: number): Promise<string> {
+    const u = await createUser(db, { email, password: "OwnerPassword123!", name }, PEPPER);
+    const t = await createTenant(db, { userId: u.id, name, subdomain: `${name.toLowerCase()}${Math.floor(Math.random() * 1e9)}`, status: "active" });
+    await db.prepare("UPDATE tenants SET created_at = ? WHERE id = ?").bind(createdAt, t.id).run();
+    return t.id;
+  }
+
+  test("A new version of any legal document reaches every customer once; a first version, and later customers, are not emailed", async () => {
+    await db.prepare("UPDATE tenants SET created_at = ? WHERE id = ?").bind(now - 100 * DAY, tenant.id).run();
+    const accepted = await organization("accepted@quay.example", "Quay", now - 100 * DAY);
+    const later = await organization("later@pier.example", "Pier", now + 10);
+    const versions = await publishedAnnouncedVersions(db, now);
+    assert.deepEqual(versions.map((d) => d.id).sort(), ["content", "privacy", "refunds", "terms"]);
+    // Earlier versions of the Privacy Policy and the Terms: the current ones are changes. The Content Policy and the
+    // Refund Policy have only ever had the one version, which changed nothing.
+    for (const id of ["privacy", "terms"]) {
+      await db.prepare("INSERT INTO legal_versions (document, version, published_at, notified_at) VALUES (?, '2000-01-01', ?, ?)").bind(id, now - 300 * DAY, now - 300 * DAY).run();
+    }
+    const terms = LEGAL_DOCUMENTS.find((d) => d.id === "terms")!;
+    await db
+      .prepare("INSERT INTO legal_acceptances (id, tenant_id, tenant_name, user_id, user_email, document, version, source, accepted_at) VALUES ('a1', ?, 'Quay', 'u', 'accepted@quay.example', 'terms', ?, 'console', ?)")
+      .bind(accepted, terms.version, now)
+      .run();
+    // Pier registered after the versions were published, accepting the Terms as it did.
+    await db
+      .prepare("INSERT INTO legal_acceptances (id, tenant_id, tenant_name, user_id, user_email, document, version, source, accepted_at) VALUES ('a2', ?, 'Pier', 'u', 'later@pier.example', 'terms', ?, 'registration', ?)")
+      .bind(later, terms.version, now + 10)
+      .run();
+
+    const first = await announceLegalChanges(env, db, "labkiosk.org", now + 60);
+    assert.deepEqual(first, { emailed: 3, failed: 0 }, "the Privacy Policy to both earlier customers, the Terms to the one that has not accepted them");
+    const privacy = mailTo(owner, /^Updated Lab Kiosk Privacy Policy$/);
+    assert.equal(privacy.length, 1);
+    assert.match(privacy[0].text, /https:\/\/labkiosk\.org\/privacy/);
+    assert.match(privacy[0].text, /Nothing is needed from you/);
+    assert.match(mailTo(owner, /^Updated Lab Kiosk Terms of Service$/)[0].text, /needs to accept it in your console/);
+    assert.equal(mailTo("accepted@quay.example", /Terms of Service/).length, 0, "an organization that accepted the version is not asked to");
+    assert.equal(mailTo("accepted@quay.example", /Privacy Policy/).length, 1);
+    assert.equal(mailTo("later@pier.example", /^Updated Lab Kiosk/).length, 0, "an organization registered later read it then");
+    assert.equal(localOutbox().filter((m) => /Content Policy|Refund/.test(m.subject)).length, 0, "a document's first version is no change");
+    const notified = (await db.prepare("SELECT COUNT(*) AS n FROM legal_versions WHERE notified_at IS NULL").first<{ n: number }>())!;
+    assert.equal(Number(notified.n), 0, "every version is done");
+    assert.deepEqual(await announceLegalChanges(env, db, "labkiosk.org", now + 3600), { emailed: 0, failed: 0 }, "nobody is emailed twice");
+
+    // A super admin can send it again.
+    const doc = (await publishedAnnouncedVersions(db, now)).find((d) => d.id === "privacy")!;
+    assert.deepEqual(await emailLegalNotice(env, db, doc, "labkiosk.org", now + 7200), { emailed: 2, failed: 0, remaining: 0 });
+    assert.equal(mailTo(owner, /^Updated Lab Kiosk Privacy Policy$/).length, 2);
+    // More organizations than one request emails: the first go now, the hourly run sends the rest, once each.
+    assert.deepEqual(await emailLegalNotice(env, db, doc, "labkiosk.org", now + 7300, 1), { emailed: 1, failed: 0, remaining: 1 });
+    assert.deepEqual(await announceLegalChanges(env, db, "labkiosk.org", now + 10_800), { emailed: 1, failed: 0 });
+    assert.deepEqual(await announceLegalChanges(env, db, "labkiosk.org", now + 14_400), { emailed: 0, failed: 0 });
+    assert.equal(mailTo("accepted@quay.example", /Privacy Policy/).length, 3);
+    // A first version a super admin chose to send is finished by the hourly run too, not dropped as "no change".
+    const content = (await publishedAnnouncedVersions(db, now)).find((d) => d.id === "content")!;
+    // Nobody has accepted it in this database, so it concerns all three organizations.
+    assert.equal((await emailLegalNotice(env, db, content, "labkiosk.org", now + 15_000, 1)).remaining, 2);
+    assert.equal((await announceLegalChanges(env, db, "labkiosk.org", now + 18_000)).emailed, 2);
+  });
+
+  test("The hourly run carries on where it stopped when there are more customers than one run emails", async () => {
+    await db.prepare("UPDATE tenants SET created_at = ? WHERE id = ?").bind(now - 100 * DAY, tenant.id).run();
+    for (let i = 0; i < 3; i++) await organization(`batch${i}@dock.example`, `Dock${i}`, now - 100 * DAY);
+    await publishedAnnouncedVersions(db, now);
+    await db.prepare("INSERT INTO legal_versions (document, version, published_at, notified_at) VALUES ('refunds', '2000-01-01', ?, ?)").bind(now - 300 * DAY, now - 300 * DAY).run();
+    assert.equal((await announceLegalChanges(env, db, "labkiosk.org", now + 60, 3)).emailed, 3);
+    const open = await db.prepare("SELECT notified_at FROM legal_versions WHERE document = 'refunds' AND version <> '2000-01-01'").first<{ notified_at: number | null }>();
+    assert.equal(open!.notified_at, null, "not done while someone is waiting");
+    assert.equal((await announceLegalChanges(env, db, "labkiosk.org", now + 3660, 3)).emailed, 1);
+    for (const to of [owner, "batch0@dock.example", "batch1@dock.example", "batch2@dock.example"]) {
+      assert.equal(mailTo(to, /^Updated Lab Kiosk Refund & Cancellation Policy$/).length, 1, to);
+    }
+    const sent = await db.prepare("SELECT COUNT(*) AS n FROM legal_notices WHERE document = 'refunds' AND outcome = 'sent'").first<{ n: number }>();
+    assert.equal(Number(sent!.n), 4, "each of the four once");
+  });
+
+  test("A plan change is confirmed by email once the payer authorises it, and only once", async () => {
+    const row = await startCheckout(env, db, { tenant, userId, quote: quoteTier({ tier: "starter", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18), now });
+    rzp.charge(row.razorpay_subscription_id!, now - 10 * DAY, 30 * DAY);
+    await syncSubscription(env, db, row, now);
+    const current = (await findSubscription(db, row.id))!;
+    // A decrease in period: nothing is charged now, the new plan starts when the paid month ends.
+    const next = quoteTier({ tier: "starter", period: "year", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18);
+    const change = planChange(current, next, now, 18);
+    assert.equal(change.upfront, null);
+    tenant = (await findTenantById(db, tenant.id))!;
+    const replacement = await startCheckout(env, db, { tenant, userId, quote: next, replaces: current, startsAt: change.startsAt, upfront: change.upfront, now });
+    rzp.subs.get(replacement.razorpay_subscription_id!)!.status = "authenticated";
+    const result = await syncSubscription(env, db, replacement, now);
+    assert.deepEqual([result.status, result.granted], ["authenticated", 0], "authorised, nothing charged yet: before this, nobody was told");
+    await afterSubscriptionChange(env, db, replacement, result.status, result.granted, now);
+    await afterSubscriptionChange(env, db, replacement, result.status, result.granted, now + 5);
+    const mails = mailTo(owner, /^Your Lab Kiosk plan change is confirmed$/);
+    assert.equal(mails.length, 1, "the webhook and the payer's return both seeing it send one email");
+    assert.match(mails[0].text, /Previous plan: Starter, monthly/);
+    assert.match(mails[0].text, /New plan: Starter, yearly/);
+    assert.match(mails[0].text, new RegExp(`New plan applies: ${licenseDate(change.startsAt!)}`));
+    assert.equal(mails[0].template?.name, "billing");
+    const note = await db.prepare("SELECT body FROM notifications WHERE tenant_id = ? AND title = 'Plan change confirmed'").bind(tenant.id).first<{ body: string }>();
+    assert.ok(note, "the console says so too");
+    assert.equal(mailTo(owner, /will not renew/).length, 0, "the replaced subscription is not reported as ended");
+  });
+
+  test("A first failed renewal, and a mandate cancelled at the bank, are emailed; a cancellation in the console is not reported twice", async () => {
+    const row = await startCheckout(env, db, { tenant, userId, quote: quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18), now });
+    rzp.charge(row.razorpay_subscription_id!, now - 10 * DAY, 30 * DAY);
+    await syncSubscription(env, db, row, now);
+    let before = (await findSubscription(db, row.id))!;
+    rzp.subs.get(row.razorpay_subscription_id!)!.status = "pending";
+    let result = await syncSubscription(env, db, before, now);
+    await afterSubscriptionChange(env, db, before, result.status, result.granted, now);
+    assert.equal(mailTo(owner, /^Your Lab Kiosk renewal payment failed$/).length, 1);
+
+    before = (await findSubscription(db, row.id))!;
+    rzp.subs.get(row.razorpay_subscription_id!)!.status = "cancelled";
+    result = await syncSubscription(env, db, before, now);
+    await afterSubscriptionChange(env, db, before, result.status, result.granted, now);
+    await afterSubscriptionChange(env, db, before, result.status, result.granted, now);
+    const ended = mailTo(owner, /^Your Lab Kiosk subscription will not renew$/);
+    assert.equal(ended.length, 1);
+    assert.match(ended[0].text, /cancelled at the bank or payment app/);
+    assert.match(ended[0].text, new RegExp(`Plan stays until: ${licenseDate(now + 20 * DAY)}`));
+
+    // Cancelled in the console: the console's own email is the only one.
+    await updateTenant(db, tenant.id, { license_plan: null, plan_tier: null, license_expires_at: null });
+    tenant = (await findTenantById(db, tenant.id))!;
+    const other = await startCheckout(env, db, { tenant, userId, quote: quoteTier({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18), now });
+    rzp.charge(other.razorpay_subscription_id!, now, 30 * DAY);
+    await syncSubscription(env, db, other, now);
+    tenant = (await findTenantById(db, tenant.id))!;
+    await cancelSubscription(env, db, { tenant, userId, reason: "", now });
+    before = (await findSubscription(db, other.id))!;
+    result = await syncSubscription(env, db, before, now);
+    await afterSubscriptionChange(env, db, before, result.status, result.granted, now);
+    assert.equal(mailTo(owner, /^Your Lab Kiosk subscription will not renew$/).length, 1, "still only the one from the bank");
+  });
+
+  test("A charge the hourly run finds is handled as a webhook would be", async () => {
+    const row = await startCheckout(env, db, { tenant, userId, quote: quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18), now });
+    rzp.charge(row.razorpay_subscription_id!, now, 30 * DAY);
+    await db.prepare("UPDATE subscriptions SET updated_at = ? WHERE id = ?").bind(now - DAY, row.id).run();
+    const seen: Array<[string, number]> = [];
+    await reconcileSubscriptions(env, db, now, async (before, result) => {
+      seen.push([before.id, result.granted]);
+    });
+    assert.deepEqual(seen, [[row.id, 1]]);
+  });
+
+  test("A trial a week from its end and a plan that ended with nothing to renew it are emailed, once each", async () => {
+    await updateTenant(db, tenant.id, { license_plan: "evaluation", license_expires_at: now + 3 * DAY });
+    assert.equal(await sendPlanEndNotices(env, db, now), 1);
+    assert.equal(await sendPlanEndNotices(env, db, now + 60), 0, "once per end date");
+    const ending = mailTo(owner, /^Your Lab Kiosk free trial ends on /);
+    assert.equal(ending.length, 1);
+    assert.match(ending[0].text, /Choose a plan under Plan & billing/);
+
+    await updateTenant(db, tenant.id, { license_plan: "subscriber", plan_tier: "standard", license_expires_at: now - 3600 });
+    assert.equal(await sendPlanEndNotices(env, db, now), 1);
+    assert.equal(await sendPlanEndNotices(env, db, now + 60), 0);
+    const ended = mailTo(owner, /^Your Lab Kiosk Standard subscription has ended$/);
+    assert.equal(ended.length, 1);
+    assert.match(ended[0].text, /on the Free plan now/);
+
+    // A subscription set to renew is not reported as ended while its charge is on the way.
+    await updateTenant(db, tenant.id, { license_expires_at: now - 1800 });
+    const row = await startCheckout(env, db, { tenant, userId, quote: quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18), now });
+    await db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").bind(row.id).run();
+    assert.equal(await sendPlanEndNotices(env, db, now), 0);
+  });
+});
+
+describe("Notices to one organization's owner", () => {
+  test("A suspended organization's owner is still emailed what the platform changed", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const env = { ALLOW_LOCAL_DB: "1", DEFAULT_DOMAIN: "labkiosk.org" } as Env;
+    const user = await createUser(db, { email: "owner@suspended.example", password: "OwnerPassword123!", name: "Owner" }, PEPPER);
+    const t = await createTenant(db, { userId: user.id, name: "Suspended", subdomain: `suspended${Math.floor(Math.random() * 1e9)}`, status: "active" });
+    await updateTenant(db, t.id, { status: "suspended" });
+    const outcome = await notifyOwner(env, db, { tenantId: t.id, kind: "account", title: "Custom domain disconnected", body: "Lab Kiosk has disconnected kiosk.example.", createdBy: null });
+    assert.equal(outcome.emailed, 1);
+    assert.ok(localOutbox().some((m) => m.to === "owner@suspended.example" && m.subject === "Lab Kiosk: Custom domain disconnected"));
   });
 });

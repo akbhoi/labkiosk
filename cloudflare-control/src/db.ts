@@ -319,11 +319,20 @@ CREATE TABLE IF NOT EXISTS link_blocklist (
 );
 
 CREATE TABLE IF NOT EXISTS legal_versions (
-  document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content')),
+  document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content', 'refunds')),
   version TEXT NOT NULL,
   published_at INTEGER NOT NULL,
   notified_at INTEGER,
   PRIMARY KEY (document, version)
+);
+
+CREATE TABLE IF NOT EXISTS legal_notices (
+  document TEXT NOT NULL,
+  version TEXT NOT NULL,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  sent_at INTEGER NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('sent', 'failed')),
+  PRIMARY KEY (document, version, tenant_id)
 );
 
 CREATE TABLE IF NOT EXISTS bug_reports (
@@ -1256,7 +1265,9 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT custom_domain FROM payments LIMIT 1",
   "SELECT custom_domain FROM proformas LIMIT 1",
   // 0063: Custom plan requests.
-  "SELECT id, tenant_id, requested_by, workstations, remote_seats, staff, period, notes, status, subtotal_paise, gst_paise, total_paise, payment_id, decided_by, decided_at, decision_note, created_at FROM custom_plan_requests LIMIT 1"
+  "SELECT id, tenant_id, requested_by, workstations, remote_seats, staff, period, notes, status, subtotal_paise, gst_paise, total_paise, payment_id, decided_by, decided_at, decision_note, created_at FROM custom_plan_requests LIMIT 1",
+  // 0065: legal notices to every customer.
+  "SELECT document, version, tenant_id, sent_at, outcome FROM legal_notices LIMIT 1"
 ];
 
 /**
