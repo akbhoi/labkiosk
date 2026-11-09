@@ -10,6 +10,7 @@
  *   POST /api/billing/checkout           the same: a Razorpay subscription to authorise
  *   POST /api/billing/cancel             {reason}: no further charge; the plan lasts to the end of the period
  *   POST /api/billing/resume             a new authorisation that starts when the paid period ends
+ *   POST /api/billing/discard            close a checkout that was opened and never authorised
  *   POST /api/billing/refresh            look at Razorpay now (the payer is back from authorising)
  *   POST /api/billing/details            {legalName, gstin, address, state}
  *   GET  /api/billing/invoices/:id       one invoice, as JSON
@@ -30,7 +31,7 @@
  */
 
 import { generateNonce } from "./auth";
-import { billingEnabled, RazorpayError, rupees } from "./billing";
+import { billingEnabled, RazorpayError, rupees, verifiedPhoneFor } from "./billing";
 import {
   createProforma,
   documentHeaders,
@@ -72,6 +73,7 @@ import {
   BillingRefusal,
   cancelSubscription,
   currentSubscription,
+  discardOpenCheckouts,
   findSubscription,
   isFinal,
   listSubscriptions,
@@ -448,10 +450,15 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
     const perms = await getTenantUserPermissions(db, tenant.id, userId);
     const canSeeStaff = isOwner || perms.includes("*") || perms.includes("staff");
     const seller = sellerFrom(env);
+    const payer = billingEnabled(env) ? await findUserById(db, userId) : null;
     return json(
       {
         enabled: billingEnabled(env),
         isOwner,
+        // What Razorpay's checkout opens with: the publishable key, and the payer's details to prefill.
+        checkout: payer
+          ? { key: env.RAZORPAY_KEY_ID, name: payer.name, email: payer.email, contact: await verifiedPhoneFor(db, tenant.id, payer.email) }
+          : null,
         customDomainConnected: Boolean(tenant.custom_domain),
         gstRegistered: Boolean(seller.gstin),
         plan: {
@@ -598,6 +605,21 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
     } catch (err) {
       return refusal(err, jsonHeaders);
     }
+  }
+
+  // A checkout opened but never authorised: close it, so nothing can be authorised on it later.
+  if (path === "/api/billing/discard" && method === "POST") {
+    if (!isOwner && !(await getTenantUserPermissions(db, tenant.id, userId)).includes("*")) {
+      return jsonError("Only the organization's owner or an organization admin can discard a payment", 403, jsonHeaders);
+    }
+    if (!billingEnabled(env)) return json({ status: "ok" }, jsonHeaders);
+    try {
+      await discardOpenCheckouts(env, db, tenant.id, now);
+    } catch (err) {
+      return refusal(err, jsonHeaders);
+    }
+    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "billing.discard_checkout", details: "open checkouts discarded" });
+    return json({ status: "ok" }, jsonHeaders);
   }
 
   if (path === "/api/billing/resume" && method === "POST") {

@@ -422,9 +422,19 @@ Invoices and proformas are computer generated and carry no signature. Super Admi
 exports each month's GSTR-1 as CSV for the GST portal's offline tool.
 
 Plans renew through Razorpay Subscriptions (the customer authorises a card or UPI mandate once);
-older customers and one-off payments go through Payment Links. The console never loads Razorpay's
-script. Each charge is granted and invoiced once, whichever of the webhook, the signed return to
+older customers and one-off payments go through Payment Links. Plan & billing opens Razorpay's
+Standard Checkout (`checkout.js`) in the page with the payer's name, email and, when the
+registration verified it, phone already filled in and locked; it is the only page whose
+Content-Security-Policy allows `checkout.razorpay.com` and `api.razorpay.com`, and only when the
+Razorpay keys are set. If the script cannot load, the page opens Razorpay's hosted link instead,
+which Razorpay does not prefill. Payment links carry the same verified phone. Each charge is granted and invoiced once, whichever of the webhook, the signed return to
 `/api/billing/return` or the hourly reconciliation sees it first.
+
+**Fewer steps for the payer.** Razorpay's Flash Checkout offers to save a card and sends a code
+to the payer's phone to sign in to saved cards. To turn it off, open Razorpay Dashboard →
+Account & Settings → **Checkout features** (Flash checkout). The bank's own OTP, or the UPI PIN
+when a card or UPI mandate is authorised, is required by RBI rules for recurring payments and
+cannot be skipped.
 
 A week before a plan that will not renew by itself ends, the hourly run emails a proforma invoice
 with a payment link and its QR code, and a reminder the day before. Paying it extends the plan and

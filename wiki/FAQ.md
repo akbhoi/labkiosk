@@ -10,6 +10,9 @@ Organization workstation fleets need locked-down workstations with operator over
 **Is it free?**
 Free and unrestricted for accredited public and private schools, colleges, universities, teachers, educational foundations, and personal non-commercial evaluation on up to 45 computers. Any deployment exceeding 45 computers is viewed as commercial scale and requires a commercial or subscriber license. Subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
 
+**How do we cancel a plan?**
+The organization's owner cancels a subscription under Plan & billing with **Cancel subscription**. Nothing more is charged, the plan stays until the end of the period already paid, and the organization then moves to Free; it can be resumed before then. A plan paid by payment link, a Custom plan, Education and the trial do not renew on their own, so there is nothing to cancel: they end on their date unless a renewal is paid. A payment opened on Razorpay but never authorised can be discarded from the notice at the top of Plan & billing.
+
 **How much does the infrastructure cost?**
 A Cloudflare Worker plus D1 is inexpensive at room scale, and the free tier covers evaluation comfortably. There is no per-seat cost, and no server to run on-site.
 

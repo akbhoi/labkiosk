@@ -1309,6 +1309,9 @@ function isPublicTenantRoute(path: string, method: string): boolean {
   return false;
 }
 
+/** Where Razorpay's Standard Checkout script and its frame come from. */
+const RAZORPAY_CHECKOUT_ORIGIN = "https://checkout.razorpay.com";
+
 /**
  * Headers every HTML response carries. The CSP allows scripts only when they
  * carry this response's nonce, so no template may use an inline event handler
@@ -1330,6 +1333,8 @@ function buildHtmlHeaders(
     revalidate?: boolean;
     /** The registration page texting a code through Firebase (src/phone_verify.ts): its SDK, reCAPTCHA and API. */
     firebase?: FirebaseConfig | null;
+    /** Plan & billing opening Razorpay's checkout in the page, prefilled (src/ui_admin_plan.ts). */
+    razorpay?: boolean;
   }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
@@ -1340,6 +1345,11 @@ function buildHtmlHeaders(
     scriptSources.push(`${FIREBASE_SDK_ORIGIN}/firebasejs/`, "https://www.google.com/recaptcha/", "https://www.gstatic.com/recaptcha/");
     frameSources.push("https://www.google.com/recaptcha/", "https://recaptcha.google.com/recaptcha/", `https://${options.firebase.authDomain}`);
     connectSources.push("https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com", "https://www.google.com/recaptcha/");
+  }
+  if (options.razorpay) {
+    scriptSources.push(RAZORPAY_CHECKOUT_ORIGIN);
+    frameSources.push("https://api.razorpay.com", RAZORPAY_CHECKOUT_ORIGIN);
+    connectSources.push("https://api.razorpay.com", "https://lumberjack.razorpay.com");
   }
   // Turnstile's widget script, and the frame it draws the check in (src/turnstile.ts).
   if (options.turnstile) scriptSources.push(TURNSTILE_ORIGIN);
@@ -1367,7 +1377,8 @@ function buildHtmlHeaders(
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": options.remoteViewer ? "SAMEORIGIN" : "DENY",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    // Razorpay's frame may offer the browser's own payment sheet (Google Pay and the like).
+    "Permissions-Policy": `camera=(), microphone=(), geolocation=(), payment=${options.razorpay ? '(self "https://api.razorpay.com")' : "()"}, usb=()`,
     "Cross-Origin-Opener-Policy": "same-origin",
     // A public page shown to a signed-out visitor may be kept for the back and
     // forward buttons, and is asked for again otherwise: its nonce is never reused
@@ -1837,6 +1848,7 @@ export default {
       analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
       turnstile: Boolean(turnstileSiteKey(env)),
       firebase: (isRegistrationPage(path, url) || path === "/verify-phone") && !firebaseConfigProblem(env) ? firebaseConfig(env) : null,
+      razorpay: path === "/admin/plan" && billingEnabled(env),
       revalidate: !session && isIndexable(request, url, env)
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);

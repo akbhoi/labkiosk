@@ -223,6 +223,7 @@ export async function createPaymentLink(
   const q = input.quote;
   const p = input.platform;
   const expiresAt = input.nowSeconds + (p ? p.hours : LINK_HOURS) * 3600;
+  const contact = await verifiedPhoneFor(db, input.tenantId, input.email);
   await db
     .prepare(
       `INSERT INTO payments (id, tenant_id, period, extra_workstations, subtotal_paise, gst_paise, total_paise, status, created_by, created_at,
@@ -264,7 +265,8 @@ export async function createPaymentLink(
         currency: PRICING.currency,
         reference_id: id,
         description,
-        customer: { name: input.name.slice(0, 100), email: input.email },
+        // Razorpay prefills its page with these, so the payer types nothing it already gave.
+        customer: { name: input.name.slice(0, 100), email: input.email, ...(contact ? { contact } : {}) },
         // The platform's links reach the customer by Lab Kiosk's own email, and Razorpay's unless
         // that email already carries the link (a proforma).
         notify: { sms: false, email: Boolean(p) && p?.razorpayEmail !== false },
@@ -293,6 +295,20 @@ export async function createPaymentLink(
   }
   await db.prepare("UPDATE payments SET link_id = ?, short_url = ? WHERE id = ?").bind(data.id, data.short_url, id).run();
   return (await findPayment(db, id))!;
+}
+
+/**
+ * The payer's phone, for Razorpay to prefill: the organization's contact
+ * phone, only when its registration proved it by a texted code and the payer
+ * is that contact. Null otherwise, and Razorpay asks for it.
+ */
+export async function verifiedPhoneFor(db: D1Database, tenantId: string, email: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT contact_phone FROM organization_profiles WHERE tenant_id = ? AND phone_verified_at IS NOT NULL AND lower(contact_email) = lower(?)")
+    .bind(tenantId, email)
+    .first<{ contact_phone: string | null }>();
+  const phone = row?.contact_phone ?? "";
+  return /^\+[1-9]\d{7,14}$/.test(phone) ? phone : null;
 }
 
 export async function findPayment(db: D1Database, id: string): Promise<Payment | null> {
