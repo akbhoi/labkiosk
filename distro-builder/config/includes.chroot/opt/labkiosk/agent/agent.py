@@ -272,7 +272,7 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 # telemetry channel.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
 
-AGENT_VERSION = "5.0.5"
+AGENT_VERSION = "5.0.6"
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
