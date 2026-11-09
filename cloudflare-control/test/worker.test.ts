@@ -11025,6 +11025,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/api/billing/preview?tenant=greenwood", { tier: "standard", period: "month" }],
       ["/api/billing/checkout?tenant=greenwood", { tier: "standard", period: "month" }],
       ["/api/billing/cancel?tenant=greenwood", {}],
+      ["/api/billing/discard?tenant=greenwood", {}],
       ["/api/billing/details?tenant=greenwood", { gstin: "" }],
       ["/api/super/billing", undefined],
       ["/api/super/billing/extend", { tenantId, days: 3 }]
@@ -11034,6 +11035,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     // Another organization's session cannot read or change greenwood's billing.
     assert.ok([403, 404].includes((await call("/api/billing?tenant=greenwood", { cookie: rivalSessionCookie })).status));
+    assert.ok([403, 404].includes((await call("/api/billing/discard?tenant=greenwood", { ...json({}), cookie: rivalSessionCookie })).status));
     assert.ok([403, 404].includes((await call("/api/billing/details?tenant=greenwood", { ...json({ legalName: "Rival" }), cookie: rivalSessionCookie })).status));
     // A cross-site request is refused.
     assert.equal((await call("/api/billing/details?tenant=greenwood", { ...json({ legalName: "X" }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status, 403);
