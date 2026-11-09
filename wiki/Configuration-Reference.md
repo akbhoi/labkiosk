@@ -110,7 +110,7 @@ Configured by an organization admin in the dashboard; stored on the `tenants` ro
 | Enrollment key | `enrollment_key` | **Empty by default** — generate one before enrolling anything |
 | Default lock message | `default_lock_message` | Used when a lock command carries no message |
 | Portal title / subtitle / description / footer | `portal_*` | User Portal copy |
-| Custom domain | `custom_domain` | Connected under Settings, no approval; unique across the platform |
+| Custom domain | `custom_domain` | Custom plan only; connected under Settings, no approval; unique across the platform |
 | Allowlist | `tenant_whitelist` rows | Unioned with every portal app's host |
 | Broadcast presets | `broadcast_presets` rows | One-click shortcuts |
 | Automatic bug reports | `bug_reports_enabled`, `bug_reports_terms_version`, `bug_reports_terms_accepted_at` | Off by default. Sent only while the accepted terms version is the current `BUG_REPORT_TERMS_VERSION` |

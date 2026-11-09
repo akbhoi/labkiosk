@@ -9,7 +9,7 @@
  */
 
 import { LabConfig, Tenant, HomepageBlock } from "./types";
-import { CATALOGUE, entitlement } from "./plans";
+import { allowsCustomDomain, CATALOGUE, entitlement } from "./plans";
 import { parseHomepageBlocks } from "./db";
 import { consoleSubdomain, nextAddressChangeAt, showsHomepage } from "./addresses";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
@@ -58,6 +58,7 @@ function renderSettingsPageHtml(
   const customDomain = tenant?.custom_domain || "";
   const customDomainStatus = tenant?.custom_domain_status || "none";
   const certificate = tenant?.custom_hostname_status || "pending";
+  const mayConnectDomain = tenant ? allowsCustomDomain(tenant) : false;
   const homeRoute = tenant?.home_route || "/home";
 
   return `
@@ -225,7 +226,12 @@ ${renderRemoteControlCard(tenant, tenantParam)}
                 </div>
                 <button type="button" class="btn btn-danger" id="btn-disconnect-custom">Disconnect Custom Domain</button>
               `
-                : `
+                : !mayConnectDomain
+                  ? `
+                <p class="form-hint">A custom domain comes with the Custom plan. Every other plan uses its console address, which you can change once a week.</p>
+                <a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}#custom-status">Ask for a Custom plan</a>
+              `
+                  : `
                 <form id="form-custom-domain">
                   <div class="form-group">
                     <label class="form-label" for="setting-custom-domain">Domain Name</label>

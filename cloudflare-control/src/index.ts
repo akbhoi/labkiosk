@@ -233,7 +233,7 @@ import { handleBillingRoutes, sendRenewalNotices } from "./billing_routes";
 import { claimRemoteSeat, staffCapRefusal } from "./limits";
 import { reconcileSubscriptions } from "./subscriptions";
 import { syncLicences } from "./plan_sync";
-import { entitlement, PRICING } from "./plans";
+import { allowsCustomDomain, entitlement, PRICING } from "./plans";
 import { purgeEducationApplications } from "./education";
 import {
   initSchema,
@@ -3635,6 +3635,9 @@ export default {
     if (path === "/api/settings/custom-domain" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
+      if (!allowsCustomDomain(currentTenant!)) {
+        return jsonError("A custom domain comes with the Custom plan. Ask for one under Plan & billing.", 403, jsonHeaders);
+      }
       try {
         const body = await request.json<{ domain: string }>();
         const domain = cleanCustomDomain(body.domain);

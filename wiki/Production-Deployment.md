@@ -227,7 +227,7 @@ In Cloudflare DNS:
 
 1. **Apex record** — `CNAME` or `A` for `labkiosk.yourdomain.com` pointing at the worker, **proxied** (orange cloud).
 2. **Wildcard record** — `CNAME` with name `*.labkiosk` targeting `labkiosk.yourdomain.com`, **proxied**.
-3. **Custom domains** — an organization connects its domain under Settings and creates a `CNAME` pointing at your apex; no approval is needed, and the worker recognises it from the `Host` header. A domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
+3. **Custom domains** — an organization on the Custom plan connects its domain under Settings and creates a `CNAME` pointing at your apex; no approval is needed, and the worker recognises it from the `Host` header. A domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
 
 The orange cloud is required. An unproxied record bypasses the worker entirely.
 
@@ -247,8 +247,8 @@ custom hostnames, then charges $0.10 a month for each one, up to 50,000; beyond 
 Enterprise ([plans](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/)).
 1,000 organizations on their own domain cost about $90 a month. Wildcard custom hostnames
 (`*.their-domain`) need Enterprise, so an organization gets one hostname. Super Admin → Tasks →
-Custom domains shows how many are in use and the monthly cost. Organizations connect their own
-on any plan, so watch that number: nothing stops the hundred-and-first. A custom domain under the
+Custom domains shows how many are in use and the monthly cost. Only organizations on the Custom
+plan can connect one, so the cost follows plans you priced. A custom domain under the
 platform domain is refused.
 
 ---

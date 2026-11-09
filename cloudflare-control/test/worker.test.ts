@@ -5154,6 +5154,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const gone of ["approve", "reject"]) {
       assert.equal((await call(`/api/super/tenants/custom-domain/${gone}`, { ...json({ subdomain: "greenwood" }), cookie: superSessionCookie })).status, 404, `nothing for the platform to ${gone}`);
     }
+    await onCustomPlan(false);
+    const onFree = await connect("kiosk.greenwood.example");
+    assert.equal(onFree.res.status, 403, "only the Custom plan connects a domain");
+    assert.match(onFree.data.error, /Custom plan/);
+    const page = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(page, /id="form-custom-domain"/, "no form to connect one");
+    assert.match(page, /Ask for a Custom plan/);
+    await onCustomPlan(true);
 
     const { res, data } = await connect("kiosk.greenwood.example");
     assert.equal(res.status, 200, JSON.stringify(data));
@@ -5229,6 +5237,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
+    await onCustomPlan(false);
   });
 
   test("Configures Direct Single-Site Lockdown mode with custom URL and auto-whitelisting", async () => {
@@ -5847,6 +5856,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     return portalContextFrom(req, new URL(req.url), mockEnv);
   };
   const greenwoodId = async () => (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant.id as string;
+  /** Greenwood on a Custom plan for a year, which a custom domain needs, or back on Free. */
+  const onCustomPlan = async (on: boolean) =>
+    updateTenant(getDatabase(mockEnv), await greenwoodId(), {
+      license_plan: on ? "commercial" : null,
+      license_expires_at: on ? Math.floor(Date.now() / 1000) + 365 * 86_400 : null
+    });
   const enrolAs = async (clientId: string) => {
     const { res, data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
     assert.equal(res.status, 200, `enrolling ${clientId}`);
@@ -6234,6 +6249,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Connecting a custom domain provisions it through Cloudflare for SaaS", async () => {
     const tenantId = await greenwoodId();
+    await onCustomPlan(true);
     const connect = await callJson("/api/settings/custom-domain?tenant=greenwood", {
       ...json({ domain: "kiosk.greenwood-test.example" }),
       cookie: orgSessionCookie
@@ -7361,7 +7377,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("The local demos have no custom domain", async () => {
     for (const slug of ["local-demo", "docker-demo"]) {
       const html = await (await call(`/admin/settings?tenant=${slug}&tab=domains`, { cookie: superSessionCookie })).text();
-      assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
+      assert.doesNotMatch(html, /id="btn-disconnect-custom"/, `${slug} has no custom domain`);
+      assert.match(html, /A custom domain comes with the Custom plan/, `${slug} is not on the Custom plan`);
       assert.doesNotMatch(html, /setting-tunnel-domain/, "Settings has no tunnel domain");
     }
   });

@@ -80,7 +80,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/settings/subdomain` | `POST` | Organization Admin (`settings`) | `{"subdomain"}`: change the console address at once, at most once every 7 days (`429` sooner, `409` when taken); earlier addresses keep working. Same as `/api/tenant/subdomain` |
 | `/api/settings/enrollment-key` | `GET` | Organization Admin | View current workstation enrollment key: 20 characters in four groups, the last being the Luhn (mod 30) check character of the rest. A key issued before the check character is replaced here |
 | `/api/settings/enrollment-key` | `POST` | Organization Admin | Regenerate/rotate workstation enrollment key |
-| `/api/settings/custom-domain` | `POST` | Organization Admin | `{"domain"}`: connect a custom domain (e.g. `kiosk.example.com`) at once and create its Cloudflare custom hostname; `409` when it is already connected or held by another organization |
+| `/api/settings/custom-domain` | `POST` | Organization Admin | `{"domain"}`: on the Custom plan only (`403` otherwise), connect a custom domain (e.g. `kiosk.example.com`) at once and create its Cloudflare custom hostname; `409` when it is already connected or held by another organization |
 | `/api/settings/custom-domain` | `DELETE` | Organization Admin | Disconnect custom domain binding |
 | `/api/whitelist` | `GET` | Organization Admin | List effective allowed domains for user workstations |
 | `/api/whitelist` | `POST` | Organization Admin | Add or remove a domain from the permanent allowlist |

@@ -137,6 +137,11 @@ function staffLimitFor(kind: PlanKind, tenant: EntitlementTenant): number {
   }
 }
 
+/** Only the Custom plan may connect a custom domain; every other plan has its console address. */
+export function allowsCustomDomain(tenant: EntitlementTenant, now = Math.floor(Date.now() / 1000)): boolean {
+  return entitlement(tenant, now).kind === "custom";
+}
+
 export function entitlement(tenant: EntitlementTenant, now = Math.floor(Date.now() / 1000)): Entitlement {
   const state = licenseState(tenant, now);
   const stored = Number(tenant.workstation_limit) || PRICING.freeWorkstations;

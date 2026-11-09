@@ -18,7 +18,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
 | Block domains on hosted pages; take an organization's homepage or a User Portal card down after a report | The platform hosts these pages under its own domain |
 | Classify releases; set each major release's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
-| See and remove custom domains | Organizations connect their own; the platform pays for the custom hostnames |
+| See and remove custom domains | Organizations on the Custom plan connect their own; the platform pays for the custom hostnames |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Every message sent to an address on the mail domain |
 | See anonymous platform usage and the hardware workstations run on (**System → Usage**, **System → Hardware**) | High-level auditing without opening any organization |
@@ -128,7 +128,7 @@ POST /api/super/tenants/reactivate
 
 ## Custom domains
 
-Organizations with their own domain can serve Lab Kiosk from `kiosk.acme.edu` rather than `acme.labkiosk.yourdomain.com`.
+Organizations on the Custom plan can serve Lab Kiosk from their own domain, `kiosk.acme.edu`, rather than `acme.labkiosk.yourdomain.com`. Every other plan uses its console address, which it can change once a week; connecting a domain on any other plan answers `403`.
 
 ```text
  organization connects       Cloudflare validates DNS      Cloudflare routes
@@ -138,7 +138,7 @@ Organizations with their own domain can serve Lab Kiosk from `kiosk.acme.edu` ra
 
 ### The steps
 
-1. **The organization connects it** under Settings → Custom Domain (`POST /api/settings/custom-domain`). No approval: `custom_domain` is set at once and a job creates the Cloudflare for SaaS custom hostname. Connecting another domain replaces the first, whose hostname is deleted.
+1. **The organization connects it** under Settings → Custom Domain (`POST /api/settings/custom-domain`), on the Custom plan. No approval beyond pricing the plan: `custom_domain` is set at once and a job creates the Cloudflare for SaaS custom hostname. Connecting another domain replaces the first, whose hostname is deleted.
 2. **The organization creates a `CNAME`** for that hostname pointing at your platform apex. Cloudflare validates it and issues the certificate; Settings shows the certificate as waiting for DNS, active or failed.
 3. Until the `CNAME` points at the platform, nothing reaches the worker for that host, so a domain claimed by someone who does not control it carries no traffic. `custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN; a real owner whose domain is held by another organization writes to support, and you remove it.
 

@@ -3028,7 +3028,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
         <div class="pricing-card pricing-card-row">
           <h2 class="pricing-tier">Custom</h2>
           <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
-          ${list(["Any number of workstations and sites", "Ask from Plan &amp; billing in your console; we email a payment link with the price", "Priority onboarding, and help with certified hardware"])}
+          ${list(["Any number of workstations and sites", "Your own domain, such as kiosk.your-school.edu", "Ask from Plan &amp; billing in your console; we email a payment link with the price", "Priority onboarding, and help with certified hardware"])}
           <a class="btn btn-ghost" href="/register">Register, then ask</a>
           <a class="btn btn-ghost" href="/contact?reason=sales">Contact sales</a>
         </div>

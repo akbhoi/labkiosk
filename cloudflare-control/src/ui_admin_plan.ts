@@ -204,6 +204,7 @@ function renderPlanPageHtml(contactHref: string): string {
         <div class="plan-price"><small>For large or multi-site deployments</small></div>
         <ul class="plan-list">
           <li>More than ${p.salesAbove} workstations, invoicing and purchase orders</li>
+          <li>Your own domain for the console and homepage</li>
           <li>Priced by Lab Kiosk and paid by a payment link we email you</li>
         </ul>
         <div class="plan-foot" id="custom-status"></div>
