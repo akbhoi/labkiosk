@@ -11337,7 +11337,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal(created[0].amount, 100000 * 100 + Math.round(100000 * 100 * gstPercentFor(env) / 100), "the price set, with GST");
       assert.equal(created[0].notify.email, false, "Lab Kiosk's own email carries the link");
       assert.match(created[0].description, /Custom plan/);
-      assert.ok(localOutbox().some((m) => m.subject === "Your Custom plan: payment link" && m.text.includes("https://rzp.io/i/custom")), "the owner is emailed the link");
+      assert.ok(localOutbox().some((m) => m.subject === "Your Custom plan: payment link" && /(^|\s)https:\/\/rzp\.io\/i\/custom(\s|$)/.test(m.text)), "the owner is emailed the link");
       assert.equal((await approve({ price: 1 })).res.status, 409, "decided once");
       const mine = await callJson("/api/plan/custom?tenant=greenwood", { cookie: orgSessionCookie });
       assert.equal(mine.data.request.status, "sent");
