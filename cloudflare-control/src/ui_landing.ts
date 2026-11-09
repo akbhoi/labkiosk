@@ -176,9 +176,7 @@ function renderPublicShell(
   const loginTurnstileSlot = data.loginTurnstile === false ? "" : turnstileSlot("login-turnstile");
   // Only the registration page texts a code, and only it is given Firebase's settings and their CSP.
   const firebase = meta.authPage === "register" && data.firebase ? data.firebase : null;
-  const phoneHint = firebase
-    ? "Without the country code or a leading 0. We text a code to this number to confirm it."
-    : "Without the country code or a leading 0. We call or message this number to confirm it before approval.";
+  const phoneHint = "Without the country code or a leading 0. We text a code to this number to confirm it.";
   const smsHtml = firebase
     ? `
               <div class="code-row" style="margin-top: 8px;">
@@ -357,6 +355,16 @@ ${FONT_LINKS}
         </form>
         <div class="modal-switch">
           New organization? <a href="/register">Register your organization</a>
+        </div>
+      </div>
+    </section>`
+        : meta.authPage === "register" && !firebase
+          ? `<section class="auth-page">
+      <div class="modal-box">
+        <h1 class="modal-title">Registration Is Closed for Now</h1>
+        <p class="modal-sub">New accounts need a phone number confirmed by a texted code, and that is not available at the moment. Please try again later or <a href="/contact">write to us</a>.</p>
+        <div class="modal-switch">
+          Already registered? <a href="/login">Sign in</a>
         </div>
       </div>
     </section>`
@@ -1427,7 +1435,7 @@ ${FONT_LINKS}
       dialButton.classList.remove('is-invalid');
       document.getElementById('reg-phone-hint').textContent =
         (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
-        (FIREBASE ? 'We text a code to this number to confirm it.' : 'We call or message this number to confirm it before approval.');
+        'We text a code to this number to confirm it.';
       checkPhone(true);
       if (regCountry && !regCountry.value) {
         regCountry.value = row[0];
@@ -1735,16 +1743,11 @@ ${FONT_LINKS}
           registerForm.style.display = 'none';
           const done = document.getElementById('register-done');
           done.replaceChildren();
-          if (data.active) {
-            done.append('Your account is ready. Sign in with ' + payload.email + ' and your password to enter the organization details. ');
-            const link = document.createElement('a');
-            link.href = '/login';
-            link.textContent = 'Sign in';
-            done.append(link);
-          } else {
-            done.textContent = 'Thank you. Your registration (reference ' + data.reference + ') is waiting for review. ' +
-              'We have emailed ' + payload.email + ' and will write again as soon as your account is active.';
-          }
+          done.append('Your account is ready. Sign in with ' + payload.email + ' and your password to enter the organization details. ');
+          const link = document.createElement('a');
+          link.href = '/login';
+          link.textContent = 'Sign in';
+          done.append(link);
           done.style.display = 'block';
           return;
         }
@@ -3009,7 +3012,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
           <a class="btn btn-ghost btn-block" href="/register">Get started</a>
         </div>
       </div>
-      <p class="pricing-footnote">${gstLine} A yearly plan costs ten months. Online plans go up to ${p.salesAbove} workstations; for more, <a href="/contact?reason=sales">talk to sales</a>.</p>
+      <p class="pricing-footnote">${gstLine} A yearly plan costs ten months. Online plans go up to ${p.salesAbove} workstations; for more, ask for a Custom plan from Plan &amp; billing in your console, or <a href="/contact?reason=sales">talk to sales</a>.</p>
 
       <div class="pricing-grid pricing-grid-2">
         <div class="pricing-card pricing-card-row">
@@ -3025,7 +3028,8 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
         <div class="pricing-card pricing-card-row">
           <h2 class="pricing-tier">Custom</h2>
           <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
-          ${list(["Any number of workstations and sites", "Volume pricing, purchase orders and annual invoicing", "Priority onboarding, and help with certified hardware"])}
+          ${list(["Any number of workstations and sites", "Ask from Plan &amp; billing in your console; we email a payment link with the price", "Priority onboarding, and help with certified hardware"])}
+          <a class="btn btn-ghost" href="/register">Register, then ask</a>
           <a class="btn btn-ghost" href="/contact?reason=sales">Contact sales</a>
         </div>
       </div>
@@ -3130,7 +3134,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
             tier.label + " covers " + tier.included + " workstations" + (tier.seatsIncluded ? " and " + tier.seatsIncluded + " Remote Control seats" : "") + "; " +
             (extra ? extra + " more workstation" + (extra === 1 ? "" : "s") + " added. " : "nothing extra. ") +
             (GST ? "Includes " + GST + "% GST. " : "No GST is charged at present. ") +
-            (ws >= SALES_ABOVE ? "For more workstations, talk to sales." : "The total at checkout is worked out the same way.");
+            (ws >= SALES_ABOVE ? "For more workstations, ask for a Custom plan from Plan & billing." : "The total at checkout is worked out the same way.");
         }
         ["calc-tier", "calc-ws", "calc-seats"].forEach(function (id) { document.getElementById(id).addEventListener("input", calc); });
         calc();

@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   billing_gstin TEXT,
   billing_address TEXT,
   billing_state TEXT,
-  profile_completed_at INTEGER
+  profile_completed_at INTEGER,
+  address_changed_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -427,6 +428,40 @@ CREATE TABLE IF NOT EXISTS organization_profiles (
 
 CREATE INDEX IF NOT EXISTS idx_organization_profiles_email ON organization_profiles(contact_email);
 CREATE INDEX IF NOT EXISTS idx_organization_profiles_phone ON organization_profiles(contact_phone);
+
+-- An address an organization gave up keeps reaching it (0062).
+CREATE TABLE IF NOT EXISTS retired_addresses (
+  subdomain TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  retired_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_retired_addresses_tenant ON retired_addresses(tenant_id);
+
+-- A Custom plan asked for, priced by the platform, and paid by link (0063).
+CREATE TABLE IF NOT EXISTS custom_plan_requests (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  requested_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  workstations INTEGER NOT NULL CHECK (workstations > 0),
+  remote_seats INTEGER NOT NULL DEFAULT 0 CHECK (remote_seats >= 0),
+  staff INTEGER CHECK (staff IS NULL OR staff > 0),
+  period TEXT NOT NULL CHECK (period IN ('month', 'year')),
+  notes TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'sent', 'paid', 'declined')),
+  subtotal_paise INTEGER,
+  gst_paise INTEGER,
+  total_paise INTEGER,
+  payment_id TEXT,
+  decided_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  decided_at INTEGER,
+  decision_note TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_plan_requests_tenant ON custom_plan_requests(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_custom_plan_requests_status ON custom_plan_requests(status);
+CREATE INDEX IF NOT EXISTS idx_custom_plan_requests_payment ON custom_plan_requests(payment_id);
 
 CREATE TABLE IF NOT EXISTS email_codes (
   id TEXT PRIMARY KEY,
@@ -1207,7 +1242,12 @@ const SCHEMA_PROBES: readonly string[] = [
   "SELECT id, number, reason, valid_until, payment_id, status FROM proformas LIMIT 1",
   "SELECT token_hash, kind, document_id, expires_at FROM document_links LIMIT 1",
   // 0061: two-step signup.
-  "SELECT profile_completed_at FROM tenants LIMIT 1"
+  "SELECT profile_completed_at FROM tenants LIMIT 1",
+  // 0062: self-serve console addresses.
+  "SELECT address_changed_at FROM tenants LIMIT 1",
+  "SELECT subdomain, tenant_id, retired_at FROM retired_addresses LIMIT 1",
+  // 0063: Custom plan requests.
+  "SELECT id, tenant_id, requested_by, workstations, remote_seats, staff, period, notes, status, subtotal_paise, gst_paise, total_paise, payment_id, decided_by, decided_at, decision_note, created_at FROM custom_plan_requests LIMIT 1"
 ];
 
 /**
@@ -1355,8 +1395,11 @@ export async function findTenantBySubdomain(
   subdomain: string
 ): Promise<Tenant | null> {
   return await db
-    // A chosen address is served beside the one the organization enrolled with (0053).
-    .prepare("SELECT * FROM tenants WHERE subdomain = ?1 OR chosen_subdomain = ?1")
+    // A chosen address is served beside the one the organization enrolled with (0053),
+    // and every address it gave up keeps reaching it (0062).
+    .prepare(
+      "SELECT * FROM tenants WHERE subdomain = ?1 OR chosen_subdomain = ?1 OR id = (SELECT tenant_id FROM retired_addresses WHERE subdomain = ?1)"
+    )
     .bind(subdomain.toLowerCase())
     .first<Tenant>();
 }
@@ -1602,6 +1645,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "remote_control_revoked_at",
   "trial_started_at",
   "profile_completed_at",
+  "address_changed_at",
   "plan_tier",
   "staff_limit",
   "remote_seats_paid",
@@ -1730,18 +1774,6 @@ export async function findTenantByEnrollmentKey(db: D1Database, key: string): Pr
   return row || null;
 }
 
-/** Submit a custom domain request for superadmin review. */
-export async function requestCustomDomain(
-  db: D1Database,
-  tenantId: string,
-  domain: string
-): Promise<void> {
-  await updateTenant(db, tenantId, {
-    requested_custom_domain: domain.toLowerCase().trim(),
-    custom_domain_status: "pending"
-  });
-}
-
 /** Approve and assign a custom domain to an organization. */
 export async function approveCustomDomain(
   db: D1Database,
@@ -1759,14 +1791,6 @@ export async function approveCustomDomain(
     // Cloudflare for SaaS provisioning starts now (custom_hostnames.ts).
     custom_hostname_id: null,
     custom_hostname_status: "pending"
-  });
-}
-
-/** Reject a pending custom domain request. */
-export async function rejectCustomDomain(db: D1Database, tenantId: string): Promise<void> {
-  await updateTenant(db, tenantId, {
-    requested_custom_domain: null,
-    custom_domain_status: "rejected"
   });
 }
 

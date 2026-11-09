@@ -1,13 +1,8 @@
 /**
- * Organization signup, the public contact form, and an organization's request
- * for Remote Control -- everything a customer asks the platform for.
+ * Organization signup and the public contact form.
  *
- * A signup with a texted phone code is active at once on the Free plan; without
- * one it waits as `pending`. A Remote Control request sets
- * `remote_control_status` to `pending`. A pending signup and a request each open
- * a conversation in the Super Admin console's Tasks, where the platform owner
- * approves, rejects, or writes back, all by email sent from the console
- * (src/inbox.ts).
+ * A signup proves its email and its phone (a texted code) and is active at
+ * once on the Free plan: nobody approves it.
  */
 
 import { ResellerApplication, createReseller, openResellerFor, parseResellerApplication } from "./partners";
@@ -278,17 +273,16 @@ export async function handleSignupEmailCode(ctx: RouteContext): Promise<Response
 // address and tax ID. The console, enrolment and billing stay closed until the
 // second step is done (tenants.profile_completed_at).
 //
-// With phone verification on (Firebase), the account is active at once on the
-// Free plan: nobody approves it. Without it, nothing has proved the phone, so
-// the account waits for the platform owner to confirm the number and approve it
-// under Tasks, as every registration used to.
+// Both the email and the phone are proved before anything is created, so the
+// account is active at once on the Free plan: nobody approves it. Registration
+// is closed while phone verification (Firebase) is not set up.
 
 interface AccountBody {
   contactName?: unknown;
   email?: unknown;
   emailCode?: unknown;
   phone?: unknown;
-  /** The Firebase ID token from the texted code, when phone verification is on (src/phone_verify.ts). */
+  /** The Firebase ID token from the texted code (src/phone_verify.ts). */
   phoneToken?: unknown;
   password?: unknown;
   subdomain?: unknown;
@@ -438,16 +432,17 @@ function signInUrlFor(ctx: Pick<RouteContext, "url" | "baseDomain" | "isDev">): 
 /**
  * POST /api/auth/register: step 1, the account.
  *
- * The email is proven by the code and, with Firebase configured, the phone by
- * a texted code; one organization per email address and per phone number. No
+ * The email is proven by the emailed code and the phone by the texted one; one
+ * organization per email address and per phone number. No
  * session is issued here: the customer signs in with the password just chosen,
  * which runs the same checks (two-factor, handoff to the console's host) as
  * every sign-in, and the console asks for the organization's details first.
  */
 export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const { db, env, jsonHeaders, clientIp } = ctx;
-  const problem = mailConfigProblem(env) || firebaseConfigProblem(env);
-  if (problem) {
+  const firebase = firebaseConfig(env);
+  const problem = mailConfigProblem(env) || firebaseConfigProblem(env) || (firebase ? null : "Phone verification is not set up: registration needs FIREBASE_PROJECT_ID, FIREBASE_API_KEY and FIREBASE_AUTH_DOMAIN (docs/DEPLOYMENT.md).");
+  if (problem || !firebase) {
     console.error("[Signup]", problem);
     return jsonError("Registration is temporarily unavailable. Please write to us instead.", 503, jsonHeaders);
   }
@@ -471,18 +466,14 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const breached = await breachedPasswordProblem(account.password, ctx.env);
   if (breached) return jsonError(breached, 400, jsonHeaders);
 
-  // With phone verification on, the number must come with Firebase's proof of the texted code.
-  const firebase = firebaseConfig(env);
-  let phoneVerifiedAt: number | null = null;
-  if (firebase) {
-    const checked = await verifyPhoneToken(firebase, body.phoneToken, account.phone);
-    if (!checked.ok) {
-      if (checked.reason === "unavailable") console.error("[Signup] Phone token not checked:", checked.detail);
-      const refusal = phoneTokenMessage(checked);
-      return jsonError(refusal.message, refusal.status, jsonHeaders);
-    }
-    phoneVerifiedAt = Math.floor(Date.now() / 1000);
+  // The number must come with Firebase's proof of the texted code.
+  const checked = await verifyPhoneToken(firebase, body.phoneToken, account.phone);
+  if (!checked.ok) {
+    if (checked.reason === "unavailable") console.error("[Signup] Phone token not checked:", checked.detail);
+    const refusal = phoneTokenMessage(checked);
+    return jsonError(refusal.message, refusal.status, jsonHeaders);
   }
+  const verifiedAt = Math.floor(Date.now() / 1000);
 
   const verdict = await checkEmailCode(db, passwordPepper(env), "signup", account.email, account.emailCode);
   if (verdict === "expired") return jsonError("That code has expired. Ask for a new one.", 400, jsonHeaders);
@@ -508,24 +499,23 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
     name: account.contactName,
     role: "org_admin"
   }, passwordPepper(ctx.env));
-  const active = phoneVerifiedAt !== null;
   // The organization is named after its address until step 2 gives it a name.
   const tenant = await createTenant(db, {
     userId: user.id,
     name: account.subdomain,
     subdomain: account.subdomain,
-    status: active ? "active" : "pending",
+    status: "active",
     profileCompleted: false,
-    workstationLimit: active ? PRICING.freeWorkstations : undefined
+    workstationLimit: PRICING.freeWorkstations
   });
   const profile: ProfileInput = {
     ...EMPTY_ORGANIZATION_DETAILS,
     contact_name: account.contactName,
     contact_email: account.email,
     contact_phone: account.phone,
-    email_verified_at: Math.floor(Date.now() / 1000)
+    email_verified_at: verifiedAt
   };
-  await createOrganizationProfile(db, tenant.id, profile, phoneVerifiedAt);
+  await createOrganizationProfile(db, tenant.id, profile, verifiedAt);
   await discardEmailCode(db, "signup", account.email);
   // The record of what the registrant agreed to: every document in force, at its current version.
   await recordLegalAcceptances(db, {
@@ -541,73 +531,29 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const host = `${account.subdomain}.${ctx.baseDomain}`;
   const signIn = signInUrlFor(ctx);
 
-  if (active) {
-    await writeAuditLog(db, { tenantId: tenant.id, userId: user.id, action: "tenant.register", details: `subdomain=${tenant.subdomain} active=1` });
-    try {
-      await sendMail(env, {
-        to: account.email,
-        subject: "Your Lab Kiosk account is ready",
-        text:
-          `Hello ${account.contactName},\n\n` +
-          `Your Lab Kiosk account is ready, with the console address ${host}.\n\n` +
-          `Sign in with your email address and the password you chose to finish setting up: ` +
-          `your organization's name and address come next, then you can enrol up to ${PRICING.freeWorkstations} workstations on the Free plan or choose another plan.\n\n` +
-          `${signIn}\n\nLab Kiosk`,
-        template: { name: "notice", title: "Your account is ready" }
-      });
-    } catch (err) {
-      // The account exists and works; the welcome is a courtesy.
-      console.error("[Signup] The welcome email was not sent:", err);
-    }
-    await notifyPlatformOwner(
-      env,
-      `New account: ${host}`,
-      `${signupSummary(profile, null, host, true)}\n\nThe account is active on the Free plan. Nothing needs approving.`
-    );
-    return json({ status: "ok", active: true, signIn }, jsonHeaders);
+  await writeAuditLog(db, { tenantId: tenant.id, userId: user.id, action: "tenant.register", details: `subdomain=${tenant.subdomain} active=1` });
+  try {
+    await sendMail(env, {
+      to: account.email,
+      subject: "Your Lab Kiosk account is ready",
+      text:
+        `Hello ${account.contactName},\n\n` +
+        `Your Lab Kiosk account is ready, with the console address ${host}.\n\n` +
+        `Sign in with your email address and the password you chose to finish setting up: ` +
+        `your organization's name and address come next, then you can enrol up to ${PRICING.freeWorkstations} workstations on the Free plan or choose another plan.\n\n` +
+        `${signIn}\n\nLab Kiosk`,
+      template: { name: "notice", title: "Your account is ready" }
+    });
+  } catch (err) {
+    // The account exists and works; the welcome is a courtesy.
+    console.error("[Signup] The welcome email was not sent:", err);
   }
-
-  const conversation = await createConversation(db, {
-    kind: "signup",
-    tenantId: tenant.id,
-    subject: `Registration of ${host}`,
-    contactEmail: account.email,
-    contactName: account.contactName
-  });
-  const summary = signupSummary(profile, null, host, false);
-  await addConversationMessage(db, {
-    conversationId: conversation.id,
-    direction: "event",
-    body: `New registration.\n\n${summary}`,
-    fromAddress: account.email
-  });
-  await writeAuditLog(db, {
-    tenantId: tenant.id,
-    userId: user.id,
-    action: "tenant.register",
-    details: `subdomain=${tenant.subdomain} reference=${conversation.reference}`
-  });
-  await sendOnConversation(
-    env,
-    db,
-    conversation,
-    `Hello ${account.contactName},\n\n` +
-      `Thank you for registering with Lab Kiosk. Your request reference is ${conversation.reference}.\n\n` +
-      `Your account will be activated once our team has reviewed it. We will confirm your phone number (${account.phone}) first. ` +
-      `You will receive an email as soon as the account is active; then sign in at ${signIn} to enter your organization's details. ` +
-      `Your console address is ${host}.\n\n` +
-      `Reply to this email if you have any questions.\n\nLab Kiosk`,
-    {
-      subject: "We received your registration",
-      template: { name: "receipt", reference: conversation.reference, category: "Registration", title: "We received your registration" }
-    }
-  );
   await notifyPlatformOwner(
     env,
-    subjectWithReference(conversation.reference, `New registration: ${host}`),
-    `${summary}\n\nReview it under Tasks in the Super Admin console.`
+    `New account: ${host}`,
+    `${signupSummary(profile, null, host, true)}\n\nThe account is active on the Free plan. Nothing needs approving.`
   );
-  return json({ status: "ok", pending: true, reference: conversation.reference }, jsonHeaders);
+  return json({ status: "ok", active: true, signIn }, jsonHeaders);
 }
 
 /** Whether a console address is in use, as an organization's address or one it asked for. */
@@ -822,77 +768,4 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
     `From: ${name} <${email}> (address verified)\nOrganization: ${organization || "-"}\nAbout: ${reason.label}\n\n${message}${listing}\n\nReply from Mail in the Super Admin console.`
   );
   return json({ status: "ok", reference: conversation.reference }, jsonHeaders);
-}
-
-// ------------------------------------------------------- Remote Control request
-
-/**
- * POST /api/tenant/remote-control/request { reason }: an organization asks the
- * platform to turn Remote Control on. Guarded by the router (`settings`).
- */
-export async function handleRemoteControlRequest(ctx: RouteContext, tenant: Tenant): Promise<Response> {
-  const { db, env, jsonHeaders } = ctx;
-  const status = tenant.remote_control_status || "none";
-  if (status === "approved") return jsonError("Remote Control is already available to this organization", 409, jsonHeaders);
-  if (status === "pending") return jsonError("Remote Control has already been requested and is waiting for review", 409, jsonHeaders);
-  const problem = mailConfigProblem(env);
-  if (problem) {
-    console.error("[Signup]", problem);
-    return jsonError("Requests are temporarily unavailable. Please write to support instead.", 503, jsonHeaders);
-  }
-  let body: { reason?: unknown } = {};
-  try {
-    body = await ctx.request.json<typeof body>();
-  } catch {
-    return jsonError("The request body must be JSON", 400, jsonHeaders);
-  }
-  const reason = multiline(body?.reason, 2000);
-  const requester = await findUserById(db, ctx.session!.user_id);
-  if (!requester) return jsonError("Authentication required", 401, jsonHeaders);
-
-  await updateTenant(db, tenant.id, { remote_control_status: "pending" });
-  const existing = await findOpenConversationForTenant(db, tenant.id, "remote_control");
-  const conversation =
-    existing ||
-    (await createConversation(db, {
-      kind: "remote_control",
-      tenantId: tenant.id,
-      subject: `Remote Control for ${tenant.name}`,
-      contactEmail: requester.email,
-      contactName: requester.name
-    }));
-  await addConversationMessage(db, {
-    conversationId: conversation.id,
-    direction: "event",
-    body:
-      `${requester.name} <${requester.email}> asked for Remote Control for ${tenant.name} (${tenant.subdomain}).` +
-      (reason ? `\n\nReason given:\n${reason}` : ""),
-    fromAddress: requester.email
-  });
-  await writeAuditLog(db, {
-    tenantId: tenant.id,
-    userId: requester.id,
-    action: "remote_control.request",
-    details: `reference=${conversation.reference}`
-  });
-  await sendOnConversation(
-    env,
-    db,
-    conversation,
-    `Hello ${requester.name},\n\n` +
-      `We received your request to turn on Remote Control for ${tenant.name} (reference ${conversation.reference}). ` +
-      `We will email you when it has been reviewed; licensing may need to be arranged first.\n\nLab Kiosk`,
-    {
-      subject: "Remote Control request received",
-      template: { name: "receipt", reference: conversation.reference, category: "Remote Control", title: "We received your request" }
-    }
-  );
-  await notifyPlatformOwner(
-    env,
-    subjectWithReference(conversation.reference, `Remote Control requested: ${tenant.name}`),
-    `${requester.name} <${requester.email}> asked for Remote Control for ${tenant.name} (${tenant.subdomain}).` +
-      (reason ? `\n\n${reason}` : "") +
-      "\n\nReview it under Tasks in the Super Admin console."
-  );
-  return json({ status: "ok", remoteControlStatus: "pending", reference: conversation.reference }, jsonHeaders);
 }

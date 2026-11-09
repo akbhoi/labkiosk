@@ -12,7 +12,7 @@ import { escapeAttr, escapeHtml, escapeJson } from "./escape";
 export interface SuperOverviewData {
   organizations: { active: number; pending: number; suspended: number };
   workstations: { online: number; total: number };
-  tasks: { requests: number; subdomains: number; customDomains: number; education: number };
+  tasks: { requests: number; education: number; customPlans: number };
   unreadMail: number;
   plansEndingSoon: number;
   plansLapsed: number;
@@ -30,15 +30,14 @@ export function renderSuperOverviewPaneHtml(d: SuperOverviewData): string {
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   if (d.organizations.pending) items.push({ tone: "warning", text: `${plural(d.organizations.pending, "registration waits", "registrations wait")} for approval.`, label: "Review", href: "/super/tasks?tab=requests" });
   if (d.tasks.requests > d.organizations.pending) items.push({ tone: "warning", text: `${plural(d.tasks.requests, "open request", "open requests")} under Tasks.`, label: "Open Tasks", href: "/super/tasks?tab=requests" });
+  if (d.tasks.customPlans) items.push({ tone: "warning", text: `${plural(d.tasks.customPlans, "Custom plan request waits", "Custom plan requests wait")} for a price.`, label: "Review", href: "/super/tasks?tab=custom-plans" });
   if (d.tasks.education) items.push({ tone: "warning", text: `${plural(d.tasks.education, "Education application waits", "Education applications wait")} for review.`, label: "Review", href: "/super/tasks?tab=education" });
-  if (d.tasks.subdomains) items.push({ tone: "info", text: `${plural(d.tasks.subdomains, "organization asks", "organizations ask")} for a chosen address.`, label: "Review", href: "/super/tasks?tab=subdomains" });
-  if (d.tasks.customDomains) items.push({ tone: "info", text: `${plural(d.tasks.customDomains, "custom domain waits", "custom domains wait")} for approval.`, label: "Review", href: "/super/tasks?tab=custom-domains" });
   if (d.unreadMail) items.push({ tone: "info", text: `${plural(d.unreadMail, "unread message", "unread messages")} in Mail.`, label: "Open Mail", href: "/super/mail?view=unread" });
   if (d.plansEndingSoon) items.push({ tone: "info", text: `${plural(d.plansEndingSoon, "organization's plan ends", "organizations' plans end")} soon.`, label: "Organizations", href: "/super/organizations" });
   if (d.organizations.suspended) items.push({ tone: "info", text: `${plural(d.organizations.suspended, "organization is", "organizations are")} suspended.`, label: "Organizations", href: "/super/organizations" });
   const dot = (tone: string) => `<span class="ov-dot is-${tone}"></span>`;
   const shortcuts = [
-    ["/super/tasks", "Tasks", "Registrations, addresses, Education"],
+    ["/super/tasks", "Tasks", "Custom plan requests, Education"],
     ["/super/mail", "Mail", "Support, sales and billing mail"],
     ["/super/billing", "Billing", "Subscriptions and payment links"],
     ["/super/releases", "Releases", "Classify and withdraw system images"],

@@ -19,6 +19,7 @@
 import { timingSafeEqual } from "./auth";
 import { findTenantById, updateTenant } from "./db";
 import { invoiceStatements } from "./invoices";
+import { applyCustomPlan, customPlanForPayment, describeCustomPlan } from "./custom_plans";
 import { CATALOGUE, entitlement, PRICING, quoteTier, type BillingPeriod, type Quote, type SoldTier } from "./plans";
 import { invoiceLines } from "./subscriptions";
 import type { Env } from "./types";
@@ -206,8 +207,11 @@ export async function createPaymentLink(
     quote: Pick<Quote, "period" | "extraWorkstations" | "workstations" | "subtotal" | "gst" | "total">;
     callbackUrl: string;
     nowSeconds: number;
-    /** A link the platform sends: its tier, seats, note, and how long it stays open. */
-    platform?: { tier: SoldTier; remoteSeats: number; note: string; hours: number; razorpayEmail?: boolean };
+    /**
+     * A link the platform sends: its tier (null for a Custom plan, named by
+     * label), seats, note, and how long it stays open.
+     */
+    platform?: { tier: SoldTier | null; label?: string; remoteSeats: number; note: string; hours: number; razorpayEmail?: boolean };
   }
 ): Promise<Payment> {
   if (!billingEnabled(env)) throw new Error("Online payment is not set up");
@@ -241,7 +245,7 @@ export async function createPaymentLink(
       expiresAt
     )
     .run();
-  const label = p ? CATALOGUE[p.tier].label : "subscription";
+  const label = p ? (p.tier ? CATALOGUE[p.tier].label : (p.label ?? "Custom plan")) : "subscription";
   const description =
     `Lab Kiosk ${label}, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations${p && p.remoteSeats ? `, ${p.remoteSeats} Remote Control seats` : ""}, for ${input.organization}`.slice(0, 2048);
   let res: Response;
@@ -322,6 +326,29 @@ export async function recordPayment(
   if (!claimed.meta.changes) return null;
   const tenant = await findTenantById(db, payment.tenant_id);
   if (!tenant) return null;
+  const custom = await customPlanForPayment(db, payment.id);
+  if (custom) {
+    const ends = await applyCustomPlan(db, tenant, custom, nowSeconds);
+    await db.prepare("UPDATE payments SET period_ends_at = ? WHERE id = ?").bind(ends, payment.id).run();
+    if (env && ref.paymentId) {
+      const fresh = (await findTenantById(db, tenant.id)) ?? tenant;
+      await db.batch(
+        invoiceStatements(db, env, {
+          id: `in${crypto.randomUUID().replace(/-/g, "")}`,
+          tenant: fresh,
+          source: "payment",
+          sourceId: payment.id,
+          razorpayPaymentId: ref.paymentId.slice(0, 64),
+          subtotal: Number(payment.subtotal_paise),
+          gst: Number(payment.gst_paise),
+          total: Number(payment.total_paise),
+          lines: [{ description: `Lab Kiosk ${describeCustomPlan(custom)}`, amount: Number(payment.subtotal_paise) }],
+          issuedAt: nowSeconds
+        })
+      );
+    }
+    return (await findPayment(db, payment.id))!;
+  }
   const plan = entitlement(tenant, nowSeconds);
   const from = plan.kind === "subscription" && plan.expiresAt !== null && plan.expiresAt > nowSeconds ? plan.expiresAt : nowSeconds;
   const ends = periodEnd(from, payment.period);

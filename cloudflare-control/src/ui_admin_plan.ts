@@ -10,7 +10,9 @@
 
 import { escapeAttr, escapeHtml, escapeJson } from "./escape";
 import { EDUCATION_LIMITS } from "./education";
-import { CATALOGUE, PAID_TIERS, PRICING } from "./plans";
+import { CUSTOM_PLAN_LIMITS } from "./custom_plans";
+import { MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
+import { CATALOGUE, PAID_TIERS, PRICING, STAFF_LIMITS } from "./plans";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildPlanPage(options: AdminPageInput): AdminPageParts {
@@ -142,7 +144,7 @@ function renderPlanPageHtml(contactHref: string): string {
     </div>
     <div class="plan-grid">${PAID_TIERS.map(tierCard).join("")}
     </div>
-    <p class="form-hint">Prices are before GST where it applies. More than ${p.salesAbove} workstations or several sites? <a href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">Talk to sales</a>.</p>
+    <p class="form-hint">Prices are before GST where it applies. More than ${p.salesAbove} workstations or several sites? Ask for a <a href="#custom-status">Custom plan</a>, or <a href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">talk to sales</a>.</p>
 
     <div class="card mt-lg hidden" id="plan-config">
       <h2 class="card-title" id="config-title">Your plan</h2>
@@ -202,10 +204,46 @@ function renderPlanPageHtml(contactHref: string): string {
         <div class="plan-price"><small>For large or multi-site deployments</small></div>
         <ul class="plan-list">
           <li>More than ${p.salesAbove} workstations, invoicing and purchase orders</li>
-          <li>Terms agreed with Lab Kiosk</li>
+          <li>Priced by Lab Kiosk and paid by a payment link we email you</li>
         </ul>
-        <div class="plan-foot"><a class="btn btn-secondary" href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">Talk to sales</a></div>
+        <div class="plan-foot" id="custom-status"></div>
       </div>
+    </div>
+
+    <div class="card mt-lg hidden" id="section-custom-form">
+      <h2 class="card-title">Ask for a Custom plan</h2>
+      <p class="card-sub">Tell us what you need. We email a payment link with the price, usually within two working days, and the plan starts as soon as it is paid.</p>
+      <form id="form-custom" novalidate>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="cp-workstations">Workstations</label>
+            <input type="number" class="form-input" id="cp-workstations" min="1" max="${MAX_WORKSTATION_LIMIT}" step="1" inputmode="numeric" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cp-seats">Remote Control seats</label>
+            <input type="number" class="form-input" id="cp-seats" min="0" max="${MAX_REMOTE_CONTROL_SEATS}" step="1" value="0" inputmode="numeric">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="cp-staff">Staff accounts (optional)</label>
+            <input type="number" class="form-input" id="cp-staff" min="1" max="${CUSTOM_PLAN_LIMITS.staff}" step="1" inputmode="numeric" placeholder="${STAFF_LIMITS.custom}">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cp-period">Billing</label>
+            <select class="form-select" id="cp-period"><option value="year">Yearly</option><option value="month">Monthly</option></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cp-notes">Anything else (optional)</label>
+          <textarea class="form-textarea" id="cp-notes" rows="3" maxlength="${CUSTOM_PLAN_LIMITS.notes}" placeholder="Sites, purchase orders, invoicing needs"></textarea>
+        </div>
+        <p class="callout callout-danger hidden" id="cp-error" role="alert"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost" id="btn-cp-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Send request</button>
+        </div>
+      </form>
     </div>
 
     <div class="card mt-lg hidden" id="section-education-form">
@@ -784,6 +822,26 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           else { p.textContent = "Not approved: " + (a.reason || "no reason given") + " You can fix it and apply again."; box.append(p, apply); }
         }
 
+        let customRequest = null;
+        function renderCustom() {
+          const box = $("custom-status");
+          box.replaceChildren();
+          const r = customRequest;
+          const p = el("p", "form-hint");
+          const ask = el("button", "btn btn-secondary", r && r.status === "paid" ? "Ask for a new Custom plan" : "Ask for a Custom plan");
+          ask.type = "button";
+          ask.addEventListener("click", () => {
+            show($("section-custom-form"), true);
+            if (!$("cp-workstations").value) $("cp-workstations").value = String(Math.max(${PRICING.salesAbove + 1}, plan.workstations.length));
+            $("cp-workstations").focus();
+          });
+          if (!r) box.append(ask);
+          else if (r.status === "open") { p.textContent = "Asked for on " + day(r.createdAt) + ". We email you a payment link with the price."; box.append(p); }
+          else if (r.status === "sent") { p.textContent = "Approved on " + day(r.decidedAt) + " at " + r.total + ". The payment link is in your email; the plan starts when it is paid."; box.append(p); }
+          else if (r.status === "paid") { p.textContent = "Paid. Your Custom plan is in force."; box.append(p, ask); }
+          else { p.textContent = "Not offered: " + (r.decisionNote || "no reason given") + " You can ask again."; box.append(p, ask); }
+        }
+
         function renderUnlicensed() {
           const waiting = plan.workstations.filter((w) => !w.licensed);
           show($("section-unlicensed"), waiting.length > 0);
@@ -823,9 +881,10 @@ function renderPlanScript(nonce: string, contactHref: string): string {
         // ---------------------------------------------------------------- load
         async function load() {
           try {
-            const [b, p] = await Promise.all([api("/api/billing"), api("/api/plan")]);
+            const [b, p, c] = await Promise.all([api("/api/billing"), api("/api/plan"), api("/api/plan/custom")]);
             bill = b;
             plan = p;
+            customRequest = c.request;
             renderBanners();
             renderOverview();
             renderUsage();
@@ -836,6 +895,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             renderInvoices();
             renderTrial();
             renderEducation();
+            renderCustom();
             renderUnlicensed();
             renderPayments();
             if (chosen) schedulePreview(0);
@@ -964,6 +1024,30 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           }
         });
 
+        $("btn-cp-cancel").addEventListener("click", () => show($("section-custom-form"), false));
+        $("form-custom").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const errorBox = $("cp-error");
+          show(errorBox, false);
+          if (!e.target.reportValidity()) return;
+          const staff = $("cp-staff").value.trim();
+          try {
+            const data = await api("/api/plan/custom", {
+              workstations: Number($("cp-workstations").value),
+              remoteSeats: Number($("cp-seats").value || 0),
+              staff: staff ? Number(staff) : null,
+              period: $("cp-period").value,
+              notes: $("cp-notes").value
+            });
+            customRequest = data.request;
+            show($("section-custom-form"), false);
+            renderCustom();
+            lkToast("Request sent. We email you a payment link with the price.", "success");
+          } catch (err) {
+            errorBox.textContent = err.message;
+            show(errorBox, true);
+          }
+        });
         $("btn-edu-cancel").addEventListener("click", () => show($("section-education-form"), false));
         $("form-education").addEventListener("submit", async (e) => {
           e.preventDefault();

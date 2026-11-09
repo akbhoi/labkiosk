@@ -58,6 +58,7 @@ import { monthlySummaryFor } from "../src/monthly_summary";
 import { EXAM_LIMITS, examEpoch, parseExamInput } from "../src/exams";
 import { PRICING, entitlement, quote, rebalanceLicences } from "../src/plans";
 import { periodEnd, razorpayRoute } from "../src/billing";
+import { gstPercentFor } from "../src/invoices";
 import { createDocumentLink } from "../src/billing_documents";
 import { handleRelay, relaySignature } from "../relay/razorpay/handler.js";
 import { emailMatchesWebsite } from "../src/education";
@@ -146,7 +147,7 @@ import { renderPortalHtml } from "../src/ui_portal";
 import type { PortalSite, Tenant } from "../src/types";
 import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
 import { sessionCookieName } from "../src/session_handoff";
-import { referenceInSubject, subjectWithReference } from "../src/conversations";
+import { createConversation, referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
 import { coseToJwk, decodeCbor, derToRawEcdsa, passkeyRelyingParty, PasskeyError } from "../src/webauthn";
@@ -161,7 +162,11 @@ const mockEnv: Env = {
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
   ALLOW_LOCAL_DB: "1",
   // Tests never call Have I Been Pwned; the check has its own tests with a stand-in fetch.
-  BREACHED_PASSWORD_CHECK: "off"
+  BREACHED_PASSWORD_CHECK: "off",
+  // Registration needs a texted phone code; the suite's tokens are signed by SUITE_FIREBASE below.
+  FIREBASE_PROJECT_ID: "labkiosk-test",
+  FIREBASE_API_KEY: "AIzaSyTestKey000000000000000",
+  FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com"
 };
 
 const BASE = "https://labkiosk.org";
@@ -249,6 +254,27 @@ async function firebaseSigner(kid = "test-kid") {
 }
 
 /**
+ * Google's key set as the suite sees it: SUITE_FIREBASE's key, served to every
+ * Firebase check unless a test stands in its own fetch. Its key id differs from
+ * the tests' own signers, so a key cached by one of those is refetched, not misused.
+ */
+const SUITE_FIREBASE = firebaseSigner("suite-kid");
+{
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input) === FIREBASE_JWKS_URL ? (await SUITE_FIREBASE).jwksResponse() : realFetch(input, init);
+}
+
+/** Firebase's proof that `phone` (any format normalizePhone reads) received the texted code. */
+async function phoneTokenFor(phone: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  return (await SUITE_FIREBASE).sign({
+    iss: "https://securetoken.google.com/labkiosk-test", aud: "labkiosk-test", sub: `uid-${phone}`,
+    iat: now, exp: now + 3600, auth_time: now, phone_number: normalizePhone(phone), firebase: { sign_in_provider: "phone" }
+  });
+}
+
+/**
  * A phone number of this email's own: one organization per number, so each
  * signup in the suite needs its own unless the test names one.
  */
@@ -313,6 +339,9 @@ let signupAddress = 0;
 /** Ask for a code, read it from the outbox, and submit the registration. */
 async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = mockEnv) {
   const body = signupBody(overrides);
+  // The texted code for the number given, unless the test sends its own token (or none, as null).
+  if (!("phoneToken" in overrides)) body.phoneToken = await phoneTokenFor(String(body.phone));
+  else if (overrides.phoneToken === null) delete body.phoneToken;
   // Each signup from its own address, so the per-address limits stay out of the way.
   const from = { "CF-Connecting-IP": `198.51.100.${++signupAddress}` };
   const codeRes = await worker.fetch(request("/api/auth/register/email-code", { ...json({ email: body.email }), headers: from }), env);
@@ -398,7 +427,7 @@ async function taskByReference(cookie: string, reference: string, box: "tasks" |
   return item;
 }
 
-/** Register, confirm the phone, approve, sign in and enter the organization's details: its session cookie. */
+/** Register, sign in and enter the organization's details: its session cookie. */
 async function registerApprovedOrganization(overrides: Record<string, unknown>): Promise<string> {
   const cookie = await registerApprovedAccount(overrides);
   const { res, data } = await completeOrganization(cookie, String(signupBody(overrides).subdomain), overrides);
@@ -407,21 +436,39 @@ async function registerApprovedOrganization(overrides: Record<string, unknown>):
 }
 
 /**
- * Register without a texted phone code (pending), confirm the phone, approve and
- * sign in: the session of an account whose organization's details are not entered yet.
+ * Register (active at once, on Free) and sign in: the session of an account
+ * whose organization's details are not entered yet. Tests that need more than
+ * Free's workstations give the organization a larger limit themselves.
  */
 async function registerApprovedAccount(overrides: Record<string, unknown>): Promise<string> {
   const { res, data } = await submitSignup(overrides);
   assert.equal(res.status, 200, JSON.stringify(data));
-  const admin = await superCookie();
-  const task = await taskByReference(admin, data.reference);
-  assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
-  const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "", workstationLimit: 45 }), cookie: admin });
-  assert.equal(approved.status, 200);
+  assert.equal(data.active, true);
   const body = signupBody(overrides);
   const login = await signIn({ email: body.email as string, password: body.password as string });
-  assert.equal(login.status, 200, "an approved organization can sign in");
+  assert.equal(login.status, 200, "a new organization can sign in");
   return (await sessionOf(login));
+}
+
+/**
+ * A registration as one made before phones were checked by text message: its
+ * phone unverified, and the registration task it opened then.
+ */
+async function legacyRegistration(overrides: Record<string, unknown>): Promise<{ reference: string }> {
+  const { res, data } = await submitSignup(overrides);
+  assert.equal(res.status, 200, JSON.stringify(data));
+  const db = getDatabase(mockEnv);
+  const tenant = await findTenantBySubdomain(db, String(overrides.subdomain));
+  await db.prepare("UPDATE organization_profiles SET phone_verified_at = NULL WHERE tenant_id = ?").bind(tenant!.id).run();
+  const body = signupBody(overrides);
+  const conversation = await createConversation(db, {
+    kind: "signup",
+    tenantId: tenant!.id,
+    subject: `Registration of ${tenant!.subdomain}.labkiosk.org`,
+    contactEmail: String(body.email),
+    contactName: String(body.contactName)
+  });
+  return { reference: conversation.reference };
 }
 
 // ------------------------------------------------- a software passkey for tests
@@ -709,7 +756,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const disposable = await callJson("/api/auth/register/email-code", json({ email: "someone@mailinator.com" }));
     assert.equal(disposable.res.status, 400, "a throwaway inbox cannot hold a signup");
     // A code that was never sent is not accepted.
-    const unsent = await callJson("/api/auth/register", json(signupBody({ email: "nocode@example.com", subdomain: "nocode" })));
+    const unsent = await callJson("/api/auth/register", json(signupBody({ email: "nocode@example.com", subdomain: "nocode", phoneToken: await phoneTokenFor(phoneFor("nocode@example.com")) })));
     assert.equal(unsent.res.status, 400);
     assert.match(unsent.data.error, /expired/);
   });
@@ -774,11 +821,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/register/email-code", json({ email }))).status, 200);
     const code = lastMailTo(email).subject.slice(0, 6);
     const wrong = code === "000000" ? "111111" : "000000";
+    const phoneToken = await phoneTokenFor(phoneFor(email));
     for (let i = 0; i < 5; i++) {
-      const { res } = await callJson("/api/auth/register", json(signupBody({ email, subdomain: "guesser", emailCode: wrong })));
+      const { res } = await callJson("/api/auth/register", json(signupBody({ email, subdomain: "guesser", emailCode: wrong, phoneToken })));
       assert.equal(res.status, 400);
     }
-    const { res, data } = await callJson("/api/auth/register", json(signupBody({ email, subdomain: "guesser", emailCode: code })));
+    const { res, data } = await callJson("/api/auth/register", json(signupBody({ email, subdomain: "guesser", emailCode: code, phoneToken })));
     assert.equal(res.status, 400, "the right code no longer works after five wrong ones");
     assert.match(data.error, /expired/);
     // The used-up code is gone, so a fresh one may be asked for (five per hour per address).
@@ -799,7 +847,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.notEqual(row!.code_hash, await oneTimeCodeHash("another-pepper-of-sufficient-length-0123456789", `signup:${email}:${code}`));
   });
 
-  test("Without a texted phone code, registers a new organization as pending, emails the customer, and signs nobody in", async () => {
+  test("A registration with both codes is active at once on Free, is welcomed by email, and signs nobody in", async () => {
+    // Without the texted code nothing is created.
+    const untexted = await submitSignup({ email: "untexted@greenwood.example", phone: "+91 98765 43210", subdomain: "greenwood", phoneToken: null });
+    assert.equal(untexted.res.status, 400);
+    assert.match(untexted.data.error, /Verify your phone number/);
+    assert.equal(await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"), null);
+
     const { res, data } = await submitSignup({
       name: "Greenwood Holdings",
       contactName: "Gwen Wood",
@@ -809,32 +863,46 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200, JSON.stringify(data));
     assert.equal(data.status, "ok");
-    assert.equal(data.pending, true);
-    assert.match(data.reference, /^REG-[A-Z0-9]{6}$/, "a registration's tracking ID says so");
-    assert.equal(res.headers.get("Set-Cookie"), null, "no session before approval");
+    assert.equal(data.active, true, "nobody approves a registration");
+    assert.equal(data.reference, undefined, "no task is opened for it");
+    assert.equal(res.headers.get("Set-Cookie"), null, "the customer signs in with the password, like every sign-in");
 
-    const receipt = lastMailTo("operator@greenwood.example");
-    assert.match(receipt.subject, new RegExp(`^\\[${data.reference}\\] We received your registration`));
-    assert.match(receipt.text, /activated once our team has reviewed it/);
+    const welcome = lastMailTo("operator@greenwood.example");
+    assert.match(welcome.subject, /Your Lab Kiosk account is ready/);
+    assert.match(welcome.text, /greenwood\.labkiosk\.org/);
 
-    const early = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
-    assert.equal(early.res.status, 403, "a pending organization cannot sign in");
-    assert.match(early.data.error, /waiting for approval/);
+    const tenant = await findTenantBySubdomain(getDatabase(mockEnv), "greenwood");
+    assert.equal(tenant!.status, "active");
+    assert.equal(tenant!.workstation_limit, PRICING.freeWorkstations);
+    const profile = await getDatabase(mockEnv)
+      .prepare("SELECT contact_phone, email_verified_at, phone_verified_at, city FROM organization_profiles WHERE tenant_id = ?")
+      .bind(tenant!.id)
+      .first<{ contact_phone: string; email_verified_at: number | null; phone_verified_at: number | null; city: string }>();
+    assert.equal(profile!.contact_phone, "+919876543210", "the phone number is stored in international form");
+    assert.ok(profile!.email_verified_at && profile!.phone_verified_at, "both proved by their codes");
+    assert.equal(profile!.city, "", "the address comes with the second step, after sign-in");
+    const tasks = await getDatabase(mockEnv).prepare("SELECT COUNT(*) AS n FROM conversations WHERE tenant_id = ?").bind(tenant!.id).first<{ n: number }>();
+    assert.equal(tasks!.n, 0, "nothing waits in the super admin's Tasks");
+
     const wrongPassword = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "WrongPassword123!" }));
     assert.equal(wrongPassword.res.status, 401, "a stranger learns nothing about the account");
+  });
 
-    const portal = await call("/home?tenant=greenwood");
-    assert.equal(portal.status, 403, "a pending organization has no portal");
-    const enrol = await call("/api/devices/enroll", json({ subdomain: "greenwood", clientId: "PC-01", enrollmentKey: "X" }));
-    assert.notEqual(enrol.status, 200);
+  test("Registration is closed while phone verification is not set up", async () => {
+    const unset: Env = { ...mockEnv, FIREBASE_PROJECT_ID: undefined, FIREBASE_API_KEY: undefined, FIREBASE_AUTH_DOMAIN: undefined };
+    const { res, data } = await submitSignup({ email: "no-sms@example.com", subdomain: "no-sms" }, unset);
+    assert.equal(res.status, 503);
+    assert.match(data.error, /temporarily unavailable/);
+    assert.equal(await findTenantBySubdomain(getDatabase(mockEnv), "no-sms"), null);
+    const page = await (await worker.fetch(request("/register"), unset)).text();
+    assert.match(page, /Registration Is Closed for Now/);
+    assert.doesNotMatch(page, /id="register-form"/);
   });
 
   test("Tasks and Support are the super admin's alone", async () => {
     for (const path of ["/api/super/inbox?box=tasks", "/api/super/inbox?box=support"]) {
       assert.equal((await call(path)).status, 401, `${path} refuses an anonymous caller`);
     }
-    const pending = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
-    assert.equal(pending.res.status, 403);
     for (const page of ["/super/tasks", "/super/mail"]) {
       // Signed out: sent to the sign-in page, never shown the console.
       const signedOut = await call(page);
@@ -843,48 +911,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
-  test("Approval needs a verified phone, then activates the organization and emails its console", async () => {
-    const admin = await superCookie();
-    const { data: list } = await callJson("/api/super/inbox?box=tasks", { cookie: admin });
-    const task = (list.items as any[]).find((i) => i.organization_subdomain === "greenwood");
-    assert.ok(task, "the registration is a task");
-    assert.equal(task.kind, "signup");
-    assert.equal(task.status, "open");
-
-    const { data: detail } = await callJson(`/api/super/inbox/${task.id}`, { cookie: admin });
-    assert.equal(detail.profile.contact_phone, "+919876543210", "the phone number is stored in international form");
-    assert.ok(detail.profile.email_verified_at, "the email was verified by its code");
-    assert.equal(detail.profile.phone_verified_at, null);
-    assert.equal(detail.profile.city, "", "the address comes with the second step, after sign-in");
-    assert.ok(detail.messages.some((m: any) => m.direction === "outbound" && /We received your registration/.test(m.subject)));
-
-    const tooEarly = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
-    assert.equal(tooEarly.res.status, 409);
-    assert.match(tooEarly.data.error, /phone/);
-
-    assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
-    for (const workstationLimit of [undefined, 0, 2.5, "45", 100001]) {
-      const noLimit = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ workstationLimit }), cookie: admin });
-      assert.equal(noLimit.res.status, 400, `a workstation limit of ${workstationLimit} is refused`);
-      assert.match(noLimit.data.error, /workstation limit/);
-    }
-    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, {
-      ...json({ message: "Your first 45 workstations are covered by the evaluation license.", workstationLimit: 45 }),
-      cookie: admin
-    });
-    assert.equal(approved.res.status, 200);
-    assert.equal(approved.data.emailSent, true);
-    const mail = lastMailTo("operator@greenwood.example");
-    assert.match(mail.subject, /Your organization is active/);
-    assert.match(mail.text, /https:\/\/greenwood\.labkiosk\.org\/admin/);
-    assert.match(mail.text, /evaluation license/);
-    assert.ok(mail.inReplyTo === undefined || mail.inReplyTo === null || mail.inReplyTo.startsWith("<"));
-
-    const again = await call(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
-    assert.equal(again.status, 409, "a decided task stays decided");
-    // The rest of the suite manages staff and Remote Control on greenwood: a Custom
-    // plan has room for both, where Free allows 2 staff and no Remote Control seat.
-    await getDatabase(mockEnv).prepare("UPDATE tenants SET license_plan = 'commercial', remote_seats_paid = 10 WHERE subdomain = 'greenwood'").run();
+  test("A new organization signs in, and its console opens once the organization's details are entered", async () => {
+    // The rest of the suite manages staff and Remote Control on greenwood and enrols more than
+    // Free's workstations: a Custom plan has room for all of it.
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET license_plan = 'commercial', remote_seats_paid = 10, workstation_limit = 45 WHERE subdomain = 'greenwood'").run();
 
     // The organization's owner administers it, so sign-in asks for an emailed code as well.
     const login = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
@@ -1008,7 +1038,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Firebase settings are all or nothing, and only Firebase's shapes are accepted", () => {
-    const base = { ...mockEnv } as Env;
+    const base = { ...mockEnv, FIREBASE_PROJECT_ID: undefined, FIREBASE_API_KEY: undefined, FIREBASE_AUTH_DOMAIN: undefined } as Env;
     assert.equal(firebaseConfigProblem(base), null, "off");
     assert.match(firebaseConfigProblem({ ...base, FIREBASE_PROJECT_ID: "labkiosk-test" })!, /half configured/);
     const full = { ...base, FIREBASE_PROJECT_ID: "labkiosk-test", FIREBASE_API_KEY: "AIzaSyTestKey000000000000000", FIREBASE_AUTH_DOMAIN: "labkiosk-test.firebaseapp.com" };
@@ -1077,7 +1107,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal((await call("/admin?tenant=sms-good", { cookie })).status, 200, "then the console opens");
 
       // Half a configuration refuses rather than skip the check.
-      const half = await submitSignup({ email: "sms-half@example.com", subdomain: "sms-half" }, { ...mockEnv, FIREBASE_PROJECT_ID: "labkiosk-test" } as Env);
+      const half = await submitSignup({ email: "sms-half@example.com", subdomain: "sms-half" }, { ...mockEnv, FIREBASE_API_KEY: undefined, FIREBASE_AUTH_DOMAIN: undefined } as Env);
       assert.equal(half.res.status, 503);
 
       // The registration page carries the settings and its CSP lets Firebase and reCAPTCHA in; other pages do not.
@@ -1105,22 +1135,25 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       const res = await worker.fetch(request(path, init), firebaseEnv);
       return { res, data: res.headers.get("Content-Type")?.includes("json") ? ((await res.clone().json()) as any) : null };
     };
+    // Registered before phones were checked by text message: not verified, with its registration task.
+    const signup = await legacyRegistration({ name: "Linked Org", email: "linked@example.org", subdomain: "linked-org", phone: "+91 88888 43210" });
+    const declined = await legacyRegistration({ name: "No Link Org", email: "nolink@example.org", subdomain: "nolink-org" });
     const realFetch = globalThis.fetch;
     const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
       String(input) === FIREBASE_JWKS_URL ? signer.jwksResponse() : realFetch(input, init)
     );
     resetFirebaseKeys();
     try {
-      // Registered before phones were checked by text message: not verified.
-      const { data: signup } = await submitSignup({ name: "Linked Org", email: "linked@example.org", subdomain: "linked-org", phone: "+91 88888 43210" });
       const admin = await superCookie();
       const task = await taskByReference(admin, signup.reference);
       const db = getDatabase(mockEnv);
       const tenant = await findTenantBySubdomain(db, "linked-org");
 
       // Without Firebase the inbox offers no link, and the action refuses.
-      assert.equal((await callJson(`/api/super/inbox/${task.id}`, { cookie: admin })).data.smsVerification, false);
-      assert.equal((await call(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).status, 503);
+      const unset: Env = { ...mockEnv, FIREBASE_PROJECT_ID: undefined, FIREBASE_API_KEY: undefined, FIREBASE_AUTH_DOMAIN: undefined };
+      const plain = async (path: string, init: RequestInit & { cookie?: string } = {}) => worker.fetch(request(path, init), unset);
+      assert.equal(((await (await plain(`/api/super/inbox/${task.id}`, { cookie: admin })).json()) as any).smsVerification, false);
+      assert.equal((await plain(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).status, 503);
       assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: orgSessionCookie })).res.status, 403);
 
       const detail = await fb(`/api/super/inbox/${task.id}`, { cookie: admin });
@@ -1145,7 +1178,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       // The page: the replaced link and a made-up one are dead; the current one shows the masked number.
       assert.equal((await fb(`/verify-phone?t=${firstToken}`)).res.status, 410);
       assert.equal((await fb("/verify-phone?t=nonsense")).res.status, 410);
-      assert.equal((await worker.fetch(request(`/verify-phone?t=${token}`), mockEnv)).status, 410, "without Firebase the page does not work");
+      assert.equal((await plain(`/verify-phone?t=${token}`)).status, 410, "without Firebase the page does not work");
       const page = await fb(`/verify-phone?t=${token}`);
       assert.equal(page.res.status, 200);
       assert.match(page.res.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/www\.gstatic\.com\/firebasejs\//);
@@ -1175,9 +1208,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal((await fb(`/api/super/inbox/${task.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409, "a verified number needs no link");
 
       // A rejected registration is sent none.
-      const { data: declined } = await submitSignup({ name: "No Link Org", email: "nolink@example.org", subdomain: "nolink-org" });
+      await db.prepare("UPDATE tenants SET status = 'rejected' WHERE subdomain = 'nolink-org'").run();
       const declinedTask = await taskByReference(admin, declined.reference);
-      await call(`/api/super/inbox/${declinedTask.id}/reject`, { ...json({ message: "No." }), cookie: admin });
       assert.equal((await fb(`/api/super/inbox/${declinedTask.id}/phone-link`, { ...json({}), cookie: admin })).res.status, 409);
     } finally {
       fetchMock.mock.restore();
@@ -1583,80 +1615,61 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.throws(() => coseToJwk(new Map<any, any>([[1, 2], [3, -7], [-1, 2], [-2, new Uint8Array(32)], [-3, new Uint8Array(32)]])), /P-256/);
   });
 
-  test("Remote Control is off until an organization asks and the platform approves", async () => {
-    // An organization with no seats: the platform's grant below gives it one.
-    await getDatabase(mockEnv).prepare("UPDATE tenants SET remote_seats_paid = 0 WHERE subdomain = 'greenwood'").run();
+  test("Remote Control is off until the plan has seats, then the organization turns it on itself", async () => {
+    const db = getDatabase(mockEnv);
+    await db.prepare("UPDATE tenants SET remote_seats_paid = 0, remote_control_status = 'none' WHERE subdomain = 'greenwood'").run();
     const before = await callJson("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "PC-01" }), cookie: orgSessionCookie });
     assert.equal(before.res.status, 403);
-    assert.match(before.data.error, /not enabled/);
+    assert.match(before.data.error, /not on for this organization/);
     assert.equal((await call("/console/remote?tenant=greenwood&clientId=PC-01", { cookie: orgSessionCookie })).status, 403);
     const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.match(settings, /id="form-remote-control-request"/);
+    assert.match(settings, /Buy seats on Plan &amp; billing/);
+    assert.doesNotMatch(settings, /id="btn-remote-control-enable"/);
+    assert.doesNotMatch(settings, /Ask for Remote Control/, "nothing is asked of Lab Kiosk");
+    assert.equal((await call("/api/tenant/remote-control/request?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).status, 404, "the request to the platform is gone");
 
-    // Only this organization's own staff can ask for it.
-    const anonymous = (await call("/api/tenant/remote-control/request?tenant=greenwood", json({}))).status;
+    // Only this organization's own staff can turn it on.
+    const enable = (init: RequestInit & { cookie?: string } = {}) => callJson("/api/tenant/remote-control/enable?tenant=greenwood", { ...json({}), ...init });
+    const anonymous = (await enable()).res.status;
     assert.ok(anonymous === 401 || anonymous === 403, "an anonymous caller is refused");
-    const rival = await call("/api/tenant/remote-control/request?tenant=greenwood", { ...json({}), cookie: rivalSessionCookie });
-    assert.equal(rival.status, 403);
-    const crossSite = await call("/api/tenant/remote-control/request?tenant=greenwood", {
-      ...json({}),
-      cookie: orgSessionCookie,
-      headers: { Origin: "https://evil.example" }
-    });
-    assert.equal(crossSite.status, 403);
+    assert.equal((await enable({ cookie: rivalSessionCookie })).res.status, 403);
+    assert.equal((await enable({ cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).res.status, 403);
+    const noSeats = await enable({ cookie: orgSessionCookie });
+    assert.equal(noSeats.res.status, 409, "seats are bought first");
+    assert.match(noSeats.data.error, /Buy Remote Control seats/);
 
-    const asked = await callJson("/api/tenant/remote-control/request?tenant=greenwood", {
-      ...json({ reason: "Helping users across two rooms." }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(asked.res.status, 200);
-    assert.equal(asked.data.remoteControlStatus, "pending");
-    assert.match(lastMailTo("operator@greenwood.example").subject, /Remote Control request received/);
-    const twice = await call("/api/tenant/remote-control/request?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
-    assert.equal(twice.status, 409, "a pending request is not asked twice");
-    assert.equal((await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "PC-01" }), cookie: orgSessionCookie })).status, 403);
-
-    const admin = await superCookie();
-    const task = await taskByReference(admin, asked.data.reference);
-    assert.equal(task.kind, "remote_control");
-    const verify = await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin });
-    assert.equal(verify.status, 400, "a Remote Control request has no phone to verify");
-    for (const remoteControlSeats of [undefined, 0, 1.5, "2", 1001]) {
-      const noSeats = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ remoteControlSeats }), cookie: admin });
-      assert.equal(noSeats.res.status, 400, `${remoteControlSeats} seats are refused`);
-    }
-    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ remoteControlSeats: 1 }), cookie: admin });
-    assert.equal(approved.res.status, 200);
-    assert.match(lastMailTo("operator@greenwood.example").subject, /Remote Control is on/);
+    // With a seat on the plan, it is the organization's own switch.
+    await db.prepare("UPDATE tenants SET remote_seats_paid = 1 WHERE subdomain = 'greenwood'").run();
+    const off = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(off, /id="btn-remote-control-enable"/);
+    const on = await enable({ cookie: orgSessionCookie });
+    assert.equal(on.res.status, 200, JSON.stringify(on.data));
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.remote_control_status, "approved");
+    assert.equal((await enable({ cookie: orgSessionCookie })).res.status, 409, "already on");
     const after = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.doesNotMatch(after, /id="form-remote-control-request"/);
     assert.match(after, /badge-green">Enabled/);
-    assert.match(after, /Your plan has 1 Remote Control seat\./, "the grant is a seat");
+    assert.match(after, /Your plan has 1 Remote Control seat\./);
+
+    // Turned off by Lab Kiosk, it stays off until Lab Kiosk turns it on again.
+    await db.prepare("UPDATE tenants SET remote_control_status = 'rejected', remote_control_revoked_at = 1 WHERE subdomain = 'greenwood'").run();
+    const revoked = await enable({ cookie: orgSessionCookie });
+    assert.equal(revoked.res.status, 409);
+    assert.match(revoked.data.error, /Write to support/);
     // The rest of the suite opens Remote Control on several workstations.
-    await getDatabase(mockEnv).prepare("UPDATE tenants SET remote_seats_paid = 10 WHERE subdomain = 'greenwood'").run();
+    await db.prepare("UPDATE tenants SET remote_seats_paid = 10, remote_control_status = 'approved', remote_control_revoked_at = NULL WHERE subdomain = 'greenwood'").run();
   });
 
-  test("A rejected registration is told why and cannot sign in", async () => {
-    const { data } = await submitSignup({ name: "Declined Org", email: "declined@example.org", subdomain: "declined-org" });
-    const admin = await superCookie();
-    const task = await taskByReference(admin, data.reference);
-    const rejected = await call(`/api/super/inbox/${task.id}/reject`, {
-      ...json({ message: "We could not confirm the phone number." }),
-      cookie: admin
-    });
-    assert.equal(rejected.status, 200);
-    const mail = lastMailTo("declined@example.org");
-    assert.match(mail.text, /not able to activate declined-org/, "named by its address: the details come after sign-in");
-    assert.match(mail.text, /could not confirm the phone number/);
+  test("A registration rejected before approvals ended cannot sign in", async () => {
+    await submitSignup({ name: "Declined Org", email: "declined@example.org", subdomain: "declined-org" });
+    await getDatabase(mockEnv).prepare("UPDATE tenants SET status = 'rejected' WHERE subdomain = 'declined-org'").run();
     const login = await callJson("/api/auth/login", json({ email: "declined@example.org", password: "OrganizationPassword123!" }));
     assert.equal(login.res.status, 403);
     assert.match(login.data.error, /not approved/);
   });
 
   test("A super admin can remove a rejected registration, and only a rejected one", async () => {
-    const { data } = await submitSignup({ name: "Removed Org", email: "removed@example.org", subdomain: "removed-org" });
+    await legacyRegistration({ name: "Removed Org", email: "removed@example.org", subdomain: "removed-org" });
     const admin = await superCookie();
-    const task = await taskByReference(admin, data.reference);
     const db = getDatabase(mockEnv);
     const tenant = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'removed-org'").first<{ id: string }>();
     assert.ok(tenant);
@@ -1666,12 +1679,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await remove()).status, 401, "anonymous");
     assert.equal((await remove(orgSessionCookie)).status, 403, "an organization admin");
     assert.equal((await remove(admin, "nope")).status, 404);
-    assert.equal((await remove(admin)).status, 409, "a pending registration is not removed");
+    assert.equal((await remove(admin)).status, 409, "an active organization is not removed");
     const greenwood = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>();
-    assert.equal((await remove(admin, greenwood!.id)).status, 409, "an approved organization is not removed");
+    assert.equal((await remove(admin, greenwood!.id)).status, 409);
 
-    const rejected = await call(`/api/super/inbox/${task.id}/reject`, { ...json({ message: "Not a school." }), cookie: admin });
-    assert.equal(rejected.status, 200);
+    // Rejected when registrations were still approved.
+    await db.prepare("UPDATE tenants SET status = 'rejected' WHERE id = ?").bind(tenant!.id).run();
     const removed = await remove(admin);
     assert.equal(removed.status, 200);
     assert.equal(await db.prepare("SELECT id FROM tenants WHERE id = ?").bind(tenant!.id).first(), null);
@@ -1728,7 +1741,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/super/inbox?box=support", { cookie: orgSessionCookie })).status, 403);
 
     assert.equal((await call(`/api/super/inbox/${item.id}/reply`, { ...json({ message: "" }), cookie: admin })).status, 400);
-    assert.equal((await call(`/api/super/inbox/${item.id}/approve`, { ...json({}), cookie: admin })).status, 400, "support is not approved");
+    assert.equal((await call(`/api/super/inbox/${item.id}/approve`, { ...json({}), cookie: admin })).status, 404, "nothing in the inbox is approved");
     const replied = await call(`/api/super/inbox/${item.id}/reply`, {
       ...json({ message: "60 computers need a subscriber license; details attached.", close: true }),
       cookie: admin
@@ -2101,11 +2114,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Every email goes out in the shared layout, through the email Worker when it is bound", async () => {
-    // Codes, alerts and decisions each use their own template.
+    // Codes and notices each use their own template.
     const code = [...localOutbox()].reverse().find((m) => /sign-in code$/.test(m.subject))!;
     assert.ok(code.html.includes("Your sign-in code") && code.html.includes(code.subject.slice(0, 6)));
-    const approval = [...localOutbox()].reverse().find((m) => /Your organization is active$/.test(m.subject))!;
-    assert.ok(approval.html.includes("Approved") && approval.html.includes("Open your console"));
+    const welcome = [...localOutbox()].reverse().find((m) => m.subject === "Your Lab Kiosk account is ready")!;
+    assert.ok(welcome, "a new organization is welcomed");
+    assert.ok(welcome.html.includes("Your account is ready"));
     for (const mail of localOutbox()) {
       assert.ok(mail.html.startsWith("<!DOCTYPE html>") && mail.html.includes("lk-card"), `${mail.subject} is in the layout`);
       assert.ok(!/<script/i.test(mail.html), `${mail.subject} carries no script`);
@@ -5129,49 +5143,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ---------------------------------------------------------- custom domains
 
-  test("Allows Organization Admin to request a custom domain and validates domain syntax", async () => {
-    // Reject invalid domain format
-    const invalid = await callJson("/api/settings/custom-domain?tenant=greenwood", {
-      ...json({ domain: "not-a-valid-domain" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(invalid.res.status, 400);
+  test("An organization connects its own domain itself, with no approval, and it routes by Host header", async () => {
+    const connect = (domain: string, cookie = orgSessionCookie) =>
+      callJson("/api/settings/custom-domain?tenant=greenwood", { ...json({ domain }), cookie });
+    assert.equal((await connect("not-a-valid-domain")).res.status, 400);
+    const underPlatform = await connect("kiosk.greenwood.labkiosk.org");
+    assert.equal(underPlatform.res.status, 400);
+    assert.match(underPlatform.data.error, /subdomain of the platform domain/);
+    assert.equal((await connect("kiosk.greenwood.example", rivalSessionCookie)).res.status, 403, "only the organization's own staff");
+    for (const gone of ["approve", "reject"]) {
+      assert.equal((await call(`/api/super/tenants/custom-domain/${gone}`, { ...json({ subdomain: "greenwood" }), cookie: superSessionCookie })).status, 404, `nothing for the platform to ${gone}`);
+    }
 
-    // Accept valid FQDN
-    const { res, data } = await callJson("/api/settings/custom-domain?tenant=greenwood", {
-      ...json({ domain: "kiosk.greenwood.example" }),
-      cookie: orgSessionCookie
-    });
-    assert.equal(res.status, 200);
-    assert.equal(data.status, "ok");
-    assert.equal(data.requestedCustomDomain, "kiosk.greenwood.example");
-    assert.equal(data.customDomainStatus, "pending");
-  });
+    const { res, data } = await connect("kiosk.greenwood.example");
+    assert.equal(res.status, 200, JSON.stringify(data));
+    assert.equal(data.customDomain, "kiosk.greenwood.example");
+    assert.equal((await connect("kiosk.greenwood.example")).res.status, 409, "already connected");
+    const tenant = await findTenantBySubdomain(getDatabase(mockEnv), "greenwood");
+    assert.equal(tenant!.custom_domain, "kiosk.greenwood.example");
+    assert.equal(tenant!.custom_domain_status, "approved");
 
-  test("A custom domain under the platform domain is refused, and Super Admin sees what custom domains cost", async () => {
-    const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
-      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.labkiosk.org" }),
-      cookie: superSessionCookie
-    });
-    assert.equal(res.status, 400);
-    assert.match(data.error, /subdomain of the platform domain/);
-    const greenwood = await getDatabase(mockEnv).prepare("SELECT custom_domain FROM tenants WHERE subdomain = 'greenwood'").first<{ custom_domain: string | null }>();
-    assert.notEqual(greenwood?.custom_domain, "kiosk.greenwood.labkiosk.org");
-
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /https:\/\/kiosk\.greenwood\.example/);
     const html = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
     assert.match(html, /\d+ custom domains? in use\. Cloudflare includes 100; each one after that costs \$0\.10 a month, up to 50,000 without Enterprise\. Subdomains cost nothing\./);
-    // Fewer than 100 in use: approving one more costs nothing, so the confirmation says nothing about cost.
-    assert.ok(!html.includes("data-adds-cost"));
-  });
-
-  test("Allows Super Admin to approve custom domain and routes traffic via Host header", async () => {
-    const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
-      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.example" }),
-      cookie: superSessionCookie
-    });
-    assert.equal(res.status, 200);
-    assert.equal(data.status, "ok");
-    assert.equal(data.customDomain, "kiosk.greenwood.example");
+    assert.match(html, /<span class="mono">kiosk\.greenwood\.example<\/span>/, "the platform sees every connected domain");
 
     // Edge routing via Host: kiosk.greenwood.example now resolves Greenwood's portal
     const portal = await worker.fetch(
@@ -5179,11 +5175,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       mockEnv
     );
     assert.equal(portal.status, 200);
-    const html = await portal.text();
+    const portalHtml = await portal.text();
     // The custom domain root is the organization homepage, same as the subdomain root.
-    assert.match(html, /Open User Portal/);
-    assert.match(html, /Greenwood Holdings/);
-    assert.ok(!html.includes("Secure Browser Workstations for Any Organization"), "custom domain must not render landing page");
+    assert.match(portalHtml, /Open User Portal/);
+    assert.match(portalHtml, /Greenwood Holdings/);
+    assert.ok(!portalHtml.includes("Secure Browser Workstations for Any Organization"), "custom domain must not render landing page");
 
     // And /home on that domain is the app grid.
     const grid = await worker.fetch(
@@ -6236,13 +6232,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual(left.results.map((r) => r.id), ["recent-1"], "archived entries leave D1; recent ones stay");
   });
 
-  test("Approving a custom domain provisions it through Cloudflare for SaaS", async () => {
+  test("Connecting a custom domain provisions it through Cloudflare for SaaS", async () => {
     const tenantId = await greenwoodId();
-    const approve = await callJson("/api/super/tenants/custom-domain/approve", {
-      ...json({ tenantId, customDomain: "kiosk.greenwood-test.example" }),
-      cookie: superSessionCookie
+    const connect = await callJson("/api/settings/custom-domain?tenant=greenwood", {
+      ...json({ domain: "kiosk.greenwood-test.example" }),
+      cookie: orgSessionCookie
     });
-    assert.equal(approve.res.status, 200);
+    assert.equal(connect.res.status, 200);
     const db = getDatabase(mockEnv);
     const local = await db.prepare("SELECT custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
     assert.equal(local.custom_hostname_status, "local", "local development never calls Cloudflare");
@@ -6519,20 +6515,23 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(Number(tenant.remote_control_revoked_at) > 0);
     const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.match(settings, /badge-red">Turned off/);
-    assert.match(settings, /id="form-remote-control-request"/, "the organization can ask again");
+    assert.match(settings, /Write to support to have it turned on again/, "only Lab Kiosk turns it back on");
+    assert.equal((await call("/api/tenant/remote-control/enable?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).status, 409);
     assert.equal((await control({ tenantId, action: "revoke", reason: "x" }, admin)).status, 409, "already off");
 
     assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 200);
     assert.equal((await open("WS-S1")).status, 200, "back on, with the seats it had");
 
-    // The organization can turn it off itself; asking again is a new request.
+    // The organization can turn it off itself, and on again itself.
     const asRival = await call("/api/tenant/remote-control/disable?tenant=greenwood", { ...json({}), cookie: rivalSessionCookie });
     assert.equal(asRival.status, 403);
     const disabled = await worker.fetch(request("/api/tenant/remote-control/disable?tenant=greenwood", { ...json({}), cookie: orgSessionCookie }), relayEnv);
     assert.equal(disabled.status, 200);
     assert.equal(((await disabled.json()) as any).sessionsClosed, 1);
     assert.equal((await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"))!.remote_control_status, "none");
-    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 409, "a self-disabled organization asks again through Tasks");
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 409, "a self-disabled organization needs no one to restore it");
+    assert.equal((await call("/api/tenant/remote-control/enable?tenant=greenwood", { ...json({}), cookie: orgSessionCookie })).status, 200);
+    assert.equal((await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"))!.remote_control_status, "approved");
     const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
     const actions = (logs.logs as any[]).map((l) => l.action);
     for (const action of ["remote_control.revoke", "remote_control.restore", "remote_control.disable", "remote_control.seats"]) {
@@ -7389,12 +7388,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const demoId = row.match(/data-tenant="([^"]+)"/)![1];
     const suspend = await call("/api/super/tenants/suspend", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
     assert.equal(suspend.status, 400);
-    const reject = await call("/api/super/tenants/reject", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
-    assert.equal(reject.status, 400);
-    const reassign = await call("/api/super/tenants/approve", {
-      ...json({ tenantId: demoId, subdomain: "renamed-demo" }), cookie: superSessionCookie
-    });
-    assert.equal(reassign.status, 400);
+
   });
 
   test("Startup never adopts a demo name another organization already holds", async () => {
@@ -7794,47 +7788,71 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loc, "https://labkiosk.org/?login=1&tenant=greenwood");
   });
 
-  test("An organization asks for a chosen address; once granted it is served beside the old one", async () => {
+  test("An organization changes its own address once a week, and every address it had keeps reaching it", async () => {
     const db = getDatabase(mockEnv);
-    const ask = (subdomain: string, cookie = orgSessionCookie) => callJson("/api/tenant/subdomain?tenant=greenwood", { ...json({ subdomain }), cookie });
-    assert.match((await ask("ab")).data.error, /3-63 characters/);
-    assert.match((await ask("admin")).data.error, /reserved/);
-    const taken = await ask("riverside");
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    const change = (subdomain: string, cookie = orgSessionCookie, tenant = "greenwood") =>
+      callJson(`/api/tenant/subdomain?tenant=${tenant}`, { ...json({ subdomain }), cookie });
+    assert.match((await change("ab")).data.error, /3-63 characters/);
+    assert.equal((await change("admin")).data.error, ADDRESS_REFUSAL, "a reserved name is refused like any unavailable one");
+    assert.equal((await change("p0rn-lab")).data.error, ADDRESS_REFUSAL, "and so is a blocked word");
+    const taken = await change("riverside");
     assert.equal(taken.res.status, 409);
     assert.match(taken.data.error, /already taken/);
-    assert.equal((await ask("greenwood")).res.status, 400, "the current address is not a request");
-
-    const asked = await ask("greenwood-high");
-    assert.equal(asked.res.status, 200);
-    assert.equal(asked.data.pending, true);
-    let row = await db.prepare("SELECT subdomain, requested_subdomain, chosen_subdomain FROM tenants WHERE subdomain = 'greenwood'").first<any>();
-    assert.deepEqual({ ...row }, { subdomain: "greenwood", requested_subdomain: "greenwood-high", chosen_subdomain: null }, "nothing changes until it is approved");
-    assert.equal((await call("/admin?tenant=greenwood-high", { cookie: orgSessionCookie })).status === 200, false, "not served yet");
-    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.ok(settings.includes('id="subdomain-pending"'));
-
-    const admin = await superCookie();
-    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
-    const granted = await callJson("/api/super/tenants/approve", { ...json({ tenantId, subdomain: "greenwood-high" }), cookie: admin });
-    assert.equal(granted.res.status, 200);
-    assert.equal(granted.data.subdomain, "greenwood", "the enrolled address stays");
-    assert.equal(granted.data.chosenSubdomain, "greenwood-high");
-    row = await db.prepare("SELECT subdomain, requested_subdomain, chosen_subdomain FROM tenants WHERE id = ?").bind(tenantId).first<any>();
-    assert.deepEqual({ ...row }, { subdomain: "greenwood", requested_subdomain: null, chosen_subdomain: "greenwood-high" });
-
-    // Both addresses reach the same organization.
-    for (const host of ["greenwood", "greenwood-high"]) {
-      const page = await call(`/home?tenant=${host}`);
-      assert.equal(page.status, 200, host);
+    assert.equal((await change("greenwood")).res.status, 400, "the current address is no change");
+    assert.equal((await change("greenwood-high", rivalSessionCookie)).res.status, 403, "only the organization's own staff");
+    for (const gone of ["approve", "reject"]) {
+      assert.equal((await call(`/api/super/tenants/${gone}`, { ...json({ tenantId, subdomain: "x-y-z" }), cookie: superSessionCookie })).status, 404, `nothing for the platform to ${gone}`);
     }
-    const notice = await db.prepare("SELECT title FROM notifications WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1").bind(tenantId).first<{ title: string }>();
-    assert.equal(notice!.title, "Your chosen address is ready");
-    // No other organization can take it, and a second one needs support.
-    const riversideTaken = await callJson("/api/tenant/subdomain?tenant=riverside", { ...json({ subdomain: "greenwood-high" }), cookie: rivalSessionCookie });
-    assert.equal(riversideTaken.res.status, 409);
-    assert.equal((await ask("greenwood-two")).res.status, 409);
 
-    await db.prepare("UPDATE tenants SET chosen_subdomain = NULL WHERE id = ?").bind(tenantId).run();
+    // Changed at once, with no approval.
+    const changed = await change("greenwood-high");
+    assert.equal(changed.res.status, 200, JSON.stringify(changed.data));
+    assert.match(changed.data.consoleUrl, /greenwood-high/);
+    let row = await db.prepare("SELECT subdomain, chosen_subdomain, address_changed_at FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.equal(row.subdomain, "greenwood", "the first address stays");
+    assert.equal(row.chosen_subdomain, "greenwood-high");
+    assert.ok(row.address_changed_at);
+    for (const host of ["greenwood", "greenwood-high"]) {
+      assert.equal((await call(`/home?tenant=${host}`)).status, 200, `${host} reaches the organization`);
+    }
+
+    // Once a week.
+    const tooSoon = await change("greenwood-hq");
+    assert.equal(tooSoon.res.status, 429);
+    assert.match(tooSoon.data.error, /once a week/);
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /The next change is possible on \d{4}-\d{2}-\d{2}/);
+    assert.doesNotMatch(settings, /id="form-subdomain-settings"/);
+
+    // A week later: the address it leaves is retired, and still reaches it; nobody else can take it.
+    await db.prepare("UPDATE tenants SET address_changed_at = address_changed_at - 7 * 24 * 3600 WHERE id = ?").bind(tenantId).run();
+    assert.equal((await change("greenwood-hq")).res.status, 200);
+    row = await db.prepare("SELECT chosen_subdomain FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.equal(row.chosen_subdomain, "greenwood-hq");
+    const retired = await db.prepare("SELECT subdomain FROM retired_addresses WHERE tenant_id = ?").bind(tenantId).all<{ subdomain: string }>();
+    assert.deepEqual(retired.results.map((r) => r.subdomain), ["greenwood-high"]);
+    for (const host of ["greenwood", "greenwood-high", "greenwood-hq"]) {
+      assert.equal((await call(`/home?tenant=${host}`)).status, 200, `${host} still reaches the organization`);
+    }
+    for (const address of ["greenwood-high", "greenwood"]) {
+      const squatter = await change(address, rivalSessionCookie, "riverside");
+      assert.equal(squatter.res.status, 409, `${address} stays Greenwood's`);
+    }
+    const signup = await submitSignup({ email: "squat@example.com", subdomain: "greenwood-high" });
+    assert.equal(signup.res.status, 409, "nor can a new registration take it");
+
+    // Going back to an earlier address takes it up again.
+    await db.prepare("UPDATE tenants SET address_changed_at = address_changed_at - 7 * 24 * 3600 WHERE id = ?").bind(tenantId).run();
+    assert.equal((await change("greenwood-high")).res.status, 200);
+    const after = await db.prepare("SELECT subdomain FROM retired_addresses WHERE tenant_id = ? ORDER BY subdomain").bind(tenantId).all<{ subdomain: string }>();
+    assert.deepEqual(after.results.map((r) => r.subdomain), ["greenwood-hq"]);
+    const audit = await db.prepare("SELECT details FROM audit_logs WHERE action = 'tenant.change_address' AND tenant_id = ? ORDER BY rowid DESC LIMIT 1").bind(tenantId).first<{ details: string }>();
+    assert.equal(audit!.details, "from=greenwood-hq to=greenwood-high");
+
+    // The rest of the suite uses greenwood's first address only.
+    await db.prepare("DELETE FROM retired_addresses WHERE tenant_id = ?").bind(tenantId).run();
+    await db.prepare("UPDATE tenants SET chosen_subdomain = NULL, address_changed_at = NULL WHERE id = ?").bind(tenantId).run();
   });
 
   test("A generated address has no public homepage until a chosen one is granted, and the console says so", async () => {
@@ -11267,6 +11285,109 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
     await restorePlan();
   });
+  test("A Custom plan is asked for, priced by a super admin with a payment link, and applied when paid", async () => {
+    const { db, tenantId } = await restorePlan();
+    const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };
+    const send = async (path: string, body: unknown, cookie: string) => {
+      const res = await worker.fetch(request(path, { ...json(body), cookie }), env);
+      return { res, data: (await res.json()) as any };
+    };
+    const ask = (body: unknown, cookie = orgSessionCookie) => send("/api/plan/custom?tenant=greenwood", body, cookie);
+
+    assert.equal((await ask({ workstations: 0, period: "year" })).res.status, 400, "at least one workstation");
+    assert.equal((await ask({ workstations: 300, remoteSeats: 301, period: "year" })).res.status, 400, "no more seats than workstations");
+    assert.equal((await ask({ workstations: 300, period: "week" })).res.status, 400);
+    assert.equal((await callJson("/api/super/custom-plans", { cookie: orgSessionCookie })).res.status, 403, "only the platform sees every request");
+    const asked = await ask({ workstations: 300, remoteSeats: 20, staff: 50, period: "year", notes: "Three campuses" });
+    assert.equal(asked.res.status, 200, JSON.stringify(asked.data));
+    assert.equal(asked.data.request.status, "open");
+    assert.equal((await ask({ workstations: 300, period: "year" })).res.status, 409, "one open request at a time");
+    assert.ok(localOutbox().some((m) => m.subject === "We received your Custom plan request"), "the requester gets a receipt");
+    const id = asked.data.request.id as string;
+
+    const list = await callJson("/api/super/custom-plans", { cookie: superSessionCookie });
+    assert.equal(list.res.status, 200);
+    assert.ok((list.data.requests as any[]).some((r) => r.id === id && r.organization && r.notes === "Three campuses"));
+
+    const approve = (body: Record<string, unknown>) => send("/api/super/custom-plans/approve", { id, ...body }, superSessionCookie);
+    assert.equal((await send("/api/super/custom-plans/approve", { id, price: 100000 }, orgSessionCookie)).res.status, 403);
+    const created: any[] = [];
+    const realFetch = globalThis.fetch;
+    let failNext = true;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      assert.equal(String(input instanceof Request ? input.url : input), "https://api.razorpay.com/v1/payment_links");
+      if (failNext) {
+        failNext = false;
+        return new Response(JSON.stringify({ error: { description: "Amount exceeds maximum" } }), { status: 400 });
+      }
+      created.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ id: "plink_custom", short_url: "https://rzp.io/i/custom", status: "created" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      assert.equal((await approve({ price: 0 })).res.status, 400, "a price is needed");
+      assert.equal((await approve({ price: 100000, validDays: 31 })).res.status, 400);
+      const failed = await approve({ price: 100000 });
+      assert.equal(failed.res.status, 502);
+      assert.match(failed.data.error, /Amount exceeds maximum/);
+      assert.equal((await db.prepare("SELECT status FROM custom_plan_requests WHERE id = ?").bind(id).first<any>()).status, "open", "a failed link leaves the request waiting");
+
+      const sent = await approve({ price: 100000, workstations: 320, validDays: 10, note: "Includes onboarding" });
+      assert.equal(sent.res.status, 200, JSON.stringify(sent.data));
+      assert.equal(sent.data.url, "https://rzp.io/i/custom");
+      assert.equal(created[0].amount, 100000 * 100 + Math.round(100000 * 100 * gstPercentFor(env) / 100), "the price set, with GST");
+      assert.equal(created[0].notify.email, false, "Lab Kiosk's own email carries the link");
+      assert.match(created[0].description, /Custom plan/);
+      assert.ok(localOutbox().some((m) => m.subject === "Your Custom plan: payment link" && m.text.includes("https://rzp.io/i/custom")), "the owner is emailed the link");
+      assert.equal((await approve({ price: 1 })).res.status, 409, "decided once");
+      const mine = await callJson("/api/plan/custom?tenant=greenwood", { cookie: orgSessionCookie });
+      assert.equal(mine.data.request.status, "sent");
+      assert.equal(mine.data.request.workstations, 320, "the terms the platform set");
+
+      const reference = created[0].reference_id as string;
+      const event = JSON.stringify({
+        event: "payment_link.paid",
+        payload: { payment_link: { entity: { id: "plink_custom", reference_id: reference, status: "paid" } }, payment: { entity: { id: "pay_custom" } } }
+      });
+      const hook = () =>
+        worker.fetch(request("/api/billing/razorpay/webhook", { method: "POST", body: event, headers: { "X-Razorpay-Signature": hmac("hook-secret", event) } }), env);
+      assert.equal((await hook()).status, 200);
+      const tenant = (await findTenantBySubdomain(db, "greenwood"))!;
+      assert.equal(tenant.license_plan, "commercial");
+      assert.equal(Number(tenant.workstation_limit), 320);
+      assert.equal(Number(tenant.staff_limit), 50);
+      assert.equal(Number(tenant.remote_seats_paid), 20);
+      const ends = Number(tenant.license_expires_at);
+      assert.equal(ends, periodEnd(Number((await db.prepare("SELECT paid_at FROM payments WHERE id = ?").bind(reference).first<any>()).paid_at), "year"));
+      assert.equal(entitlement(tenant, Math.floor(Date.now() / 1000)).kind, "custom");
+      assert.equal((await db.prepare("SELECT status FROM custom_plan_requests WHERE id = ?").bind(id).first<any>()).status, "paid");
+      const invoice = await db.prepare("SELECT subtotal_paise FROM invoices WHERE tenant_id = ? AND source_id = ?").bind(tenantId, reference).first<any>();
+      assert.equal(Number(invoice?.subtotal_paise), 100000 * 100, "an invoice for the price");
+      assert.equal((await hook()).status, 200);
+      assert.equal(Number((await findTenantBySubdomain(db, "greenwood"))!.license_expires_at), ends, "a redelivered webhook applies the plan once");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    // A new request after it was paid; declining one needs a reason.
+    const again = await ask({ workstations: 400, period: "month" });
+    assert.equal(again.res.status, 200);
+    const decline = (body: Record<string, unknown>) => send("/api/super/custom-plans/decline", { id: again.data.request.id, ...body }, superSessionCookie);
+    assert.equal((await decline({})).res.status, 400);
+    assert.equal((await decline({ reason: "Not at this size yet" })).res.status, 200);
+    const declined = await callJson("/api/plan/custom?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(declined.data.request.status, "declined");
+    assert.equal(declined.data.request.decisionNote, "Not at this size yet");
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    for (const action of ["plan.custom_request", "plan.custom_approve", "plan.paid", "plan.custom_decline"]) {
+      assert.ok((logs.logs as any[]).some((l) => l.action === action), action);
+    }
+    await db.prepare("DELETE FROM custom_plan_requests WHERE tenant_id = ?").bind(tenantId).run();
+    await db.prepare("DELETE FROM invoices WHERE tenant_id = ? AND source_id = ?").bind(tenantId, created[0]?.reference_id ?? "").run();
+    await db.prepare("DELETE FROM payments WHERE tenant_id = ?").bind(tenantId).run();
+    await updateTenant(db, tenantId, { staff_limit: null, remote_seats_paid: 0 });
+    await restorePlan();
+  });
   test("The Razorpay relay forwards only signed, fresh payment-link calls, and passes Razorpay's answer back", async () => {
     const secret = "r".repeat(40);
     const body = JSON.stringify({ amount: 235882 });
@@ -11650,6 +11771,43 @@ describe("Schema sources agree", () => {
     assert.equal(completed("waiting"), 99, "a pending registration entered them too");
     const indexes = (db.prepare("PRAGMA index_list(organization_profiles)").all() as { name: string }[]).map((i) => i.name);
     assert.ok(indexes.includes("idx_organization_profiles_email") && indexes.includes("idx_organization_profiles_phone"));
+  });
+
+  test("0062 lets an organization keep every address it gave up, and goes with the organization", () => {
+    const db = migratedDb("0062");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('old', 'u1', 'Old', 'old', 'active', 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0062_self_serve_addresses.sql"), "utf8"));
+    db.exec("COMMIT;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    assert.equal((db.prepare("SELECT address_changed_at AS at FROM tenants WHERE id = 'old'").get() as { at: number | null }).at, null, "no change made yet");
+    db.exec("INSERT INTO retired_addresses (subdomain, tenant_id, retired_at) VALUES ('old-name', 'old', 5)");
+    assert.throws(() => db.exec("INSERT INTO retired_addresses (subdomain, tenant_id, retired_at) VALUES ('old-name', 'old', 6)"), /UNIQUE|PRIMARY KEY/, "one holder per address");
+    db.exec("DELETE FROM tenants WHERE id = 'old'");
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM retired_addresses").get() as { n: number }).n, 0);
+  });
+
+  test("0063 keeps Custom plan requests with their organization, and checks what they hold", () => {
+    const db = migratedDb("0063");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('big', 'u1', 'Big', 'big', 'active', 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0063_custom_plans.sql"), "utf8"));
+    db.exec("COMMIT;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    db.exec("INSERT INTO custom_plan_requests (id, tenant_id, requested_by, workstations, period, created_at) VALUES ('r1', 'big', 'u1', 300, 'year', 5)");
+    const row = db.prepare("SELECT status, remote_seats, notes FROM custom_plan_requests WHERE id = 'r1'").get() as { status: string; remote_seats: number; notes: string };
+    assert.deepEqual({ ...row }, { status: "open", remote_seats: 0, notes: "" });
+    assert.throws(() => db.exec("INSERT INTO custom_plan_requests (id, tenant_id, workstations, period, created_at) VALUES ('r2', 'big', 0, 'year', 5)"), /CHECK/);
+    assert.throws(() => db.exec("INSERT INTO custom_plan_requests (id, tenant_id, workstations, period, created_at) VALUES ('r3', 'big', 5, 'week', 5)"), /CHECK/);
+    assert.throws(() => db.exec("UPDATE custom_plan_requests SET status = 'approved' WHERE id = 'r1'"), /CHECK/);
+    db.exec("DELETE FROM tenants WHERE id = 'big'");
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM custom_plan_requests").get() as { n: number }).n, 0);
   });
 
   test("0032 gives every organization a workstation limit of 45, or what it already has when that is more", () => {
