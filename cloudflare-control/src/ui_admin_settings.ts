@@ -209,6 +209,11 @@ ${renderRemoteControlCard(tenant, tenantParam)}
                 ? `
                 <div class="callout ${certificate === "active" ? "callout-success" : certificate === "failed" ? "callout-danger" : "callout-warning"}">
                   <div>
+                    ${
+                      mayConnectDomain
+                        ? ""
+                        : `<div class="form-hint">This domain is not loading: your plan no longer includes a custom domain. <a href="/admin/plan${escapeAttr(tenantParam)}#plans">Add it on Plan &amp; billing</a> and it works again.</div>`
+                    }
                     <span class="badge ${certificate === "active" ? "badge-green" : certificate === "failed" ? "badge-red" : "badge-yellow"}">${
                       certificate === "active" ? "Active domain" : certificate === "failed" ? "Certificate failed" : "Waiting for DNS"
                     }</span>
@@ -228,8 +233,8 @@ ${renderRemoteControlCard(tenant, tenantParam)}
               `
                 : !mayConnectDomain
                   ? `
-                <p class="form-hint">A custom domain comes with the Custom plan. Every other plan uses its console address, which you can change once a week.</p>
-                <a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}#custom-status">Ask for a Custom plan</a>
+                <p class="form-hint">A custom domain is included in Pro and Custom, and an add-on on Starter, Standard and Education for ₹${CATALOGUE.standard.domainMonthly.toLocaleString("en-IN")} a month or ₹${CATALOGUE.standard.domainYearly.toLocaleString("en-IN")} a year. Without it, your console address is yours, and you can change it once a week.</p>
+                <a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}#plans">Add a custom domain</a>
               `
                   : `
                 <form id="form-custom-domain">

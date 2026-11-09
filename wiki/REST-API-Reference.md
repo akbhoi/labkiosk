@@ -113,7 +113,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/tenant/remote-control/enable` | `POST` | Turn Remote Control on; `409` when it is on, revoked by the platform, or the plan has no Remote Control seats |
 | `/api/plan/custom` | `GET` `POST` | The latest Custom plan request, or ask for one: `{ workstations, remoteSeats?, staff?, period: "month"\|"year", notes? }`; `409` while one is open or its link is unpaid |
 | `/api/settings/enrollment-key` | `GET` `POST` | View or rotate the enrollment key |
-| `/api/settings/custom-domain` | `POST` `DELETE` | Connect a custom domain (Custom plan only, `403` otherwise; bound at once and its Cloudflare custom hostname is created) or disconnect it |
+| `/api/settings/custom-domain` | `POST` `DELETE` | Connect a custom domain (included in Pro and Custom, an add-on on Starter, Standard and Education; `403` otherwise; bound at once and its Cloudflare custom hostname is created) or disconnect it |
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
 | `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
 | `/api/workstation-issues/log` | `GET` | `?id=`: the journal a restart report carried, kept 30 days (requires `settings`) |

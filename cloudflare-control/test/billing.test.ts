@@ -42,9 +42,9 @@ const DAY = 86_400;
 
 describe("Prices, GST and invoices", () => {
   test("A tier's price is worked out in paise from the catalogue alone", () => {
-    const standard = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0 }, 18);
+    const standard = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18);
     assert.deepEqual([standard.base, standard.subtotal, standard.gst, standard.total], [199_900, 199_900, 35_982, 235_882]);
-    const pro = quoteTier({ tier: "pro", period: "year", extraWorkstations: 5, remoteSeats: 3 }, 18);
+    const pro = quoteTier({ tier: "pro", period: "year", extraWorkstations: 5, remoteSeats: 3, customDomain: false }, 18);
     assert.equal(pro.base, 4_999_000);
     assert.equal(pro.extras, 5 * 29_000);
     assert.equal(pro.remote, 3 * 49_000);
@@ -52,12 +52,45 @@ describe("Prices, GST and invoices", () => {
     assert.equal(pro.gst, Math.round((pro.subtotal * 18) / 100));
     assert.equal(pro.workstations, 125);
     assert.equal(pro.remoteSeatsTotal, 13, "Pro includes 10 seats");
-    const unregistered = quoteTier({ tier: "starter", period: "month", extraWorkstations: 0, remoteSeats: 0 }, 0);
+    const unregistered = quoteTier({ tier: "starter", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 0);
     assert.equal(unregistered.gst, 0);
     assert.equal(unregistered.total, 99_900);
-    const education = quoteTier({ tier: "education", period: "year", extraWorkstations: 0, remoteSeats: 4 }, 18);
+    const education = quoteTier({ tier: "education", period: "year", extraWorkstations: 0, remoteSeats: 4, customDomain: false }, 18);
     assert.equal(education.base, 0);
     assert.equal(education.remote, 4 * 24_500, "Remote Control is half price on Education");
+  });
+
+  test("A custom domain is included in Pro and costs 299 a month or 2,990 a year elsewhere, Education too", () => {
+    const monthly = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: true }, 18);
+    assert.equal(monthly.domain, 29_900);
+    assert.equal(monthly.subtotal, 199_900 + 29_900);
+    assert.equal(monthly.customDomainIncluded, true);
+    const yearly = quoteTier({ tier: "starter", period: "year", extraWorkstations: 0, remoteSeats: 0, customDomain: true }, 0);
+    assert.equal(yearly.domain, 299_000, "a year costs ten months");
+    const pro = quoteTier({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: true }, 0);
+    assert.deepEqual([pro.domain, pro.customDomain, pro.customDomainIncluded], [0, false, true], "Pro includes it at no charge");
+    const education = quoteTier({ tier: "education", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: true }, 0);
+    assert.deepEqual([education.base, education.domain, education.total], [0, 29_900, 29_900]);
+    const without = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 0);
+    assert.deepEqual([without.domain, without.customDomainIncluded], [0, false]);
+
+    assert.equal(parseTierQuoteInput({ tier: "standard", period: "month", customDomain: "yes" }).ok, false, "true or false only");
+    const edu = parseTierQuoteInput({ tier: "education", period: "year", customDomain: true });
+    assert.ok(edu.ok && edu.value.customDomain, "Education may pay for the domain alone");
+    const proParsed = parseTierQuoteInput({ tier: "pro", period: "year", customDomain: true });
+    assert.ok(proParsed.ok && !proParsed.value.customDomain, "nothing to buy on Pro");
+
+    const now = 1_800_000_000;
+    const year = now + 365 * DAY;
+    const base = { workstation_limit: 45, license_expires_at: year, custom_domain_paid: 0 };
+    assert.equal(entitlement({ ...base, license_plan: null, license_expires_at: null }, now).customDomain, false, "Free");
+    assert.equal(entitlement({ ...base, license_plan: "evaluation" }, now).customDomain, false, "the trial");
+    assert.equal(entitlement({ ...base, license_plan: "subscriber", plan_tier: "standard" }, now).customDomain, false);
+    assert.equal(entitlement({ ...base, license_plan: "subscriber", plan_tier: "standard", custom_domain_paid: 1 }, now).customDomain, true);
+    assert.equal(entitlement({ ...base, license_plan: "subscriber", plan_tier: "pro" }, now).customDomain, true);
+    assert.equal(entitlement({ ...base, license_plan: "education", custom_domain_paid: 1 }, now).customDomain, true);
+    assert.equal(entitlement({ ...base, license_plan: "commercial" }, now).customDomain, true);
+    assert.equal(entitlement({ ...base, license_plan: "subscriber", plan_tier: "pro", license_expires_at: now - 1 }, now).customDomain, false, "a lapsed plan has none");
   });
 
   test("Only a tier, a period and counts are accepted from the browser", () => {
@@ -72,7 +105,7 @@ describe("Prices, GST and invoices", () => {
     const tampered: Record<string, unknown> = { tier: "standard", period: "year", extraWorkstations: 5, remoteSeats: 2, total: 1 };
     const ok = parseTierQuoteInput(tampered);
     assert.ok(ok.ok);
-    if (ok.ok) assert.deepEqual(ok.value, { tier: "standard", period: "year", extraWorkstations: 5, remoteSeats: 2 }, "an amount sent along is ignored");
+    if (ok.ok) assert.deepEqual(ok.value, { tier: "standard", period: "year", extraWorkstations: 5, remoteSeats: 2, customDomain: false }, "an amount sent along is ignored");
   });
 
   test("A mid-term increase charges the difference for the time left, rounded up to the rupee", () => {
@@ -235,14 +268,14 @@ describe("The subscription engine", () => {
     globalThis.fetch = realFetch;
   });
 
-  const checkout = async (input: TierQuoteInput = { tier: "standard", period: "month", extraWorkstations: 5, remoteSeats: 2 }) =>
+  const checkout = async (input: TierQuoteInput = { tier: "standard", period: "month", extraWorkstations: 5, remoteSeats: 2, customDomain: false }) =>
     startCheckout(env, db, { tenant, userId, quote: quoteTier(input, gstPercentFor(env)), now });
   const invoices = async () => (await db.prepare("SELECT * FROM invoices WHERE tenant_id = ? ORDER BY number").bind(tenant.id).all<any>()).results ?? [];
 
   test("A paid period is granted and invoiced once, however often Razorpay is read", async () => {
     const row = await checkout();
     assert.equal(row.status, "created");
-    assert.equal(row.total_paise, quoteTier({ tier: "standard", period: "month", extraWorkstations: 5, remoteSeats: 2 }, 18).total);
+    assert.equal(row.total_paise, quoteTier({ tier: "standard", period: "month", extraWorkstations: 5, remoteSeats: 2, customDomain: false }, 18).total);
     assert.equal(rzp.plans.get(row.razorpay_plan_id!), row.total_paise, "Razorpay's plan is exactly the stored total");
     rzp.charge(row.razorpay_subscription_id!, now, 30 * DAY);
 
@@ -264,6 +297,28 @@ describe("The subscription engine", () => {
     assert.equal(list[0].total_paise, row.total_paise);
     assert.equal(list[0].cgst_paise + list[0].sgst_paise + list[0].igst_paise, row.gst_paise);
     assert.equal(list[0].igst_paise, 0, "a buyer with no state on record is taxed in the seller's state");
+  });
+
+  test("A subscription with the custom domain add-on grants it, and one without takes it away", async () => {
+    const row = await checkout({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: true });
+    assert.equal(row.custom_domain, 1);
+    assert.equal(row.subtotal_paise, 199_900 + 29_900);
+    rzp.charge(row.razorpay_subscription_id!, now, 30 * DAY);
+    await syncSubscription(env, db, row, now);
+    let t = (await findTenantById(db, tenant.id))!;
+    assert.equal(Number(t.custom_domain_paid), 1);
+    assert.equal(entitlement(t, now).customDomain, true);
+    const lines = JSON.parse((await invoices())[0].lines_json) as { description: string; amount: number }[];
+    assert.ok(lines.some((l) => l.description === "Custom domain, 1 month" && l.amount === 29_900), JSON.stringify(lines));
+
+    await updateTenant(db, tenant.id, { license_plan: null, plan_tier: null, license_expires_at: null });
+    tenant = (await findTenantById(db, tenant.id))!;
+    const plain = await checkout({ tier: "starter", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false });
+    rzp.charge(plain.razorpay_subscription_id!, now, 30 * DAY);
+    await syncSubscription(env, db, plain, now);
+    t = (await findTenantById(db, tenant.id))!;
+    assert.equal(Number(t.custom_domain_paid), 0, "a plan without it does not carry it over");
+    assert.equal(entitlement(t, now).customDomain, false);
   });
 
   test("A renewal moves the end date on; a late, older charge moves nothing back", async () => {
@@ -309,11 +364,11 @@ describe("The subscription engine", () => {
   });
 
   test("An increase mid-term charges the difference upfront and replaces the subscription only once authorised", async () => {
-    const row = await checkout({ tier: "starter", period: "month", extraWorkstations: 0, remoteSeats: 0 });
+    const row = await checkout({ tier: "starter", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false });
     rzp.charge(row.razorpay_subscription_id!, now - 10 * DAY, 30 * DAY);
     await syncSubscription(env, db, row, now);
     const current = (await findSubscription(db, row.id))!;
-    const next = quoteTier({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0 }, 18);
+    const next = quoteTier({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18);
     const change = planChange(current, next, now, 18);
     assert.equal(change.immediate, false);
     assert.equal(change.startsAt, now + 20 * DAY);
@@ -353,7 +408,7 @@ describe("The subscription engine", () => {
 
   test("Only one checkout waits at a time, and the cron closes one never authorised", async () => {
     const a = await checkout();
-    const b = await checkout({ tier: "pro", period: "year", extraWorkstations: 0, remoteSeats: 0 });
+    const b = await checkout({ tier: "pro", period: "year", extraWorkstations: 0, remoteSeats: 0, customDomain: false });
     assert.equal((await findSubscription(db, a.id))!.status, "expired");
     assert.equal(rzp.subs.get(a.razorpay_subscription_id!)!.status, "cancelled");
     await db.prepare("UPDATE subscriptions SET created_at = ?, updated_at = ? WHERE id = ?").bind(now - 2 * DAY, now - 2 * DAY, b.id).run();
@@ -442,7 +497,7 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
   const proforma = (overrides: Partial<Parameters<typeof createProforma>[2]> = {}) =>
     createProforma(env, db, {
       tenant,
-      input: { tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 2 },
+      input: { tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 2, customDomain: false },
       reason: "renewal",
       validUntil: now + 5 * DAY,
       coversFrom: now + 5 * DAY,
@@ -489,7 +544,7 @@ describe("Proformas, tax invoice pages and GSTR-1", () => {
     assert.equal(first.status, "open");
     assert.equal(first.seller_gstin, "21CWZPB0039H2ZO");
     assert.equal(first.buyer_name, "Riverside Trust");
-    const q = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 2 }, 18);
+    const q = quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 2, customDomain: false }, 18);
     assert.deepEqual([first.subtotal_paise, first.igst_paise, first.cgst_paise, first.total_paise].map(Number), [q.subtotal, q.gst, 0, q.total], "a buyer in Maharashtra pays IGST");
     const payment = (await db.prepare("SELECT * FROM payments WHERE id = ?").bind(first.payment_id).first<any>())!;
     assert.deepEqual([payment.kind, payment.tier, Number(payment.remote_seats), Number(payment.total_paise)], ["platform_link", "standard", 2, q.total]);

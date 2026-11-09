@@ -51,6 +51,8 @@ export interface Payment {
   kind: "legacy" | "proration" | "platform_link";
   tier: SoldTier | null;
   remote_seats: number;
+  /** 1 when it pays for the custom domain add-on (0064). */
+  custom_domain: number;
   subscription_id: string | null;
   sent_to: string | null;
   note: string | null;
@@ -211,7 +213,7 @@ export async function createPaymentLink(
      * A link the platform sends: its tier (null for a Custom plan, named by
      * label), seats, note, and how long it stays open.
      */
-    platform?: { tier: SoldTier | null; label?: string; remoteSeats: number; note: string; hours: number; razorpayEmail?: boolean };
+    platform?: { tier: SoldTier | null; label?: string; remoteSeats: number; customDomain?: boolean; note: string; hours: number; razorpayEmail?: boolean };
   }
 ): Promise<Payment> {
   if (!billingEnabled(env)) throw new Error("Online payment is not set up");
@@ -224,8 +226,8 @@ export async function createPaymentLink(
   await db
     .prepare(
       `INSERT INTO payments (id, tenant_id, period, extra_workstations, subtotal_paise, gst_paise, total_paise, status, created_by, created_at,
-                             kind, tier, remote_seats, sent_to, note, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?)`
+                             kind, tier, remote_seats, custom_domain, sent_to, note, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -240,6 +242,7 @@ export async function createPaymentLink(
       p ? "platform_link" : "legacy",
       p ? p.tier : null,
       p ? p.remoteSeats : 0,
+      p?.customDomain ? 1 : 0,
       p ? input.email : null,
       p ? p.note.slice(0, 500) : null,
       expiresAt
@@ -247,7 +250,7 @@ export async function createPaymentLink(
     .run();
   const label = p ? (p.tier ? CATALOGUE[p.tier].label : (p.label ?? "Custom plan")) : "subscription";
   const description =
-    `Lab Kiosk ${label}, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations${p && p.remoteSeats ? `, ${p.remoteSeats} Remote Control seats` : ""}, for ${input.organization}`.slice(0, 2048);
+    `Lab Kiosk ${label}, ${q.period === "month" ? "1 month" : "1 year"}, ${q.workstations} workstations${p && p.remoteSeats ? `, ${p.remoteSeats} Remote Control seats` : ""}${p?.customDomain ? ", custom domain" : ""}, for ${input.organization}`.slice(0, 2048);
   let res: Response;
   try {
     res = await fetchRazorpay(env, "/v1/payment_links", {
@@ -356,10 +359,12 @@ export async function recordPayment(
   const spec = CATALOGUE[tier];
   const extra = Number(payment.extra_workstations);
   const seats = Number(payment.remote_seats) || 0;
+  const customDomain = Number(payment.custom_domain) === 1 && !spec.includesDomain;
   if (tier === "education") {
     await updateTenant(db, tenant.id, {
       workstation_limit: spec.includedWorkstations + extra,
       remote_seats_paid: seats,
+      custom_domain_paid: customDomain ? 1 : 0,
       remote_control_seats: Math.max(Number(tenant.remote_control_seats) || 1, spec.includedRemoteSeats + seats)
     });
   } else {
@@ -369,6 +374,7 @@ export async function recordPayment(
       license_expires_at: ends,
       workstation_limit: spec.includedWorkstations + extra,
       remote_seats_paid: seats,
+      custom_domain_paid: customDomain ? 1 : 0,
       remote_control_seats: Math.max(Number(tenant.remote_control_seats) || 1, spec.includedRemoteSeats + seats),
       grace_ends_at: null,
       staff_limit: null
@@ -378,7 +384,7 @@ export async function recordPayment(
   // A proforma paid through this link is settled; one past its date was still paid.
   await db.prepare("UPDATE proformas SET status = 'paid' WHERE payment_id = ? AND status IN ('open', 'expired')").bind(payment.id).run();
   if (env && ref.paymentId) {
-    const q = quoteTier({ tier, period: payment.period, extraWorkstations: extra, remoteSeats: seats }, 0);
+    const q = quoteTier({ tier, period: payment.period, extraWorkstations: extra, remoteSeats: seats, customDomain }, 0);
     const lines = invoiceLines(q);
     const fresh = (await findTenantById(db, tenant.id)) ?? tenant;
     await db.batch(

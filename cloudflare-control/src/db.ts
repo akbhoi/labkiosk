@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   billing_address TEXT,
   billing_state TEXT,
   profile_completed_at INTEGER,
-  address_changed_at INTEGER
+  address_changed_at INTEGER,
+  custom_domain_paid INTEGER NOT NULL DEFAULT 0 CHECK (custom_domain_paid IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -854,7 +855,8 @@ CREATE TABLE IF NOT EXISTS payments (
   subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
   sent_to TEXT,
   note TEXT,
-  expires_at INTEGER
+  expires_at INTEGER,
+  custom_domain INTEGER NOT NULL DEFAULT 0 CHECK (custom_domain IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_payments_tenant ON payments(tenant_id, created_at);
@@ -889,7 +891,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   starts_at INTEGER,
   created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  custom_domain INTEGER NOT NULL DEFAULT 0 CHECK (custom_domain IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant ON subscriptions(tenant_id, created_at);
@@ -977,7 +980,8 @@ CREATE TABLE IF NOT EXISTS proformas (
   created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
   emailed_at INTEGER,
-  reminded_at INTEGER
+  reminded_at INTEGER,
+  custom_domain INTEGER NOT NULL DEFAULT 0 CHECK (custom_domain IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_proformas_tenant ON proformas(tenant_id, created_at);
@@ -1246,6 +1250,11 @@ const SCHEMA_PROBES: readonly string[] = [
   // 0062: self-serve console addresses.
   "SELECT address_changed_at FROM tenants LIMIT 1",
   "SELECT subdomain, tenant_id, retired_at FROM retired_addresses LIMIT 1",
+  // 0064: the custom domain add-on.
+  "SELECT custom_domain_paid FROM tenants LIMIT 1",
+  "SELECT custom_domain FROM subscriptions LIMIT 1",
+  "SELECT custom_domain FROM payments LIMIT 1",
+  "SELECT custom_domain FROM proformas LIMIT 1",
   // 0063: Custom plan requests.
   "SELECT id, tenant_id, requested_by, workstations, remote_seats, staff, period, notes, status, subtotal_paise, gst_paise, total_paise, payment_id, decided_by, decided_at, decision_note, created_at FROM custom_plan_requests LIMIT 1"
 ];
@@ -1649,6 +1658,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "plan_tier",
   "staff_limit",
   "remote_seats_paid",
+  "custom_domain_paid",
   "grace_ends_at",
   "billing_legal_name",
   "billing_gstin",

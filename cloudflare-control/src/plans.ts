@@ -59,16 +59,20 @@ export interface TierSpec {
   includedRemoteSeats: number;
   remoteMonthly: number;
   remoteYearly: number;
+  /** Whether the tier includes a custom domain; otherwise it is an add-on at domainMonthly or domainYearly. */
+  includesDomain: boolean;
+  domainMonthly: number;
+  domainYearly: number;
 }
 
 export type SoldTier = PaidTier | "education";
 
 export const CATALOGUE: Readonly<Record<SoldTier, Readonly<TierSpec>>> = Object.freeze({
-  starter: Object.freeze({ label: "Starter", monthly: 999, yearly: 9990, includedWorkstations: 15, extraMonthly: 49, extraYearly: 490, staff: 5, includedRemoteSeats: 0, remoteMonthly: 49, remoteYearly: 490 }),
-  standard: Object.freeze({ label: "Standard", monthly: 1999, yearly: 19990, includedWorkstations: 45, extraMonthly: 39, extraYearly: 390, staff: 15, includedRemoteSeats: 0, remoteMonthly: 49, remoteYearly: 490 }),
-  pro: Object.freeze({ label: "Pro", monthly: 4999, yearly: 49990, includedWorkstations: 120, extraMonthly: 29, extraYearly: 290, staff: 50, includedRemoteSeats: 10, remoteMonthly: 49, remoteYearly: 490 }),
+  starter: Object.freeze({ label: "Starter", monthly: 999, yearly: 9990, includedWorkstations: 15, extraMonthly: 49, extraYearly: 490, staff: 5, includedRemoteSeats: 0, remoteMonthly: 49, remoteYearly: 490, includesDomain: false, domainMonthly: 299, domainYearly: 2990 }),
+  standard: Object.freeze({ label: "Standard", monthly: 1999, yearly: 19990, includedWorkstations: 45, extraMonthly: 39, extraYearly: 390, staff: 15, includedRemoteSeats: 0, remoteMonthly: 49, remoteYearly: 490, includesDomain: false, domainMonthly: 299, domainYearly: 2990 }),
+  pro: Object.freeze({ label: "Pro", monthly: 4999, yearly: 49990, includedWorkstations: 120, extraMonthly: 29, extraYearly: 290, staff: 50, includedRemoteSeats: 10, remoteMonthly: 49, remoteYearly: 490, includesDomain: true, domainMonthly: 0, domainYearly: 0 }),
   // Education is free; what it pays for is extra workstations and Remote Control at half price.
-  education: Object.freeze({ label: "Education", monthly: 0, yearly: 0, includedWorkstations: 45, extraMonthly: 39, extraYearly: 390, staff: 15, includedRemoteSeats: 0, remoteMonthly: 25, remoteYearly: 245 })
+  education: Object.freeze({ label: "Education", monthly: 0, yearly: 0, includedWorkstations: 45, extraMonthly: 39, extraYearly: 390, staff: 15, includedRemoteSeats: 0, remoteMonthly: 25, remoteYearly: 245, includesDomain: false, domainMonthly: 299, domainYearly: 2990 })
 });
 
 export const PAID_TIERS: readonly PaidTier[] = Object.freeze(["starter", "standard", "pro"]);
@@ -111,6 +115,8 @@ export interface Entitlement {
   staffLimit: number;
   /** Workstations that may carry a Remote Control seat. */
   remoteSeats: number;
+  /** Whether it may connect a custom domain: Custom and Pro include one; Starter, Standard and Education pay for it. */
+  customDomain: boolean;
   expiresAt: number | null;
   /** A plan was recorded and its end date has passed: the organization is on Free. */
   lapsed: boolean;
@@ -119,7 +125,7 @@ export interface Entitlement {
 }
 
 type EntitlementTenant = Pick<Tenant, "license_plan" | "license_expires_at" | "workstation_limit"> &
-  Partial<Pick<Tenant, "plan_tier" | "staff_limit" | "remote_seats_paid">>;
+  Partial<Pick<Tenant, "plan_tier" | "staff_limit" | "remote_seats_paid" | "custom_domain_paid">>;
 
 function staffLimitFor(kind: PlanKind, tenant: EntitlementTenant): number {
   const stored = tenant.staff_limit === null || tenant.staff_limit === undefined ? null : Number(tenant.staff_limit);
@@ -137,9 +143,13 @@ function staffLimitFor(kind: PlanKind, tenant: EntitlementTenant): number {
   }
 }
 
-/** Only the Custom plan may connect a custom domain; every other plan has its console address. */
+/**
+ * Whether the organization may connect a custom domain: on Custom and Pro it is
+ * included, on Starter, Standard and Education it is a paid add-on, and Free and
+ * the trial use their console address.
+ */
 export function allowsCustomDomain(tenant: EntitlementTenant, now = Math.floor(Date.now() / 1000)): boolean {
-  return entitlement(tenant, now).kind === "custom";
+  return entitlement(tenant, now).customDomain;
 }
 
 export function entitlement(tenant: EntitlementTenant, now = Math.floor(Date.now() / 1000)): Entitlement {
@@ -154,6 +164,7 @@ export function entitlement(tenant: EntitlementTenant, now = Math.floor(Date.now
       limit: stored,
       staffLimit: STAFF_LIMITS.free,
       remoteSeats: paidSeats,
+      customDomain: false,
       expiresAt: null,
       lapsed: false,
       lapsedFrom: null,
@@ -169,6 +180,7 @@ export function entitlement(tenant: EntitlementTenant, now = Math.floor(Date.now
       limit: Math.min(stored, PRICING.freeWorkstations),
       staffLimit: STAFF_LIMITS.free,
       remoteSeats: 0,
+      customDomain: false,
       expiresAt: state.expiresAt,
       lapsed: true,
       lapsedFrom: kind,
@@ -184,6 +196,10 @@ export function entitlement(tenant: EntitlementTenant, now = Math.floor(Date.now
     limit: stored,
     staffLimit: staffLimitFor(kind, tenant),
     remoteSeats: paidSeats + included,
+    customDomain:
+      kind === "custom" ||
+      (tier !== null && CATALOGUE[tier].includesDomain) ||
+      ((kind === "subscription" || kind === "education") && Number(tenant.custom_domain_paid) === 1),
     expiresAt: state.expiresAt,
     lapsed: false,
     lapsedFrom: null,
@@ -242,6 +258,8 @@ export interface TierQuoteInput {
   period: BillingPeriod;
   extraWorkstations: number;
   remoteSeats: number;
+  /** The custom domain add-on; a tier that includes one ignores it. */
+  customDomain: boolean;
 }
 
 export interface TierQuote extends TierQuoteInput {
@@ -250,10 +268,13 @@ export interface TierQuote extends TierQuoteInput {
   staff: number;
   /** Remote Control seats in all: the paid ones plus any the tier includes. */
   remoteSeatsTotal: number;
+  /** Whether the plan has a custom domain, included or paid for. */
+  customDomainIncluded: boolean;
   /** Paise, before GST. */
   base: number;
   extras: number;
   remote: number;
+  domain: number;
   subtotal: number;
   gstPercent: number;
   gst: number;
@@ -270,17 +291,22 @@ export function quoteTier(input: TierQuoteInput, gstPercent: number): TierQuote 
   const base = (yearly ? spec.yearly : spec.monthly) * 100;
   const extras = input.extraWorkstations * (yearly ? spec.extraYearly : spec.extraMonthly) * 100;
   const remote = input.remoteSeats * (yearly ? spec.remoteYearly : spec.remoteMonthly) * 100;
-  const subtotal = base + extras + remote;
+  const customDomain = input.customDomain && !spec.includesDomain;
+  const domain = customDomain ? (yearly ? spec.domainYearly : spec.domainMonthly) * 100 : 0;
+  const subtotal = base + extras + remote + domain;
   const gst = Math.round((subtotal * gstPercent) / 100);
   return {
     ...input,
+    customDomain,
     catalogueVersion: CATALOGUE_VERSION,
     workstations: spec.includedWorkstations + input.extraWorkstations,
     staff: spec.staff,
     remoteSeatsTotal: spec.includedRemoteSeats + input.remoteSeats,
+    customDomainIncluded: spec.includesDomain || customDomain,
     base,
     extras,
     remote,
+    domain,
     subtotal,
     gstPercent,
     gst,
@@ -300,6 +326,7 @@ export function parseTierQuoteInput(body: {
   period?: unknown;
   extraWorkstations?: unknown;
   remoteSeats?: unknown;
+  customDomain?: unknown;
 }): { ok: true; value: TierQuoteInput } | { ok: false; error: string } {
   if (!isSoldTier(body.tier)) return { ok: false, error: "Choose Starter, Standard or Pro" };
   if (body.period !== "month" && body.period !== "year") return { ok: false, error: "Choose monthly or yearly" };
@@ -307,7 +334,9 @@ export function parseTierQuoteInput(body: {
   if (!extra.ok) return extra;
   const seats = wholeCount(body.remoteSeats, "Remote Control seats");
   if (!seats.ok) return seats;
+  if (body.customDomain !== undefined && typeof body.customDomain !== "boolean") return { ok: false, error: "Custom domain must be true or false" };
   const spec = CATALOGUE[body.tier];
+  const customDomain = body.customDomain === true && !spec.includesDomain;
   if (spec.includedWorkstations + extra.value > PRICING.salesAbove) {
     return { ok: false, error: `For more than ${PRICING.salesAbove} workstations, contact sales` };
   }
@@ -315,10 +344,10 @@ export function parseTierQuoteInput(body: {
   if (spec.includedRemoteSeats + seats.value > spec.includedWorkstations + extra.value) {
     return { ok: false, error: "Remote Control seats cannot outnumber the workstations" };
   }
-  if (body.tier === "education" && extra.value === 0 && seats.value === 0) {
-    return { ok: false, error: "Education is free: choose extra workstations or Remote Control seats to pay for" };
+  if (body.tier === "education" && extra.value === 0 && seats.value === 0 && !customDomain) {
+    return { ok: false, error: "Education is free: choose extra workstations, Remote Control seats or a custom domain to pay for" };
   }
-  return { ok: true, value: { tier: body.tier, period: body.period, extraWorkstations: extra.value, remoteSeats: seats.value } };
+  return { ok: true, value: { tier: body.tier, period: body.period, extraWorkstations: extra.value, remoteSeats: seats.value, customDomain } };
 }
 
 /**
@@ -347,7 +376,13 @@ export function prorate(
 export function isIncrease(from: TierQuoteInput, to: TierQuoteInput): boolean {
   const a = quoteTier(from, 0);
   const b = quoteTier({ ...to, period: from.period }, 0);
-  return to.period === from.period && b.subtotal > a.subtotal && b.workstations >= a.workstations && b.remoteSeatsTotal >= a.remoteSeatsTotal;
+  return (
+    to.period === from.period &&
+    b.subtotal > a.subtotal &&
+    b.workstations >= a.workstations &&
+    b.remoteSeatsTotal >= a.remoteSeatsTotal &&
+    (b.customDomainIncluded || !a.customDomainIncluded)
+  );
 }
 
 // ------------------------------------------------------------ licensed slots

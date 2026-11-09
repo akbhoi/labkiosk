@@ -326,7 +326,8 @@ async function activate(ctx: PlanRouteContext, ref: { referenceId: string; linkI
       tier: payment.tier ?? "standard",
       period: payment.period,
       extra_workstations: Number(payment.extra_workstations),
-      remote_seats: Number(payment.remote_seats) || 0
+      remote_seats: Number(payment.remote_seats) || 0,
+      custom_domain: Number(payment.custom_domain) === 1 ? 1 : 0
     });
     await emailPaidInvoice(ctx.env, ctx.db, tenant, payment.id, Math.floor(nowMs / 1000), ctx.url.origin, {
       plan,

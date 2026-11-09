@@ -16,6 +16,7 @@ import {
 } from "./db";
 import { cleanSubdomain } from "./escape";
 import { DEMO_SLUGS, isDemoTenant } from "./demo";
+import { allowsCustomDomain } from "./plans";
 
 /** Hostnames where the ?tenant= / X-Tenant override is trusted (local dev & tests). */
 const DEV_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "host.docker.internal", "host.containers.internal"]);
@@ -200,11 +201,13 @@ export async function resolveTenant(options: {
     return { tenant: await findTenantBySubdomain(db, slug), denied: false };
   }
 
-  // 1b. Check if the Host header matches an approved custom domain.
+  // 1b. Check if the Host header matches a connected custom domain. It serves only
+  // while the plan includes or pays for it (Custom, Pro, or the add-on); otherwise
+  // it stays on file and the host is unknown until the plan covers it again.
   const host = hostname(request);
   if (!isDevHost(request) && (!baseDomain || (host !== baseDomain && !host.endsWith("." + baseDomain)))) {
     const customTenant = await findTenantByCustomDomain(db, host);
-    if (customTenant) {
+    if (customTenant && allowsCustomDomain(customTenant)) {
       return { tenant: customTenant, denied: false };
     }
   }

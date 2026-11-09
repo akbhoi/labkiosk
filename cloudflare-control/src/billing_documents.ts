@@ -145,6 +145,8 @@ export interface Proforma {
   period: BillingPeriod;
   extra_workstations: number;
   remote_seats: number;
+  /** 1 when it sells the custom domain add-on (0064). */
+  custom_domain: number;
   subtotal_paise: number;
   cgst_paise: number;
   sgst_paise: number;
@@ -531,15 +533,15 @@ export async function createProforma(env: Env, db: D1Database, p: NewProforma): 
     callbackUrl: p.callbackUrl,
     nowSeconds: p.now,
     // The proforma email carries the link; Razorpay emails it too only when this platform cannot.
-    platform: { tier: p.input.tier, remoteSeats: p.input.remoteSeats, note: `Proforma ${number}${p.note ? `: ${p.note}` : ""}`, hours, razorpayEmail: Boolean(mailConfigProblem(env)) }
+    platform: { tier: p.input.tier, remoteSeats: p.input.remoteSeats, customDomain: quote.customDomain, note: `Proforma ${number}${p.note ? `: ${p.note}` : ""}`, hours, razorpayEmail: Boolean(mailConfigProblem(env)) }
   });
   const id = `pf${crypto.randomUUID().replace(/-/g, "")}`;
   await db
     .prepare(
-      `INSERT INTO proformas (id, number, tenant_id, reason, tier, period, extra_workstations, remote_seats, subtotal_paise, cgst_paise, sgst_paise,
+      `INSERT INTO proformas (id, number, tenant_id, reason, tier, period, extra_workstations, remote_seats, custom_domain, subtotal_paise, cgst_paise, sgst_paise,
                               igst_paise, total_paise, seller_gstin, buyer_name, buyer_gstin, buyer_address, place_of_supply, lines_json, covers_from,
                               covers_to, valid_until, payment_id, status, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`
     )
     .bind(
       id,
@@ -550,6 +552,7 @@ export async function createProforma(env: Env, db: D1Database, p: NewProforma): 
       p.input.period,
       p.input.extraWorkstations,
       p.input.remoteSeats,
+      quote.customDomain ? 1 : 0,
       quote.subtotal,
       split.cgst,
       split.sgst,
@@ -682,9 +685,9 @@ async function proformaCandidates(db: D1Database, now: number): Promise<Candidat
     .all<Tenant>();
   for (const tenant of legacy ?? []) {
     const last = await db
-      .prepare("SELECT tier, period, extra_workstations, remote_seats FROM payments WHERE tenant_id = ? AND status = 'paid' ORDER BY paid_at DESC LIMIT 1")
+      .prepare("SELECT tier, period, extra_workstations, remote_seats, custom_domain FROM payments WHERE tenant_id = ? AND status = 'paid' ORDER BY paid_at DESC LIMIT 1")
       .bind(tenant.id)
-      .first<{ tier: SoldTier | null; period: BillingPeriod; extra_workstations: number; remote_seats: number }>();
+      .first<{ tier: SoldTier | null; period: BillingPeriod; extra_workstations: number; remote_seats: number; custom_domain: number }>();
     const tier = last?.tier ?? tenant.plan_tier ?? "standard";
     out.push({
       tenant,
@@ -692,7 +695,8 @@ async function proformaCandidates(db: D1Database, now: number): Promise<Candidat
         tier,
         period: last?.period ?? "month",
         extraWorkstations: last ? Number(last.extra_workstations) : Math.max(0, (Number(tenant.workstation_limit) || 0) - CATALOGUE[tier].includedWorkstations),
-        remoteSeats: last ? Number(last.remote_seats) || 0 : Number(tenant.remote_seats_paid) || 0
+        remoteSeats: last ? Number(last.remote_seats) || 0 : Number(tenant.remote_seats_paid) || 0,
+        customDomain: last ? Number(last.custom_domain) === 1 : Number(tenant.custom_domain_paid) === 1
       },
       reason: "renewal",
       endsAt: Number(tenant.license_expires_at)
@@ -700,18 +704,18 @@ async function proformaCandidates(db: D1Database, now: number): Promise<Candidat
   }
   const { results: cancelled } = await db
     .prepare(
-      `SELECT t.*, s.tier AS s_tier, s.period AS s_period, s.extra_workstations AS s_extra, s.remote_seats AS s_seats, s.current_end AS s_end
+      `SELECT t.*, s.tier AS s_tier, s.period AS s_period, s.extra_workstations AS s_extra, s.remote_seats AS s_seats, s.custom_domain AS s_domain, s.current_end AS s_end
          FROM subscriptions s JOIN tenants t ON t.id = s.tenant_id
         WHERE s.status = 'cancelled' AND COALESCE(s.cancel_reason, '') != 'replaced' AND s.current_end > ? AND s.current_end <= ?
           AND t.status = 'active' AND ${live} AND ${noOpenProforma}
         LIMIT 50`
     )
     .bind(now, until)
-    .all<Tenant & { s_tier: SoldTier; s_period: BillingPeriod; s_extra: number; s_seats: number; s_end: number }>();
+    .all<Tenant & { s_tier: SoldTier; s_period: BillingPeriod; s_extra: number; s_seats: number; s_domain: number; s_end: number }>();
   for (const row of cancelled ?? []) {
     out.push({
       tenant: row,
-      input: { tier: row.s_tier, period: row.s_period, extraWorkstations: Number(row.s_extra), remoteSeats: Number(row.s_seats) },
+      input: { tier: row.s_tier, period: row.s_period, extraWorkstations: Number(row.s_extra), remoteSeats: Number(row.s_seats), customDomain: Number(row.s_domain) === 1 },
       reason: "cancelled",
       endsAt: Number(row.s_end)
     });

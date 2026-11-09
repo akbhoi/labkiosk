@@ -129,6 +129,8 @@ export interface Tenant {
   staff_limit?: number | null;
   /** Remote Control seats paid for, each on one workstation (0059). */
   remote_seats_paid?: number;
+  /** 1 while a Starter, Standard or Education plan pays for the custom domain add-on (0064). */
+  custom_domain_paid?: number;
   /** A halted subscription's organization falls to Free at this time (0059). */
   grace_ends_at?: number | null;
   /** Who invoices are made out to (0059, src/invoices.ts). */

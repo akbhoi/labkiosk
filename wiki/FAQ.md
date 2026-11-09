@@ -58,7 +58,7 @@ Intel or AMD. Their VA-API drivers are in the image (Intel's iHD and i965, Mesa'
 There is no hard limit. Each workstation is one row in `client_devices` and one WebSocket to its organization's hub, which costs almost nothing while idle. Screen frames are relayed to a console only while it is showing that screen and are never stored.
 
 **Can an organization use its own domain?**
-On the Custom plan, yes: connect it in Settings and create a `CNAME` to the platform apex; the certificate is issued once the `CNAME` resolves. Other plans use their console address, which can be changed once a week. → [Super Admin Guide](Super-Admin-Guide#custom-domains)
+Yes. Pro and Custom include one; Starter, Standard and Education can add one for ₹299 a month or ₹2,990 a year under Plan & billing. Connect it in Settings and create a `CNAME` to the platform apex; the certificate is issued once the `CNAME` resolves. The domain loads only while the plan covers it. Free and the trial use their console address, which can be changed once a week. → [Super Admin Guide](Super-Admin-Guide#custom-domains)
 
 **Do I need Cloudflare Tunnels?**
 No. Remote Control goes through a relay on the console's own address, over the same outbound connection the workstation already uses; nothing is installed or provisioned per workstation. → [Remote Control](Remote-Control)

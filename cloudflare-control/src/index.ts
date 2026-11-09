@@ -3636,7 +3636,7 @@ export default {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       if (!allowsCustomDomain(currentTenant!)) {
-        return jsonError("A custom domain comes with the Custom plan. Ask for one under Plan & billing.", 403, jsonHeaders);
+        return jsonError("A custom domain is included in Pro and Custom, and an add-on on Starter, Standard and Education. Add it under Plan & billing.", 403, jsonHeaders);
       }
       try {
         const body = await request.json<{ domain: string }>();
@@ -4170,7 +4170,9 @@ export default {
         const customDomain = cleanCustomDomain(body.customDomain ?? "");
         let tenant: Tenant | null = null;
         if (customDomain) {
-          tenant = await findTenantByCustomDomain(db, customDomain);
+          const holder = await findTenantByCustomDomain(db, customDomain);
+          // A domain the plan no longer covers enrols nothing, as it serves nothing.
+          tenant = holder && allowsCustomDomain(holder) ? holder : null;
         }
         if (!tenant && slug) {
           tenant = await findTenantBySubdomain(db, slug);

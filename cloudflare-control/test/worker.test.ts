@@ -5157,10 +5157,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await onCustomPlan(false);
     const onFree = await connect("kiosk.greenwood.example");
     assert.equal(onFree.res.status, 403, "only the Custom plan connects a domain");
-    assert.match(onFree.data.error, /Custom plan/);
+    assert.match(onFree.data.error, /add-on on Starter, Standard and Education/);
     const page = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
     assert.doesNotMatch(page, /id="form-custom-domain"/, "no form to connect one");
-    assert.match(page, /Ask for a Custom plan/);
+    assert.match(page, /Add a custom domain/);
     await onCustomPlan(true);
 
     const { res, data } = await connect("kiosk.greenwood.example");
@@ -5198,6 +5198,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const gridHtml = await grid.text();
     assert.match(gridHtml, /Protected Kiosk Session/);
     assert.match(gridHtml, /<title>Greenwood Holdings - User Portal<\/title>/);
+
+    // A plan that no longer covers the domain keeps it on file but stops serving it.
+    await onCustomPlan(false);
+    const off = await worker.fetch(new Request("https://kiosk.greenwood.example/", { headers: { host: "kiosk.greenwood.example" } }), mockEnv);
+    assert.doesNotMatch(await off.text(), /Greenwood Holdings/, "not served once the plan has no custom domain");
+    const offSettings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
+    assert.match(offSettings, /This domain is not loading/);
+    await onCustomPlan(true);
     assert.match(gridHtml, /Select an Approved Resource/);
   });
 
@@ -7378,7 +7386,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const slug of ["local-demo", "docker-demo"]) {
       const html = await (await call(`/admin/settings?tenant=${slug}&tab=domains`, { cookie: superSessionCookie })).text();
       assert.doesNotMatch(html, /id="btn-disconnect-custom"/, `${slug} has no custom domain`);
-      assert.match(html, /A custom domain comes with the Custom plan/, `${slug} is not on the Custom plan`);
+      assert.match(html, /A custom domain is included in Pro and Custom/, `${slug} has no custom domain in its plan`);
       assert.doesNotMatch(html, /setting-tunnel-domain/, "Settings has no tunnel domain");
     }
   });
@@ -10908,7 +10916,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const now = 1_800_000_000;
     assert.deepEqual(
       { ...entitlement({ license_plan: null, license_expires_at: null, workstation_limit: 5 }, now) },
-      { kind: "free", label: "Free", tier: null, limit: 5, staffLimit: 2, remoteSeats: 0, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
+      { kind: "free", label: "Free", tier: null, limit: 5, staffLimit: 2, remoteSeats: 0, customDomain: false, expiresAt: null, lapsed: false, lapsedFrom: null, endingSoon: false }
     );
     const trial = entitlement({ license_plan: "evaluation", license_expires_at: now + 86_400, workstation_limit: 45 }, now);
     assert.equal(trial.kind, "trial");
@@ -11805,6 +11813,24 @@ describe("Schema sources agree", () => {
     assert.throws(() => db.exec("INSERT INTO retired_addresses (subdomain, tenant_id, retired_at) VALUES ('old-name', 'old', 6)"), /UNIQUE|PRIMARY KEY/, "one holder per address");
     db.exec("DELETE FROM tenants WHERE id = 'old'");
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM retired_addresses").get() as { n: number }).n, 0);
+  });
+
+  test("0064 records the custom domain add-on, off for everything that exists", () => {
+    const db = migratedDb("0064");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('t1', 'u1', 'T', 't1', 'active', 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0064_custom_domain_addon.sql"), "utf8"));
+    db.exec("COMMIT;");
+    assert.equal((db.prepare("SELECT custom_domain_paid AS v FROM tenants WHERE id = 't1'").get() as { v: number }).v, 0);
+    assert.throws(() => db.exec("UPDATE tenants SET custom_domain_paid = 2 WHERE id = 't1'"), /CHECK/);
+    for (const table of ["subscriptions", "payments", "proformas"]) {
+      const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string; dflt_value: string | null }[]).filter((c) => c.name === "custom_domain");
+      assert.equal(cols.length, 1, `${table}.custom_domain`);
+      assert.equal(cols[0].dflt_value, "0");
+    }
   });
 
   test("0063 keeps Custom plan requests with their organization, and checks what they hold", () => {

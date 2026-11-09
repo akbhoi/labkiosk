@@ -18,7 +18,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
 | Block domains on hosted pages; take an organization's homepage or a User Portal card down after a report | The platform hosts these pages under its own domain |
 | Classify releases; set each major release's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
-| See and remove custom domains | Organizations on the Custom plan connect their own; the platform pays for the custom hostnames |
+| See and remove custom domains | Organizations on Pro, Custom or the ₹299 add-on connect their own; the platform pays for the custom hostnames |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Every message sent to an address on the mail domain |
 | See anonymous platform usage and the hardware workstations run on (**System → Usage**, **System → Hardware**) | High-level auditing without opening any organization |
@@ -138,9 +138,11 @@ Organizations on the Custom plan can serve Lab Kiosk from their own domain, `kio
 
 ### The steps
 
-1. **The organization connects it** under Settings → Custom Domain (`POST /api/settings/custom-domain`), on the Custom plan. No approval beyond pricing the plan: `custom_domain` is set at once and a job creates the Cloudflare for SaaS custom hostname. Connecting another domain replaces the first, whose hostname is deleted.
+1. **The organization connects it** under Settings → Custom Domain (`POST /api/settings/custom-domain`), on a plan that covers it: Pro and Custom include one, and Starter, Standard and Education add one for ₹299 a month or ₹2,990 a year. No approval: `custom_domain` is set at once and a job creates the Cloudflare for SaaS custom hostname. Connecting another domain replaces the first, whose hostname is deleted.
 2. **The organization creates a `CNAME`** for that hostname pointing at your platform apex. Cloudflare validates it and issues the certificate; Settings shows the certificate as waiting for DNS, active or failed.
 3. Until the `CNAME` points at the platform, nothing reaches the worker for that host, so a domain claimed by someone who does not control it carries no traffic. `custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN; a real owner whose domain is held by another organization writes to support, and you remove it.
+
+The domain is served, and workstations enrol through it, only while the plan covers it. When a plan lapses or drops the add-on, the domain stays on file and stops loading until a plan covers it again; Settings tells the organization why.
 
 Custom hostnames beyond the first 100 cost $0.10 a month each. **Tasks → Custom domains** lists every connected domain with its certificate status, and shows how many are in use and what they cost. A domain under the platform domain is refused: organization subdomains are already served by the wildcard.
 

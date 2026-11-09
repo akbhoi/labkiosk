@@ -184,10 +184,10 @@ send a small keepalive every 30 s, which the relay answers without waking. On th
 this is roughly a cent or less per hour of active session (estimated, not measured); on the Free plan it counts against the daily Durable
 Object allowance. Nothing runs while no session is open.
 
-**Custom domains (Cloudflare for SaaS).** When a super admin approves an organization's custom
-domain, the Workflow creates a custom hostname on your zone, waits for its certificate, and records
+**Custom domains (Cloudflare for SaaS).** When an organization connects a custom domain (included
+in Pro and Custom, a ₹299-a-month add-on on Starter, Standard and Education), the Workflow creates a custom hostname on your zone, waits for its certificate, and records
 `custom_hostname_status` (`pending`, then `active` or `failed`); removing the domain deletes it.
-Before the first approval, enable Cloudflare for SaaS on the zone, set a **fallback origin** (a
+Before the first one, enable Cloudflare for SaaS on the zone, set a **fallback origin** (a
 proxied DNS record on your zone), and make sure the worker serves custom hostnames — Cloudflare's
 guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
 points its domain at the fallback origin with a CNAME.
@@ -197,8 +197,8 @@ custom hostnames, then charges $0.10 a month for each one, up to 50,000; beyond 
 Enterprise ([plans](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/)).
 1,000 organizations on their own domain cost about $90 a month. Wildcard custom hostnames
 (`*.their-domain`) need Enterprise, so an organization gets one hostname. Super Admin → Tasks →
-Custom domains shows how many are in use and the monthly cost, and the approval asks you to
-confirm when the next one adds to it. A custom domain under the platform domain is refused.
+Custom domains shows how many are in use and the monthly cost. A domain is served only while the
+organization's plan covers it. A custom domain under the platform domain is refused.
 
 **Local development** needs none of this: `pnpm dev` (`wrangler dev --local`) runs every binding
 locally except Workers AI, which it leaves out,
@@ -384,7 +384,8 @@ Plans and prices live in one place, the catalogue in `src/plans.ts`: Free (5 wor
 a one-time 15-day trial, Starter, Standard and Pro (monthly or yearly, each with included
 workstations, extra workstations and a staff cap), Education (free, verified by hand in Super Admin
 → Tasks → Education) and Custom above 200 workstations. Remote Control is sold per workstation on
-top of any plan. Pricing on `/pricing` and Plan & billing in the console are drawn from the same
+top of any plan. A custom domain is included in Pro and Custom, and is a
+₹299-a-month (₹2,990-a-year) add-on on Starter, Standard and Education. Pricing on `/pricing` and Plan & billing in the console are drawn from the same
 catalogue. Without Razorpay, Plan & billing shows the prices and sends customers to sales, and the
 super admin records a plan with **License** and **Workstation Limit** on the organization.
 
@@ -681,7 +682,7 @@ In your Cloudflare Dashboard under your domain's **DNS Records**:
 
 1. **Apex / Host Record:** Add a `CNAME` or `A` record for `labkiosk.yourdomain.com` pointing to the Worker (Proxied: Orange Cloud).
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
-3. **Custom Domain Support:** When organizations request custom domains (e.g. `kiosk.example.com`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
+3. **Custom Domain Support:** Organizations on Pro, Custom or the custom domain add-on connect a domain (e.g. `kiosk.example.com`) under Settings and create a `CNAME` pointing to `labkiosk.yourdomain.com`. No approval is needed; Cloudflare Workers handles routing authoritatively via the `Host` header while the plan covers the domain.
 
 **How many organizations this serves.** The two routes and the two DNS records serve every
 organization: a new one needs no DNS record, route or certificate of its own, so Cloudflare's

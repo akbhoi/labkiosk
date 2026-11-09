@@ -3021,6 +3021,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
           ${list([
             `${t.education.includedWorkstations} workstations and ${t.education.staff} staff, free for a year at a time`,
             `Remote Control at half price: ${inr(t.education.remoteMonthly)} a month per workstation`,
+            `A custom domain for ${inr(t.education.domainMonthly)} a month`,
             "Apply from Plan &amp; billing in your console; we check every application by hand"
           ])}
           <a class="btn btn-ghost" href="/register">Register, then apply</a>
@@ -3028,14 +3029,15 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
         <div class="pricing-card pricing-card-row">
           <h2 class="pricing-tier">Custom</h2>
           <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
-          ${list(["Any number of workstations and sites", "Your own domain, such as kiosk.your-school.edu", "Ask from Plan &amp; billing in your console; we email a payment link with the price", "Priority onboarding, and help with certified hardware"])}
+          ${list(["Any number of workstations and sites", "Your own domain, such as kiosk.example.org", "Ask from Plan &amp; billing in your console; we email a payment link with the price", "Priority onboarding, and help with certified hardware"])}
           <a class="btn btn-ghost" href="/register">Register, then ask</a>
           <a class="btn btn-ghost" href="/contact?reason=sales">Contact sales</a>
         </div>
       </div>
 
       <div class="docs-callout pricing-addon">
-        <strong>Remote Control add-on:</strong> see and control a workstation's screen from the console. ${inr(t.standard.remoteMonthly)} a month (${inr(t.standard.remoteYearly)} a year) for each workstation that carries a seat; ${t.pro.label} includes ${t.pro.includedRemoteSeats}. Move a seat to another workstation whenever you like.
+        <strong>Remote Control add-on:</strong> see and control a workstation's screen from the console. ${inr(t.standard.remoteMonthly)} a month (${inr(t.standard.remoteYearly)} a year) for each workstation that carries a seat; ${t.pro.label} includes ${t.pro.includedRemoteSeats}. Move a seat to another workstation whenever you like.<br>
+        <strong>Custom domain add-on:</strong> serve the console and homepage from your own domain. ${inr(t.standard.domainMonthly)} a month (${inr(t.standard.domainYearly)} a year) on ${t.starter.label}, ${t.standard.label} and Education; included in ${t.pro.label} and Custom.
       </div>
     </section>
 
@@ -3050,6 +3052,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
             ${row("Staff accounts besides you", [String(STAFF_LIMITS.free), String(t.starter.staff), String(t.standard.staff), String(t.pro.staff)])}
             ${row("Remote Control seats included", [no, "0", "0", String(t.pro.includedRemoteSeats)])}
             ${row("More Remote Control seats, a month", [no, `${inr(t.starter.remoteMonthly)} each`, `${inr(t.standard.remoteMonthly)} each`, `${inr(t.pro.remoteMonthly)} each`])}
+            ${row("Custom domain, a month", [no, inr(t.starter.domainMonthly), inr(t.standard.domainMonthly), "Included"])}
             ${row("Live screens, lock and broadcast", [yes, yes, yes, yes])}
             ${row("User Portal and domain allowlist", [yes, yes, yes, yes])}
             ${row("Exam mode, power schedules, usage reports", [yes, yes, yes, yes])}
