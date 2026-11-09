@@ -151,7 +151,7 @@ export function renderLegalScript(nonce: string): string {
               return;
             }
             render(data);
-            lkToast(data.emailed + (data.emailed === 1 ? " organization" : " organizations") + " emailed" + (data.failed ? ", " + data.failed + " failed" : ""), data.failed ? "error" : "success");
+            lkToast(data.emailed + (data.emailed === 1 ? " organization" : " organizations") + " emailed" + (data.failed ? ", " + data.failed + " failed" : "") + (data.remaining ? "; the other " + data.remaining + " within the next hours" : ""), data.failed ? "error" : "success");
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
           }

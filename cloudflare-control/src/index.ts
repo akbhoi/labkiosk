@@ -3077,14 +3077,14 @@ export default {
       const problem = mailConfigProblem(env);
       if (problem) return jsonError("This server cannot send email", 503, jsonHeaders);
       const doc = (await publishedAnnouncedVersions(db)).find((d) => d.id === body.document)!;
-      const { emailed, failed } = await emailLegalNotice(env, db, doc, baseDomain, Math.floor(Date.now() / 1000));
+      const { emailed, failed, remaining } = await emailLegalNotice(env, db, doc, baseDomain, Math.floor(Date.now() / 1000));
       await writeAuditLog(db, {
         tenantId: null,
         userId: session!.user_id,
         action: "legal.notify",
-        details: `${doc.id}=${doc.version} emailed=${emailed} failed=${failed}`
+        details: `${doc.id}=${doc.version} emailed=${emailed} failed=${failed} remaining=${remaining}`
       });
-      return new Response(JSON.stringify({ status: "ok", emailed, failed, ...(await platformLegalOverview(db, session!.user_id)) }), { headers: jsonHeaders });
+      return new Response(JSON.stringify({ status: "ok", emailed, failed, remaining, ...(await platformLegalOverview(db, session!.user_id)) }), { headers: jsonHeaders });
     }
 
     // GET /api/super/link-blocklist: the domains no hosted page may link to.

@@ -116,6 +116,20 @@ async function hasEarlierVersion(db: D1Database, doc: Published): Promise<boolea
   return Number(row?.n ?? 0) > 0;
 }
 
+/** Email up to `budget` organizations still waiting for a version; marks it done when nobody is left. */
+async function sendWaiting(env: Env, db: D1Database, doc: Published, baseDomain: string, budget: number, now: number): Promise<LegalNoticeOutcome & { sent: number; remaining: number }> {
+  const waiting = (await recipients(db, doc)).filter((o) => !o.notified);
+  const batch = waiting.slice(0, Math.max(0, budget));
+  const outcome = await send(env, db, doc, batch, baseDomain, now);
+  if (batch.length === waiting.length) await markNotified(db, doc, now);
+  return { ...outcome, sent: batch.length, remaining: waiting.length - batch.length };
+}
+
+/** Whether any organization was emailed about this version, by the hourly run or a super admin. */
+async function hasNotices(db: D1Database, doc: Published): Promise<boolean> {
+  return Boolean(await db.prepare("SELECT 1 AS x FROM legal_notices WHERE document = ? AND version = ? LIMIT 1").bind(doc.id, doc.version).first());
+}
+
 /**
  * The hourly run: email every organization a new version concerns and has not
  * been emailed about, at most `limit` owners in all. Returns what was sent.
@@ -126,27 +140,36 @@ export async function announceLegalChanges(env: Env, db: D1Database, baseDomain:
   let budget = limit;
   for (const doc of await publishedAnnouncedVersions(db, now)) {
     if (doc.notifiedAt !== null || budget <= 0) continue;
-    if (!(await hasEarlierVersion(db, doc))) {
+    // A first version changed nothing, unless a super admin chose to send it.
+    if (!(await hasEarlierVersion(db, doc)) && !(await hasNotices(db, doc))) {
       await markNotified(db, doc, now);
       continue;
     }
-    const waiting = (await recipients(db, doc)).filter((o) => !o.notified);
-    const batch = waiting.slice(0, budget);
-    const outcome = await send(env, db, doc, batch, baseDomain, now);
+    const outcome = await sendWaiting(env, db, doc, baseDomain, budget, now);
     total.emailed += outcome.emailed;
     total.failed += outcome.failed;
-    budget -= batch.length;
-    if (batch.length === waiting.length) await markNotified(db, doc, now);
+    budget -= outcome.sent;
   }
   return total;
 }
 
 /**
- * A super admin's "Email organizations": email the version to every
- * organization it concerns now, including those emailed before.
+ * A super admin's "Email organizations": email the version again to every
+ * organization it concerns, including those emailed before. The first
+ * `limit` go now, inside the request; the hourly run sends the rest.
  */
-export async function emailLegalNotice(env: Env, db: D1Database, doc: Published, baseDomain: string, now: number): Promise<LegalNoticeOutcome> {
-  const outcome = await send(env, db, doc, await recipients(db, doc), baseDomain, now);
-  await markNotified(db, doc, now);
-  return outcome;
+export async function emailLegalNotice(
+  env: Env,
+  db: D1Database,
+  doc: Published,
+  baseDomain: string,
+  now: number,
+  limit = LEGAL_NOTICES_PER_RUN
+): Promise<LegalNoticeOutcome & { remaining: number }> {
+  await db.batch([
+    db.prepare("DELETE FROM legal_notices WHERE document = ? AND version = ?").bind(doc.id, doc.version),
+    db.prepare("UPDATE legal_versions SET notified_at = NULL WHERE document = ? AND version = ?").bind(doc.id, doc.version)
+  ]);
+  const { emailed, failed, remaining } = await sendWaiting(env, db, doc, baseDomain, limit, now);
+  return { emailed, failed, remaining };
 }

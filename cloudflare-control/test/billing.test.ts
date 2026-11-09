@@ -818,8 +818,18 @@ describe("What customers are told by email", () => {
 
     // A super admin can send it again.
     const doc = (await publishedAnnouncedVersions(db, now)).find((d) => d.id === "privacy")!;
-    assert.deepEqual(await emailLegalNotice(env, db, doc, "labkiosk.org", now + 7200), { emailed: 2, failed: 0 });
+    assert.deepEqual(await emailLegalNotice(env, db, doc, "labkiosk.org", now + 7200), { emailed: 2, failed: 0, remaining: 0 });
     assert.equal(mailTo(owner, /^Updated Lab Kiosk Privacy Policy$/).length, 2);
+    // More organizations than one request emails: the first go now, the hourly run sends the rest, once each.
+    assert.deepEqual(await emailLegalNotice(env, db, doc, "labkiosk.org", now + 7300, 1), { emailed: 1, failed: 0, remaining: 1 });
+    assert.deepEqual(await announceLegalChanges(env, db, "labkiosk.org", now + 10_800), { emailed: 1, failed: 0 });
+    assert.deepEqual(await announceLegalChanges(env, db, "labkiosk.org", now + 14_400), { emailed: 0, failed: 0 });
+    assert.equal(mailTo("accepted@quay.example", /Privacy Policy/).length, 3);
+    // A first version a super admin chose to send is finished by the hourly run too, not dropped as "no change".
+    const content = (await publishedAnnouncedVersions(db, now)).find((d) => d.id === "content")!;
+    // Nobody has accepted it in this database, so it concerns all three organizations.
+    assert.equal((await emailLegalNotice(env, db, content, "labkiosk.org", now + 15_000, 1)).remaining, 2);
+    assert.equal((await announceLegalChanges(env, db, "labkiosk.org", now + 18_000)).emailed, 2);
   });
 
   test("The hourly run carries on where it stopped when there are more customers than one run emails", async () => {
