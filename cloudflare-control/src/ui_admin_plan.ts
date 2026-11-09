@@ -120,6 +120,7 @@ function renderPlanPageHtml(contactHref: string): string {
             <span class="badge badge-neutral hidden" id="plan-status"></span>
           </div>
           <p class="overview-lines" id="plan-lines"></p>
+          <p class="form-hint mb-0 hidden" id="plan-cancel-note"></p>
         </div>
         <div class="overview-actions">
           <button type="button" class="btn btn-secondary hidden" id="btn-change">Change plan</button>
@@ -471,7 +472,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           badge.className = "badge " + tone + (text ? "" : " hidden");
         }
 
-        function banner(tone, text, actionLabel, action) {
+        function banner(tone, text, actionLabel, action, second) {
           const box = el("div", "callout callout-" + tone + " mb-0");
           box.setAttribute("role", "status");
           box.append(el("span", null, text + " "));
@@ -480,6 +481,12 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             b.type = "button";
             b.addEventListener("click", action);
             box.append(b);
+          }
+          if (second) {
+            const b = el("button", "btn btn-sm btn-ghost", second.label);
+            b.type = "button";
+            b.addEventListener("click", second.action);
+            box.append(" ", b);
           }
           const wrap = el("div", "mb-0");
           wrap.style.marginBottom = "16px";
@@ -495,7 +502,12 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           if (!bill.enabled) box.append(banner("warning", "Online payment is not set up yet. Talk to sales to change your plan.", "Talk to sales", () => window.open(CONTACT, "_blank", "noopener")));
           const waiting = bill.waitingCheckout || (bill.replacement && bill.replacement.authoriseUrl ? bill.replacement : null);
           if (waiting && waiting.authoriseUrl) {
-            box.append(banner("warning", "A payment for " + waiting.tierLabel + " is waiting for you to authorise it on Razorpay.", "Open Razorpay", () => openCheckout(waiting.authoriseUrl)));
+            box.append(
+              banner("warning", "A payment for " + waiting.tierLabel + " is waiting for you to authorise it on Razorpay.", "Pay now", () => openCheckout(waiting.authoriseUrl, waiting.razorpayId), {
+                label: "Discard",
+                action: discardCheckout
+              })
+            );
           } else if (bill.replacement) {
             box.append(banner("success", "Your change to " + bill.replacement.tierLabel + " starts on " + day(bill.replacement.startsAt || bill.replacement.currentStart || now) + "."));
           }
@@ -539,6 +551,14 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           show($("btn-change"), true);
           $("btn-change").textContent = sub ? "Change plan" : "Choose a plan";
           show($("btn-cancel"), Boolean(bill.isOwner && live));
+          // Say why there is no Cancel button, rather than leave it missing.
+          let note = "";
+          if (live && !bill.isOwner) note = "Only the organization's owner can cancel the subscription.";
+          else if (sub && sub.legacy) note = "This plan was paid by payment link and does not renew on its own, so nothing will be charged unless you pay a renewal. To end it, just don't renew.";
+          else if (!sub && p.kind === "trial") note = "Nothing is charged when the trial ends; the organization moves to Free.";
+          else if (!sub && (p.kind === "custom" || p.kind === "education") && !p.lapsed) note = "This plan does not renew on its own, so there is nothing to cancel.";
+          $("plan-cancel-note").textContent = note;
+          show($("plan-cancel-note"), Boolean(note));
           show($("btn-resume"), Boolean(bill.isOwner && bill.enabled && sub && sub.status === "cancelled" && sub.currentEnd > now && !bill.replacement));
         }
 
@@ -674,7 +694,71 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           }
         }
 
-        function openCheckout(url) {
+        // Razorpay's Standard Checkout, loaded the first time it is needed.
+        let razorpayScript = null;
+        function loadRazorpay() {
+          if (window.Razorpay) return Promise.resolve(true);
+          if (!razorpayScript) {
+            razorpayScript = new Promise((resolve) => {
+              const script = document.createElement("script");
+              script.src = "https://checkout.razorpay.com/v1/checkout.js";
+              script.async = true;
+              script.addEventListener("load", () => resolve(Boolean(window.Razorpay)));
+              script.addEventListener("error", () => {
+                razorpayScript = null;
+                resolve(false);
+              });
+              document.head.appendChild(script);
+            });
+          }
+          return razorpayScript;
+        }
+        // Razorpay tells the page before its webhook arrives: look a few times until the plan changes.
+        async function afterAuthorised() {
+          lkToast("Payment authorised. Updating your plan…", "success");
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, i === 0 ? 1500 : 4000));
+            try {
+              const data = await api("/api/billing/refresh", {});
+              if (data.changed) break;
+            } catch (err) {
+              console.warn("[Plan] Could not check Razorpay:", err.message);
+            }
+          }
+          await load();
+        }
+        // In the page, with the payer's name, email and verified phone already filled in;
+        // Razorpay's own page in a new tab when its checkout cannot load.
+        async function openCheckout(url, razorpayId) {
+          const c = bill && bill.checkout;
+          if (c && c.key && razorpayId && (await loadRazorpay())) {
+            try {
+              const prefill = { name: c.name || "", email: c.email || "" };
+              if (c.contact) prefill.contact = c.contact;
+              const checkout = new window.Razorpay({
+                key: c.key,
+                subscription_id: razorpayId,
+                name: "Lab Kiosk",
+                description: "Plan & billing",
+                prefill,
+                readonly: { email: Boolean(c.email), contact: Boolean(c.contact) },
+                handler: () => afterAuthorised(),
+                modal: { confirm_close: true, ondismiss: () => load() }
+              });
+              checkout.on("payment.failed", (r) => {
+                const why = r && r.error && r.error.description ? r.error.description : "try again or use another method";
+                lkToast("The payment did not go through: " + why, "error");
+              });
+              checkout.open();
+              return;
+            } catch (err) {
+              console.warn("[Plan] Razorpay checkout did not open; using its page instead:", err.message);
+            }
+          }
+          if (!url) {
+            lkToast("Razorpay could not be opened. Try again in a minute.", "error");
+            return;
+          }
           const tab = window.open(url, "_blank", "noopener");
           if (!tab) window.location.assign(url);
           lkToast("Finish on Razorpay; this page updates when you come back.", "info", 6000);
@@ -983,7 +1067,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           const c = counts();
           try {
             const data = await api("/api/billing/checkout", { tier: chosen, period, extraWorkstations: c.extra, remoteSeats: c.seats, customDomain: c.domain });
-            openCheckout(data.url);
+            openCheckout(data.url, data.subscription.razorpayId);
             await load();
           } catch (err) {
             lkToast("Could not start the payment: " + err.message, "error");
@@ -1010,10 +1094,26 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           }
         });
 
+        async function discardCheckout() {
+          const ok = await lkConfirm({
+            title: "Discard this payment?",
+            message: "Nothing has been charged. The Razorpay payment page closes, and you can choose a plan again at any time.",
+            confirmLabel: "Discard"
+          });
+          if (!ok) return;
+          try {
+            await api("/api/billing/discard", {});
+            lkToast("Discarded. Nothing was charged.", "success");
+            load();
+          } catch (err) {
+            lkToast("Could not discard: " + err.message, "error");
+          }
+        }
+
         $("btn-resume").addEventListener("click", async () => {
           try {
             const data = await api("/api/billing/resume", {});
-            openCheckout(data.url);
+            openCheckout(data.url, data.subscription.razorpayId);
             load();
           } catch (err) {
             lkToast("Could not resume: " + err.message, "error");

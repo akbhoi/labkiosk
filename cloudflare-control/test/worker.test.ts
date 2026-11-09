@@ -11228,6 +11228,38 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await restorePlan();
   });
 
+  test("Plan & billing opens Razorpay's checkout in the page, prefilled, and can discard an unpaid checkout", async () => {
+    await restorePlan();
+    const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };
+    const send = (path: string, init: RequestInit & { cookie?: string } = {}) => worker.fetch(request(path, init), env);
+
+    const page = await send("/admin/plan?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    const csp = page.headers.get("Content-Security-Policy") ?? "";
+    assert.match(csp, /script-src [^;]*https:\/\/checkout\.razorpay\.com/);
+    assert.match(csp, /frame-src [^;]*https:\/\/api\.razorpay\.com/);
+    assert.match(page.headers.get("Permissions-Policy") ?? "", /payment=\(self "https:\/\/api\.razorpay\.com"\)/);
+    const html = await page.text();
+    assert.match(html, /subscription_id: razorpayId/);
+    assert.match(html, /id="plan-cancel-note"/);
+    // Without Razorpay keys, and on every other page, none of Razorpay is allowed.
+    const plain = await call("/admin/plan?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.doesNotMatch(plain.headers.get("Content-Security-Policy") ?? "", /razorpay/);
+    const settings = await send("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.doesNotMatch(settings.headers.get("Content-Security-Policy") ?? "", /razorpay/);
+
+    const bill = (await (await send("/api/billing?tenant=greenwood", { cookie: orgSessionCookie })).json()) as any;
+    assert.equal(bill.checkout.key, "rzp_test_key");
+    assert.match(bill.checkout.email, /@/);
+    assert.ok(bill.checkout.contact === null || /^\+\d+$/.test(bill.checkout.contact));
+    assert.equal((await callJson("/api/billing?tenant=greenwood", { cookie: orgSessionCookie })).data.checkout, null, "no keys, no checkout");
+
+    // Nothing open: discarding is a no-op; the audit log says it was asked.
+    const discard = await send("/api/billing/discard?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(discard.status, 200);
+    assert.equal((await send("/api/billing/discard?tenant=greenwood", { ...json({}), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status, 403);
+  });
+
   test("A subscription is paid through a Razorpay link: the signed return or webhook extends the plan once", async () => {
     const { db, tenantId } = await restorePlan();
     const env: Env = { ...mockEnv, RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "key-secret", RAZORPAY_WEBHOOK_SECRET: "hook-secret" };

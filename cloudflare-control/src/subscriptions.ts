@@ -271,7 +271,7 @@ export async function startCheckout(
 }
 
 /** Cancel at Razorpay every checkout of the organization's still waiting to be authorised. */
-async function discardOpenCheckouts(env: Env, db: D1Database, tenantId: string, now: number): Promise<void> {
+export async function discardOpenCheckouts(env: Env, db: D1Database, tenantId: string, now: number): Promise<void> {
   const { results } = await db
     .prepare("SELECT * FROM subscriptions WHERE tenant_id = ? AND status = 'created'")
     .bind(tenantId)

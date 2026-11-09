@@ -9,7 +9,8 @@ import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { createTenant, createUser, findTenantById, initSchema, updateTenant } from "../src/db";
-import { recordPayment } from "../src/billing";
+import { createPaymentLink, recordPayment, verifiedPhoneFor } from "../src/billing";
+import { createOrganizationProfile } from "../src/conversations";
 import {
   amountInWords,
   createDocumentLink,
@@ -29,6 +30,7 @@ import { claimRemoteSeat, enforceRemoteSeats, enforceStaffCap, setStaffSuspended
 import { CATALOGUE, entitlement, parseTierQuoteInput, prorate, quoteTier, type TierQuoteInput } from "../src/plans";
 import {
   cancelSubscription,
+  discardOpenCheckouts,
   findSubscription,
   planChange,
   reconcileSubscriptions,
@@ -404,6 +406,60 @@ describe("The subscription engine", () => {
     assert.equal(entitlement(t, now + 29 * DAY).kind, "subscription");
     assert.equal(entitlement(t, now + 31 * DAY).kind, "free");
     await assert.rejects(cancelSubscription(env, db, { tenant: t, userId, reason: "", now }), /no subscription to cancel/);
+  });
+
+  test("An unpaid checkout can be discarded; a paid subscription is left alone", async () => {
+    const paid = await checkout();
+    rzp.charge(paid.razorpay_subscription_id!, now, 30 * DAY);
+    await syncSubscription(env, db, paid, now);
+    const open = await checkout({ tier: "pro", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false });
+    await discardOpenCheckouts(env, db, tenant.id, now);
+    assert.equal((await findSubscription(db, open.id))!.status, "expired");
+    assert.equal(rzp.subs.get(open.razorpay_subscription_id!)!.status, "cancelled");
+    assert.equal((await findSubscription(db, paid.id))!.status, "active");
+  });
+
+  test("Razorpay is given the payer's phone only when the registration verified it and the payer is the contact", async () => {
+    const profile = {
+      legal_name: null,
+      contact_name: "Owner",
+      contact_email: "Owner@Riverside.example",
+      contact_phone: "+919876543210",
+      email_verified_at: now,
+      address_line1: "1 River Road",
+      address_line2: null,
+      city: "Cuttack",
+      region: null,
+      postal_code: "753001",
+      country: "IN",
+      tax_id: null,
+      billing_email: null,
+      workstation_estimate: null,
+      organization_type: null,
+      notes: null
+    };
+    await createOrganizationProfile(db, tenant.id, profile, null);
+    assert.equal(await verifiedPhoneFor(db, tenant.id, "owner@riverside.example"), null, "not verified");
+    await db.prepare("UPDATE organization_profiles SET phone_verified_at = ? WHERE tenant_id = ?").bind(now, tenant.id).run();
+    assert.equal(await verifiedPhoneFor(db, tenant.id, "owner@riverside.example"), "+919876543210");
+    assert.equal(await verifiedPhoneFor(db, tenant.id, "someone@else.example"), null, "another payer");
+
+    const link = (email: string) =>
+      createPaymentLink(env, db, {
+        tenantId: tenant.id,
+        organization: "Riverside",
+        userId,
+        email,
+        name: "Owner",
+        quote: { period: "month", extraWorkstations: 0, workstations: 5, subtotal: 100_00, gst: 18_00, total: 118_00 },
+        callbackUrl: "https://labkiosk.org/api/billing/return",
+        nowSeconds: now
+      });
+    await link("owner@riverside.example");
+    await link("someone@else.example");
+    const [first, second] = [...rzp.links.values()];
+    assert.deepEqual(first.customer, { name: "Owner", email: "owner@riverside.example", contact: "+919876543210" });
+    assert.deepEqual(second.customer, { name: "Owner", email: "someone@else.example" });
   });
 
   test("Only one checkout waits at a time, and the cron closes one never authorised", async () => {
