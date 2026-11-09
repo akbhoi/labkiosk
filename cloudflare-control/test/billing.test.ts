@@ -43,6 +43,7 @@ import { LEGAL_DOCUMENTS, publishedAnnouncedVersions } from "../src/legal";
 import { announceLegalChanges, emailLegalNotice } from "../src/legal_notices";
 import { licenseDate } from "../src/license";
 import { localOutbox } from "../src/mail";
+import { notifyOwner } from "../src/notifications";
 
 const PEPPER = "p".repeat(40);
 const DAY = 86_400;
@@ -940,5 +941,19 @@ describe("What customers are told by email", () => {
     const row = await startCheckout(env, db, { tenant, userId, quote: quoteTier({ tier: "standard", period: "month", extraWorkstations: 0, remoteSeats: 0, customDomain: false }, 18), now });
     await db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").bind(row.id).run();
     assert.equal(await sendPlanEndNotices(env, db, now), 0);
+  });
+});
+
+describe("Notices to one organization's owner", () => {
+  test("A suspended organization's owner is still emailed what the platform changed", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const env = { ALLOW_LOCAL_DB: "1", DEFAULT_DOMAIN: "labkiosk.org" } as Env;
+    const user = await createUser(db, { email: "owner@suspended.example", password: "OwnerPassword123!", name: "Owner" }, PEPPER);
+    const t = await createTenant(db, { userId: user.id, name: "Suspended", subdomain: `suspended${Math.floor(Math.random() * 1e9)}`, status: "active" });
+    await updateTenant(db, t.id, { status: "suspended" });
+    const outcome = await notifyOwner(env, db, { tenantId: t.id, kind: "account", title: "Custom domain disconnected", body: "Lab Kiosk has disconnected kiosk.example.", createdBy: null });
+    assert.equal(outcome.emailed, 1);
+    assert.ok(localOutbox().some((m) => m.to === "owner@suspended.example" && m.subject === "Lab Kiosk: Custom domain disconnected"));
   });
 });

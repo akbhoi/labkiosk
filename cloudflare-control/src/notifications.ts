@@ -214,6 +214,22 @@ export async function emailOrganizations(
 }
 
 /**
+ * One organization's owner, whatever its status: the platform can change a
+ * suspended organization's plan or domain too, and its owner is told.
+ */
+async function organizationOwner(db: D1Database, tenantId: string): Promise<OrganizationOwner[]> {
+  const r = await db
+    .prepare(
+      `SELECT t.id, t.name, t.subdomain, t.created_at, u.email, u.name AS owner_name, u.role
+       FROM tenants t JOIN users u ON u.id = t.user_id WHERE t.id = ?`
+    )
+    .bind(tenantId)
+    .first<{ id: string; name: string; subdomain: string; created_at: number; email: string; owner_name: string; role: string }>();
+  if (!r || (isDemoSlug(r.subdomain) && r.role === "super_admin")) return [];
+  return [{ tenantId: r.id, name: r.name, email: r.email, ownerName: r.owner_name, createdAt: Number(r.created_at) }];
+}
+
+/**
  * A notification for one organization that its owner is emailed as well, in
  * the same words: for what the platform changes about the organization's
  * plan or account, which nobody should learn about only by opening the console.
@@ -221,6 +237,6 @@ export async function emailOrganizations(
  */
 export async function notifyOwner(env: Env, db: D1Database, n: NewNotification & { tenantId: string }): Promise<EmailOutcome> {
   await createNotification(db, n);
-  const owners = await activeOrganizationOwners(db, n.tenantId);
+  const owners = await organizationOwner(db, n.tenantId);
   return emailOrganizations(env, owners, `Lab Kiosk: ${n.title.trim()}`, () => n.body.trim());
 }
