@@ -37,7 +37,7 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
-| Enrolment rejected with a valid-looking key | The organization's key is empty, or the organization is `pending`/`suspended` | Generate a key in Settings; have a super admin approve the organization |
+| Enrolment rejected with a valid-looking key | The organization's key is empty, its details are not entered yet, or it is `suspended` | Generate a key in Settings; finish the details at `/admin/setup`; a suspended organization writes to support |
 | Enrolment rejected after several tries | Failed attempts from that address are throttled | Wait, then retry with the correct key |
 | Workstation never appears on the dashboard | Not enrolled, or its token was revoked | Re-run the wizard with the current key. Check `/tmp/lab-agent.log` for `401` |
 | Freshly enrolled kiosk shows "This page is blocked" | Chromium reads managed policy only at startup | The agent sets `pendingBrowserRestart` and restarts the browser after the next sync — wait for it |

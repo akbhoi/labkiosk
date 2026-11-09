@@ -109,9 +109,11 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/broadcast-presets/:id` | `DELETE` | Remove a broadcast shortcut |
 | `/api/settings/mode` | `POST` | Switch between `portal` and `single_url` |
 | `/api/settings/customization` | `GET` `POST` | Organization branding, portal copy, default lock message |
-| `/api/settings/subdomain` | `POST` | Request a subdomain change |
+| `/api/tenant/subdomain` | `POST` | `{ subdomain }`: change the console address at once, at most once every 7 days (`429` sooner); earlier addresses keep working. `/api/settings/subdomain` is the same route |
+| `/api/tenant/remote-control/enable` | `POST` | Turn Remote Control on; `409` when it is on, revoked by the platform, or the plan has no Remote Control seats |
+| `/api/plan/custom` | `GET` `POST` | The latest Custom plan request, or ask for one: `{ workstations, remoteSeats?, staff?, period: "month"\|"year", notes? }`; `409` while one is open or its link is unpaid |
 | `/api/settings/enrollment-key` | `GET` `POST` | View or rotate the enrollment key |
-| `/api/settings/custom-domain` | `POST` `DELETE` | Request or disconnect a custom domain |
+| `/api/settings/custom-domain` | `POST` `DELETE` | Connect a custom domain (bound at once; its Cloudflare custom hostname is created) or disconnect it |
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
 | `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
 | `/api/workstation-issues/log` | `GET` | `?id=`: the journal a restart report carried, kept 30 days (requires `settings`) |
@@ -148,22 +150,21 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/super/inbox` | `GET` | Tasks (registrations, Remote Control requests) or Mail, `?box=tasks\|support&mailbox=<address>` |
+| `/api/super/inbox` | `GET` | Tasks or Mail, `?box=tasks\|support&mailbox=<address>` |
 | `/api/super/inbox/compose` | `POST` | Write a new email as any address on the mail domain |
 | `/api/super/inbox/:id` | `GET` | One conversation, its messages and registration details |
-| `/api/super/inbox/:id/{reply,note,status,delete,verify-phone,approve,reject}` | `POST` | Answer by email, note, close, delete mail, confirm the phone, decide |
+| `/api/super/inbox/:id/{reply,note,phone-link,status,unread,trash,restore,delete}` | `POST` | Answer by email, note, send a registration made before approvals ended a link to prove its phone, open or close, mark unread, move to or from the bin, delete |
+| `/api/super/custom-plans` | `GET` | Every Custom plan request, open ones first, with `billingEnabled` and `gstPercent` |
+| `/api/super/custom-plans/approve` | `POST` | `{ id, price, workstations?, remoteSeats?, staff?, period?, validDays?, note? }`: `price` is whole rupees before GST for one period; creates the Razorpay payment link (open `validDays`, 1–30, default 7) and emails it to the owner. `502` when Razorpay refuses, leaving the request open |
+| `/api/super/custom-plans/decline` | `POST` | `{ id, reason }`: the organization is told the reason |
 | `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Download an attachment, or `original` for the whole message |
 | `/api/super/usage` | `GET` | `?days=1..366`: the platform's anonymous daily totals and the sites at least 3 organizations visited on a day, plus `hardware: { models, computedAt }`, every model workstations reported (System → Usage and System → Hardware) |
-| `/api/super/tenants/approve` | `POST` | Approve a requested subdomain change |
-| `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
 | `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended organization |
 | `/api/super/tenants/workstation-limit` | `POST` | `{ tenantId, limit }`: how many workstations may enrol (1–100000) |
 | `/api/super/tenants/license` | `POST` | `{ tenantId, plan, expiresOn }`: the license plan (`education`, `evaluation`, `subscriber`, `commercial`) and end date (`YYYY-MM-DD` or `null`) |
 | `/api/super/notifications` | `GET` / `POST` | Every notification sent; `POST { tenantId \| null, title, body, email? }` notifies one organization or all of them in their consoles, and with `email` emails each owner |
 | `/api/super/tenants/remote-control` | `POST` | `{ tenantId, action: "revoke" \| "restore" \| "seats", seats?, reason? }`: revoking ends every open session and emails the owner |
-| `/api/super/tenants/custom-domain/approve` | `POST` | Approve and bind a custom domain |
-| `/api/super/tenants/custom-domain/reject` | `POST` | Reject a requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Unbind an assigned custom domain |
 
 ### HTML routes
@@ -547,19 +548,31 @@ Decommissions a workstation and revokes its device token. The machine's next hea
 
 ### `POST /api/auth/register`
 
-Creates an organization and its first administrator for review. Ask for `emailCode` first with `POST /api/auth/register/email-code { "email" }`. The organization starts `pending`: nobody is signed in, it cannot sign in or enrol workstations, and the contact is emailed. A super admin confirms the phone number and approves it under Super Admin → Tasks, which emails the console address.
+Creates an organization and its owner, active at once on the Free plan; no one approves it. Both the email address and the phone number must be proved: ask for `emailCode` first with `POST /api/auth/register/email-code { "email" }`, and send `phoneToken`, the Firebase ID token from verifying the phone by a texted code. Without Firebase configured, registration answers `503`. The owner then signs in and enters the organization's details (`POST /api/tenant/organization`) before the console, enrolment and billing open.
 
 ```json
 {
-  "name": "Oakridge Holdings",
-  "legalName": "Oakridge Holdings Pvt Ltd",
-  "organizationType": "business",
   "contactName": "Jane Smith",
   "email": "it@oakridge.example",
   "emailCode": "482913",
   "phone": "+91 98765 43210",
+  "phoneToken": "<Firebase ID token>",
   "password": "StrongPassword123!",
   "subdomain": "oakridge",
+  "acceptTerms": true
+}
+```
+
+→ `{ "status": "ok", "active": true, "signIn": "https://labkiosk.org/login" }`
+
+The organization's details, signed in as the owner, once:
+
+```json
+POST /api/tenant/organization
+{
+  "name": "Oakridge Holdings",
+  "legalName": "Oakridge Holdings Pvt Ltd",
+  "organizationType": "business",
   "addressLine1": "12 Market Road",
   "city": "Bhubaneswar",
   "region": "Odisha",
@@ -567,12 +580,9 @@ Creates an organization and its first administrator for review. Ask for `emailCo
   "country": "India",
   "taxId": "21ABCDE1234F1Z5",
   "billingEmail": "accounts@oakridge.example",
-  "workstationEstimate": 40,
-  "acceptTerms": true
+  "workstationEstimate": 40
 }
 ```
-
-→ `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
 
 `country` is an ISO 3166-1 alpha-2 code (`IN`) or the English name as listed in `src/geo.ts`, and is stored as the name. Where that country's states are listed, `region` must be one of them; `postalCode` is checked against the country's format and may be empty where addresses carry none; `taxId`, when given, is checked against the country's format (GSTIN, EIN, VAT number and so on). `phone` is the calling code and the number without its leading 0. The registration form reads the same table from `/assets/geo-<hash>.json`.
 
@@ -696,15 +706,15 @@ Rotates the key. Already-enrolled workstations keep their bearer tokens and are 
 
 ### Super admin endpoints
 
-All take a `tenantId` and require a `super_admin` session.
+The organization endpoints take a `tenantId`, and all require a `super_admin` session.
 
 ```json
-{ "tenantId": "tenant-uuid-1", "subdomain": "oakridge" }
+{ "tenantId": "tenant-uuid-1" }
 ```
 
 Suspension is the platform's kill switch: a suspended organization's workstations receive `403` on telemetry, stop getting commands and policy, and its portal stops serving.
 
-Custom domain approval binds an FQDN to a tenant. Once bound, Cloudflare routes it to the worker and `resolveTenant()` recognises it from the `Host` header. → [Super Admin Guide](Super-Admin-Guide)
+Connecting a custom domain binds an FQDN to a tenant. Once bound, Cloudflare routes it to the worker and `resolveTenant()` recognises it from the `Host` header. → [Super Admin Guide](Super-Admin-Guide)
 
 ---
 

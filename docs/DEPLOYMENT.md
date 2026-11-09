@@ -340,16 +340,16 @@ unavailable to every organization until all three of these are set:
 Issues filed in a public repository are public. Each organization's administrator sees the
 repository name before turning the option on.
 
-### Phone verification by text message (optional)
+### Phone verification by text message (required for registration)
 
-With Firebase configured, the registration page texts a six-digit code to the phone number given,
-and **every registration then needs it**: `POST /api/auth/register` refuses a phone that was not
-proved (`src/phone_verify.ts`). Firebase only sends the SMS and checks the code. The Worker
+Every registration proves its email address by an emailed code and its phone number by a texted
+one, and is then active at once on the Free plan; nobody approves it. Without Firebase configured,
+`/register` says registration is closed and `POST /api/auth/register` answers `503`. The
+registration page texts a six-digit code to the phone number given, and `POST /api/auth/register`
+refuses a phone that was not proved (`src/phone_verify.ts`). Firebase only sends the SMS and checks the code. The Worker
 verifies the ID token Firebase hands the page (RS256 against Google's published keys, issuer and
 audience of your project, signed in by phone in the last 15 minutes, the same number as the form)
-and records `organization_profiles.phone_verified_at`; the Super Admin's Verify button is not
-needed for those registrations ("verified by SMS"). Without Firebase, the phone is confirmed by
-hand before approval, as before.
+and records `organization_profiles.phone_verified_at`.
 
 1. Create a Firebase project (or use one) and switch it to the **Blaze** plan: SMS needs a billing
    account. Google bills India at about $0.07 per SMS after the first 10 SMS a day.
@@ -372,7 +372,7 @@ Set all three or none: some but not all of them makes registration refuse (Rule 
 registration page, and only it, loads the Firebase Auth SDK (`FIREBASE_SDK_VERSION`, from
 `www.gstatic.com`) and Google reCAPTCHA, and its Content Security Policy allows exactly those.
 
-Organizations that registered before Firebase was set up have unverified numbers. In the Super
+Organizations that registered before phone verification was required may have unverified numbers. In the Super
 Admin console, open the organization's registration under Tasks and choose **Send phone
 verification link**: the contact gets a one-time link, valid for 7 days, to `/verify-phone`, which
 texts the number on record and records it as verified (`src/phone_link.ts`). The page loads

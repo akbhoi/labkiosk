@@ -100,7 +100,7 @@ Hostile strings render inert in every surface:
 
 ### Multi-tenant feature coverage
 
-Custom domain request → approval → routing by `Host` → disconnection; single-site lockdown with auto-allowlisting; per-organization customisation reflected on the portal; per-tenant broadcast presets; per-organization allowlists kept separate; audit logging of privileged actions; suspend and reactivate; the scheduled housekeeping handler.
+Custom domain connection → routing by `Host` → disconnection; console address changes once a week with earlier addresses kept; Custom plan request → priced payment link → plan applied when paid; single-site lockdown with auto-allowlisting; per-organization customisation reflected on the portal; per-tenant broadcast presets; per-organization allowlists kept separate; audit logging of privileged actions; suspend and reactivate; the scheduled housekeeping handler.
 
 ---
 

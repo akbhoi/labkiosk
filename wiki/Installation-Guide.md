@@ -10,7 +10,7 @@ End-to-end, from a blank thin client to a workstation live on an operator's dash
 
 | You need | Notes |
 | :--- | :--- |
-| A registered, **approved** organization on a Lab Kiosk control plane | Either your own deployment or a hosted one. → [Production Deployment](Production-Deployment) |
+| A registered organization on a Lab Kiosk control plane, with its details entered | Either your own deployment or a hosted one. → [Production Deployment](Production-Deployment) |
 | Your organization's **enrollment key** | Admin console → Settings → Workstation Enrollment Key. Organizations start with an empty key, which authenticates nothing — generate one first. It is four groups of five characters; the setup wizard inserts the hyphens as you type, and a pasted key is accepted with or without them, in any case, and even with a label copied along with it. |
 | The **ISO**, on a USB stick of 2 GB or more | Download it, or → [Building the ISO](Building-the-ISO). A Raspberry Pi 4 takes a card image instead → [Raspberry Pi](Raspberry-Pi) |
 | Thin clients with at least **2 GB RAM and a 7 GiB disk** (a drive sold as 8 GB qualifies) | 4 GB RAM and a 12 GB SSD is the reference target |
@@ -238,7 +238,7 @@ Rotating the enrollment key does **not** affect already-enrolled workstations �
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
 | No candidate drives listed | Disk under 7 GiB, or the only disk is the live medium | Check the disk size; install to a different machine |
-| Enrolment rejected | Empty or stale key, or the organization is `pending`/`suspended` | Generate a key; have a super admin approve the organization |
+| Enrolment rejected | Empty or stale key, the organization's details not entered yet, or the organization is `suspended` | Generate a key; finish the organization's details at `/admin/setup`; a suspended organization writes to support |
 | "This page is blocked" after enrolling | Chromium has not reloaded policy | Wait for the automatic restart; if it persists, check `/tmp/lab-agent.log` |
 | "This site isn't allowed on this workstation" (with the top bar) | The site is not on the allowlist, or a broadcast arrived before Chromium reloaded its policy | It retries once by itself after a few seconds; otherwise add the domain to the allowlist |
 | Workstation never appears | Wrong subdomain, no network, or a revoked token | `docker exec`-equivalent: read `/tmp/lab-agent.log` on the machine |

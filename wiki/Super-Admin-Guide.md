@@ -10,16 +10,17 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 
 | Capability | Why it is reserved |
 | :--- | :--- |
-| Approve or reject registrations whose phone was not proved by a texted code | With phone verification (Firebase) on, an account is active on the Free plan at once; without it, nothing works until a human confirms the phone and approves |
+| Price Custom plans and send their payment links (**Tasks → Custom plans**) | The one plan priced by hand: everything else is self-serve |
+| Review Education applications and partner applications | A free plan and a reseller listing both depend on documents a person checks |
 | Suspend or reactivate an organization | The platform's kill switch |
 | Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
 | Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
 | See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
 | Block domains on hosted pages; take an organization's homepage or a User Portal card down after a report | The platform hosts these pages under its own domain |
 | Classify releases; set each major release's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
-| Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
+| See and remove custom domains | Organizations connect their own; the platform pays for the custom hostnames |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
-| Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
+| Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Every message sent to an address on the mail domain |
 | See anonymous platform usage and the hardware workstations run on (**System → Usage**, **System → Hardware**) | High-level auditing without opening any organization |
 
 A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority — but `requireTenantAdmin()` then lets it into an organization's console or API **only** for one of the three demos it owns (`isDemoTenant()` in `src/demo.ts`: a demo slug *and* owned by the super admin). Any other organization answers `403` ("Platform administrators cannot access individual organization consoles"), and its `/admin` page explains the privacy isolation and points to `/super`. Opening `/admin/*` with no organization named lands in `local-demo` on a development host and `web-demo` otherwise. The demo slugs, and the retired `demo`, cannot be registered by an organization. → [Architecture Overview](Architecture-Overview#tenant-resolution)
@@ -31,19 +32,16 @@ A super admin cannot read organization passwords. They are PBKDF2 digests with p
 ## Tenant lifecycle
 
 ```text
-         register
+   register (email and phone proved)
             |
             v
-      +-----------+   approve    +----------+   suspend    +-----------+
-      |  pending  | -----------> |  active  | -----------> | suspended |
-      +-----------+              +----------+ <----------- +-----------+
-            |                                  reactivate
-            | reject
-            v
-      +-----------+
-      | rejected  |
-      +-----------+
+      +----------+   suspend    +-----------+
+      |  active  | -----------> | suspended |
+      +----------+ <----------- +-----------+
+                     reactivate
 ```
+
+`pending` and `rejected` remain only for registrations made before approvals ended; no new organization enters either.
 
 | Status | Portal | Dashboard | Enrolment | Telemetry |
 | :--- | :--- | :--- | :--- | :--- |
@@ -52,28 +50,23 @@ A super admin cannot read organization passwords. They are PBKDF2 digests with p
 | `suspended` | ✗ | ✗ | ✗ | `403` |
 | `rejected` | ✗ | ✗ | ✗ | ✗ |
 
-### Approving an organization
+### Registration
 
-```json
-POST /api/super/tenants/approve
-{ "tenantId": "tenant-uuid-1", "subdomain": "oakridge" }
-```
+Signup has two steps, and nothing in it waits for the platform. The account first, at `/register`: name, email (proved by a code), phone (proved by a texted code through Firebase), password and the console address, checked against reserved names and a word list (`src/name_screen.ts`); one organization per email address and per phone number. Both proofs are required: without Firebase configured, `/register` says registration is closed and the API answers `503`. The account is active at once on the Free plan. Then, signed in, the owner enters the organization's name, address and tax ID at `/admin/setup`; until then the console, enrolment and billing stay closed and the public pages say the organization is being set up.
 
-Before approving, check that the subdomain is plausible for the organization, that it is not a [reserved slug](Configuration-Reference#reserved-subdomains), and that the admin email belongs to that organization's domain.
+The workstation limit comes from the plan (45 on Free). Enrolment past it answers `403`; a workstation that still holds a valid token always enrols again, so lowering the limit later under **Organizations → ⋯ → Workstation Limit** stops new enrolments only. Each organization's row shows `N of M enrolled`, and its console header shows the same.
 
-Signup has two steps. The account first, at `/register`: name, email (proved by a code), phone, password and the console address, checked against reserved names and a word list (`src/name_screen.ts`); one organization per email address and per phone number. With Firebase phone verification on, the account is active at once on the Free plan and no task is opened. Then, signed in, the owner enters the organization's name, address and tax ID at `/admin/setup`; until then the console, enrolment and billing stay closed and the public pages say the organization is being set up.
+### Custom plans
 
-Without Firebase, a registration waits as a task. On approval the organization can sign in and enter its details, then configure its portal and enrol workstations.
-
-A registration is activated from **Tasks**, with a **workstation limit** (prefilled from the number the organization expects; 45 is the most the license allows without a paid one). Enrolment past it answers `403`; a workstation that still holds a valid token always enrols again, so lowering the limit later under **Organizations → ⋯ → Workstation Limit** stops new enrolments only. Each organization's row shows `N of M enrolled`, and its console header shows the same.
+An organization that needs more than the online plans offer asks for a Custom plan from **Plan & billing**: workstations, Remote Control seats, staff accounts, monthly or yearly, and notes. The request lands in **Tasks → Custom plans** and the platform owner is emailed. **Set price** takes the terms (prefilled from the request, and changeable), the price for the period in rupees before GST, how many days the link stays open (1–30, default 7) and an optional note, then creates a Razorpay payment link and emails it to the organization's owner. When the link is paid, the organization goes on the Custom plan (`license_plan = commercial`) with those limits for one period, extended from the end of a Custom plan still in force, and an invoice is issued. **Decline** needs a reason, which the organization is told. A failed link leaves the request waiting. Requests are kept in `custom_plan_requests` (migration `0063`).
 
 ### Remote Control
 
-A Remote Control request is approved from **Tasks** with a number of **seats**: how many sessions the organization may have open at once (its OrgHub counts them; one more answers `429` naming the workstations in use). Under **Organizations → ⋯**:
+An organization turns Remote Control on itself under **Settings** once its plan includes Remote Control seats; the seats are how many sessions it may have open at once (its OrgHub counts them; one more answers `429` naming the workstations in use). Under **Organizations → ⋯**:
 
 - **Remote Control Seats** changes that number; open sessions are not ended.
-- **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. The organization can ask again.
-- **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself (Settings → Remote Control) asks again through Tasks instead.
+- **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. A revoked organization cannot turn it back on itself; it writes to support.
+- **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself turns it back on under Settings.
 
 ### Security releases
 
@@ -88,7 +81,7 @@ Under **Releases**, below the release lists:
 
 ### Notifications
 
-**System → Notifications** sends a notification to one organization or every organization: it shows at the top of their consoles until each member of staff dismisses it, and can be emailed to each owner too. The list below it shows every notification the platform has sent and how many people dismissed it. The platform notifies organizations by itself when it approves one, turns Remote Control on or off or changes its seats, changes its workstation limit or license, takes content down or restores it, grants it a major release, and when a major release changes status or nears its end of life. Sending is audited (`notification.send`).
+**System → Notifications** sends a notification to one organization or every organization: it shows at the top of their consoles until each member of staff dismisses it, and can be emailed to each owner too. The list below it shows every notification the platform has sent and how many people dismissed it. The platform notifies organizations by itself when it turns Remote Control on or off or changes its seats, changes its workstation limit or license, takes content down or restores it, grants it a major release, and when a major release changes status or nears its end of life. Sending is audited (`notification.send`).
 
 ### Legal terms
 
@@ -138,43 +131,32 @@ POST /api/super/tenants/reactivate
 Organizations with their own domain can serve Lab Kiosk from `kiosk.acme.edu` rather than `acme.labkiosk.yourdomain.com`.
 
 ```text
- organization requests          you verify + approve         Cloudflare routes
- kiosk.example.com   -->   custom_domain_status:   -->  Host: kiosk.example.com
- (status: pending)         approved                    resolves to that tenant
+ organization connects       Cloudflare validates DNS      Cloudflare routes
+ kiosk.example.com   -->   custom hostname: pending  -->  Host: kiosk.example.com
+ under Settings            then active                    resolves to that tenant
 ```
 
 ### The steps
 
-1. **Organization requests** it under Settings → Custom Domain. `requested_custom_domain` is set and `custom_domain_status` becomes `pending`.
-2. **Organization creates a `CNAME`** for that hostname pointing at your platform apex.
-3. **You verify** that the requesting organization actually controls the domain. The platform does not check this for you — approving a domain the requester does not own hands them traffic intended for someone else.
-4. **You approve:**
+1. **The organization connects it** under Settings → Custom Domain (`POST /api/settings/custom-domain`). No approval: `custom_domain` is set at once and a job creates the Cloudflare for SaaS custom hostname. Connecting another domain replaces the first, whose hostname is deleted.
+2. **The organization creates a `CNAME`** for that hostname pointing at your platform apex. Cloudflare validates it and issues the certificate; Settings shows the certificate as waiting for DNS, active or failed.
+3. Until the `CNAME` points at the platform, nothing reaches the worker for that host, so a domain claimed by someone who does not control it carries no traffic. `custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN; a real owner whose domain is held by another organization writes to support, and you remove it.
 
-   ```json
-   POST /api/super/tenants/custom-domain/approve
-   { "tenantId": "tenant-uuid-1", "customDomain": "kiosk.example.com" }
-   ```
+Custom hostnames beyond the first 100 cost $0.10 a month each. **Tasks → Custom domains** lists every connected domain with its certificate status, and shows how many are in use and what they cost. A domain under the platform domain is refused: organization subdomains are already served by the wildcard.
 
-5. **Cloudflare** must route that hostname to the worker. With a proxied `CNAME` into your zone this is automatic; a domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
-
-   Custom hostnames beyond the first 100 cost $0.10 a month each. The Custom domains view shows how many are in use and what they cost, and the approval says when the next one adds to the bill. A domain under the platform domain is refused: organization subdomains are already served by the wildcard.
-
-`custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN.
-
-### Rejecting or removing
+### Removing
 
 ```json
-POST /api/super/tenants/custom-domain/reject
 POST /api/super/tenants/custom-domain/remove
 ```
 
-Removing unbinds the domain; the organization reverts to its platform subdomain. Workstations enrolled against the custom domain will need re-pointing, so give notice.
+Removing unbinds the domain; the organization reverts to its console address. Workstations enrolled against the custom domain will need re-pointing, so give notice. An organization can disconnect its own under Settings.
 
 ---
 
-## Subdomain change requests
+## Console address changes
 
-An organization can request a different subdomain (`POST /api/settings/subdomain`), which lands in `requested_subdomain` for a super admin to act on. Treat it as a rename with consequences: enrolled workstations hold a `workerUrl` pointing at the old host.
+An organization changes its console address itself under Settings (`POST /api/tenant/subdomain`), at most once every seven days, with no approval. The new address is checked like a registration's. Every address it held before keeps reaching it, because enrolled workstations hold a `workerUrl` pointing at the address they enrolled with: the first address (`subdomain`) never changes, the current one is `chosen_subdomain`, and those given up are kept in `retired_addresses` (migration `0062`), where no other organization can take them. Each change is audited (`tenant.change_address`).
 
 ---
 
@@ -218,7 +200,7 @@ These can be neither registered nor resolved as an organization. Add one to `RES
 
 The rail has five tabs: **Organizations** (the directory, filtered by status), **Tasks**, **Mail**, **Catalogs** and **System**. Each tab's views appear both as tabs above the content and under *Views* in the side panel. Signing in always asks for a six-digit code emailed to the super admin address; passkeys and an authenticator app can be added under **System → Two-factor sign-in**, and a passkey is then offered first.
 
-**Tasks** holds what needs a decision: *Requests* (registrations and Remote Control requests), *Subdomain changes* and *Custom domains*.
+**Tasks** holds what needs a decision: *Requests* (messages that open a task), *Custom plans* (requests waiting for a price), *Education* (applications to review) and *Custom domains* (every connected domain and its cost).
 
 **Mail** is the mailbox for every address on the mail domain and the contact form.
 
