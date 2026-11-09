@@ -15,7 +15,8 @@ Every knob, where it is set, and what happens if it is wrong.
 | `PASSWORD_PEPPER` | **Yes**, with a D1 binding | The worker refuses to serve. At least 32 characters (`openssl rand -hex 32`); an HMAC key over every stored password hash. Losing or changing it invalidates every password. |
 | `BREACHED_PASSWORD_CHECK` | No | A variable: `off` stops checking new passwords against Have I Been Pwned (only a 5-character hash prefix is sent; an outage allows the password). |
 | `SUPER_ADMIN_HOST` | No | A variable: one name under `DEFAULT_DOMAIN` (e.g. `super.labkiosk.org`) that alone serves `/super` and `/api/super/*`. Elsewhere `/super` redirects there and the API answers `404`. Unset, the console stays on every platform host. Anything else stops the worker. |
-| `CF_API_TOKEN` | For custom domains | Approving a custom domain cannot create its Cloudflare for SaaS custom hostname. An API token for the platform zone with **Zone · SSL and Certificates · Edit**. |
+| `FIREBASE_PROJECT_ID`, `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN` | **Yes**, to register organizations | Variables, all three or none. Registration proves the phone by a texted code through Firebase; unset, `/register` is closed and the API answers `503`. → [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) |
+| `CF_API_TOKEN` | For custom domains | Without it, connecting a custom domain cannot create its Cloudflare for SaaS custom hostname. An API token for the platform zone with **Zone · SSL and Certificates · Edit**. |
 | `CF_ZONE_ID` | For custom domains | As above. The zone id of the platform domain (zone **Overview** → *API* → *Zone ID*). |
 | `RELEASE_NOTES_TOKEN` | For releases | `POST /api/release-notes/sync` and `GET /api/release-support` answer `503`, so `/download` offers a new release only after the next hourly run, a tag build fails, and the daily security rebuild stops (it rebuilds no line without knowing which major releases are at end of life). At least 32 characters; the same value as the repository's Actions secret of that name. |
 | `GITHUB_ISSUES_TOKEN` | No | Automatic bug reports stay unavailable to every organization. A fine-grained token for the one repository in `GITHUB_ISSUES_REPO` with **Issues: Read and write** (and **Pull requests: Read** for a private repository). |
@@ -109,7 +110,7 @@ Configured by an organization admin in the dashboard; stored on the `tenants` ro
 | Enrollment key | `enrollment_key` | **Empty by default** — generate one before enrolling anything |
 | Default lock message | `default_lock_message` | Used when a lock command carries no message |
 | Portal title / subtitle / description / footer | `portal_*` | User Portal copy |
-| Custom domain | `custom_domain` | Requires super-admin approval; unique across the platform |
+| Custom domain | `custom_domain` | Included in Pro and Custom; an add-on on Starter, Standard and Education (₹299 a month, ₹2,990 a year, `custom_domain_paid`); connected under Settings, no approval; served only while the plan covers it; unique across the platform |
 | Allowlist | `tenant_whitelist` rows | Unioned with every portal app's host |
 | Broadcast presets | `broadcast_presets` rows | One-click shortcuts |
 | Automatic bug reports | `bug_reports_enabled`, `bug_reports_terms_version`, `bug_reports_terms_accepted_at` | Off by default. Sent only while the accepted terms version is the current `BUG_REPORT_TERMS_VERSION` |

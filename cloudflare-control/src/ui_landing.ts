@@ -95,8 +95,13 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
 export interface LandingOptions {
   /** Message shown in a banner above the hero, e.g. after a rejected redirect. */
   error?: string;
-  /** "login" and "register" render the sign-in or registration page instead of the home page; "iso" opens the home page's download dialog. */
-  openModal?: "login" | "register" | "iso";
+  /**
+   * "login" and "register" render the sign-in or registration page instead of the home page; "iso" opens the home
+   * page's download dialog; "organization" is signup's second step, on the organization's own host (/admin/setup).
+   */
+  openModal?: "login" | "register" | "iso" | "organization";
+  /** For "organization": the console being set up, and whether the viewer is its owner (only they may enter its details). */
+  organization?: { subdomain: string; host: string; owner: boolean };
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
   /** The newest release of each major, newest first, for /download (src/release_notes.ts); empty until the hourly run has read them. */
@@ -158,8 +163,8 @@ function renderPublicShell(
     description: string;
     activeNav?: string;
     mainHtml: string;
-    /** The sign-in or registration page: its form is the page. Every other page links to these. */
-    authPage?: "login" | "register";
+    /** The sign-in or registration page, or signup's second step: its form is the page. Every other page links to the first two. */
+    authPage?: "login" | "register" | "organization";
     /** The page's own form carries a Turnstile slot (the contact page). */
     turnstile?: boolean;
   }
@@ -171,9 +176,7 @@ function renderPublicShell(
   const loginTurnstileSlot = data.loginTurnstile === false ? "" : turnstileSlot("login-turnstile");
   // Only the registration page texts a code, and only it is given Firebase's settings and their CSP.
   const firebase = meta.authPage === "register" && data.firebase ? data.firebase : null;
-  const phoneHint = firebase
-    ? "Without the country code or a leading 0. We text a code to this number to confirm it."
-    : "Without the country code or a leading 0. We call or message this number to confirm it before approval.";
+  const phoneHint = "Without the country code or a leading 0. We text a code to this number to confirm it.";
   const smsHtml = firebase
     ? `
               <div class="code-row" style="margin-top: 8px;">
@@ -355,14 +358,100 @@ ${FONT_LINKS}
         </div>
       </div>
     </section>`
+        : meta.authPage === "register" && !firebase
+          ? `<section class="auth-page">
+      <div class="modal-box">
+        <h1 class="modal-title">Registration Is Closed for Now</h1>
+        <p class="modal-sub">New accounts need a phone number confirmed by a texted code, and that is not available at the moment. Please try again later or <a href="/contact">write to us</a>.</p>
+        <div class="modal-switch">
+          Already registered? <a href="/login">Sign in</a>
+        </div>
+      </div>
+    </section>`
         : meta.authPage === "register"
           ? `<section class="auth-page">
       <div class="modal-box modal-wide">
-        <h1 class="modal-title">Register Your Organization</h1>
-        <p class="modal-sub">We review every registration and email you when your console is active.</p>
+        <h1 class="modal-title">Create Your Account</h1>
+        <p class="modal-sub">Step 1 of 2. After you sign in, you enter your organization's name and address. The Free plan covers ${PRICING.freeWorkstations} workstations; you can choose another plan any time.</p>
         <div class="alert-box" id="register-alert" role="alert"></div>
         <div class="notice-box" id="register-done" role="status"></div>
         <form id="register-form">
+          <div class="form-group">
+            <label class="form-label" for="reg-contact-name">Full name</label>
+            <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-phone">Phone number</label>
+            <div class="phone-row">
+              <div class="dial-picker">
+                <button type="button" class="form-input dial-button" id="reg-dial-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="reg-dial-panel" aria-label="Country calling code">
+                  <span class="flag" id="reg-dial-flag" aria-hidden="true"></span>
+                  <span id="reg-dial-code">Code</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="dial-panel" id="reg-dial-panel" hidden>
+                  <input type="search" class="form-input" id="reg-dial-search" placeholder="Search by country or code" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="reg-dial-list" aria-autocomplete="list" aria-label="Search countries">
+                  <ul class="dial-list" id="reg-dial-list" role="listbox" aria-label="Countries"></ul>
+                </div>
+              </div>
+              <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
+            </div>
+            <div class="input-hint" id="reg-phone-hint">${phoneHint}</div>
+            <div class="field-error" id="reg-phone-error" role="alert"></div>${smsHtml}
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-email">Work email (your sign-in)</label>
+            <div class="code-row">
+              <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
+              <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
+            </div>
+          </div>
+          ${turnstileSlot("reg-turnstile")}
+          <div class="form-group">
+            <label class="form-label" for="reg-code">Six-digit code from that email</label>
+            <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-password">Password</label>
+            <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
+            <div class="input-hint">At least 12 characters, with letters and numbers.</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="reg-subdomain">Console address</label>
+            <div class="code-row">
+              <input type="text" class="form-input" id="reg-subdomain" required minlength="3" maxlength="63" pattern="[a-z0-9]+(-+[a-z0-9]+)*" placeholder="greenwood" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="reg-subdomain-hint">
+              <span class="input-hint">.${escapeHtml(baseDomain)}</span>
+            </div>
+            <div class="input-hint" id="reg-subdomain-hint">Lower-case letters, numbers and hyphens. Your workstations and your public page use this address, and it cannot be changed later.</div>
+          </div>
+          <div class="form-group">
+            <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a> and the <a href="/dpa" target="_blank" rel="noopener">Data Processing Agreement</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Create Account</button>
+        </form>
+        <div class="modal-switch">
+          Already registered? <a href="/login">Sign in</a>
+        </div>
+      </div>
+    </section>`
+        : meta.authPage === "organization"
+          ? data.organization && !data.organization.owner
+            ? `<section class="auth-page">
+      <div class="modal-box">
+        <h1 class="modal-title">Almost Ready</h1>
+        <p class="modal-sub">The person who registered ${escapeHtml(data.organization.host)} has not entered the organization's details yet. The console opens once they have.</p>
+        <form class="modal-switch" action="/api/auth/logout" method="POST">
+          Not your account? <button type="submit" class="modal-switch-button">Sign out</button>
+        </form>
+      </div>
+    </section>`
+            : `<section class="auth-page">
+      <div class="modal-box modal-wide">
+        <h1 class="modal-title">Set Up Your Organization</h1>
+        <p class="modal-sub">Step 2 of 2 for ${escapeHtml(data.organization?.host ?? "your console")}. Invoices and your public page use these details.</p>
+        <div class="alert-box" id="register-alert" role="alert"></div>
+        <form id="organization-form">
           <div class="form-legend">Organization</div>
           <div class="form-split">
             <div class="form-group">
@@ -390,50 +479,6 @@ ${FONT_LINKS}
               <label class="form-label" for="reg-workstations">Expected workstations</label>
               <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
             </div>
-          </div>
-
-          <div class="form-legend">Technical contact</div>
-          <div class="form-split">
-            <div class="form-group">
-              <label class="form-label" for="reg-contact-name">Full name</label>
-              <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="reg-phone">Phone number</label>
-              <div class="phone-row">
-                <div class="dial-picker">
-                  <button type="button" class="form-input dial-button" id="reg-dial-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="reg-dial-panel" aria-label="Country calling code">
-                    <span class="flag" id="reg-dial-flag" aria-hidden="true"></span>
-                    <span id="reg-dial-code">Code</span>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
-                  </button>
-                  <div class="dial-panel" id="reg-dial-panel" hidden>
-                    <input type="search" class="form-input" id="reg-dial-search" placeholder="Search by country or code" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="reg-dial-list" aria-autocomplete="list" aria-label="Search countries">
-                    <ul class="dial-list" id="reg-dial-list" role="listbox" aria-label="Countries"></ul>
-                  </div>
-                </div>
-                <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
-              </div>
-              <div class="input-hint" id="reg-phone-hint">${phoneHint}</div>
-              <div class="field-error" id="reg-phone-error" role="alert"></div>${smsHtml}
-            </div>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-email">Work email (your sign-in)</label>
-            <div class="code-row">
-              <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
-              <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
-            </div>
-          </div>
-          ${turnstileSlot("reg-turnstile")}
-          <div class="form-group">
-            <label class="form-label" for="reg-code">Six-digit code from that email</label>
-            <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-password">Password</label>
-            <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
-            <div class="input-hint">At least 12 characters, with letters and numbers.</div>
           </div>
 
           <div class="form-legend">Address &amp; billing</div>
@@ -483,14 +528,11 @@ ${FONT_LINKS}
             <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
             <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
           </div>
-          <div class="form-group">
-            <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a> and the <a href="/dpa" target="_blank" rel="noopener">Data Processing Agreement</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
-          </div>
-          <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
+          <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Open My Console</button>
         </form>
-        <div class="modal-switch">
-          Already registered? <a href="/login">Sign in</a>
-        </div>
+        <form class="modal-switch" action="/api/auth/logout" method="POST">
+          Not your account? <button type="submit" class="modal-switch-button">Sign out</button>
+        </form>
       </div>
     </section>`
           : meta.mainHtml
@@ -1232,8 +1274,8 @@ ${FONT_LINKS}
 
     }
 
-    // The registration page (/register): confirm the email with a code, then submit the request.
-    // The organization is reviewed before it is activated, so no session follows.
+    // The registration page (/register): confirm the email with a code, then create the account.
+    // No session follows: the customer signs in with the new password, like any sign-in.
     const registerAlert = document.getElementById('register-alert');
     function registerError(message) {
       registerAlert.textContent = message;
@@ -1241,9 +1283,13 @@ ${FONT_LINKS}
       registerAlert.scrollIntoView({ block: 'nearest' });
     }
 
-    if (document.getElementById('register-form')) {
+    // Signup's second step (/admin/setup on the organization's host) shares the
+    // country, state, postal code and tax ID handling; only the first has a phone.
+    const registerForm = document.getElementById('register-form');
+    const organizationForm = document.getElementById('organization-form');
+    if (registerForm || organizationForm) {
     const sendCodeButton = document.getElementById('reg-send-code');
-    sendCodeButton.addEventListener('click', async () => {
+    if (sendCodeButton) sendCodeButton.addEventListener('click', async () => {
       const email = document.getElementById('reg-email').value.trim();
       registerAlert.style.display = 'none';
       if (!email) {
@@ -1377,7 +1423,7 @@ ${FONT_LINKS}
       checkTaxId();
 
       // The phone number is usually in the same country.
-      if (!dialCountry && code) setDialCountry(countryRow(code));
+      if (dialButton && !dialCountry && code) setDialCountry(countryRow(code));
     }
 
     function setDialCountry(row) {
@@ -1389,9 +1435,9 @@ ${FONT_LINKS}
       dialButton.classList.remove('is-invalid');
       document.getElementById('reg-phone-hint').textContent =
         (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
-        (FIREBASE ? 'We text a code to this number to confirm it.' : 'We call or message this number to confirm it before approval.');
+        'We text a code to this number to confirm it.';
       checkPhone(true);
-      if (!regCountry.value) {
+      if (regCountry && !regCountry.value) {
         regCountry.value = row[0];
         applyCountry();
       }
@@ -1471,6 +1517,7 @@ ${FONT_LINKS}
       regPhone.focus();
     }
 
+    if (dialButton) {
     dialButton.addEventListener('click', () => {
       if (!dialPanel.hidden) { closeDialPanel(true); return; }
       loadGeo();
@@ -1508,17 +1555,28 @@ ${FONT_LINKS}
     document.addEventListener('click', (event) => {
       if (!dialPanel.hidden && !event.target.closest('.dial-picker')) closeDialPanel(false);
     });
-
-    regCountry.addEventListener('change', applyCountry);
-    regPostal.addEventListener('input', checkPostal);
-    regTaxId.addEventListener('input', checkTaxId);
     regPhone.addEventListener('input', () => checkPhone(false));
     regPhone.addEventListener('change', () => checkPhone(true));
+    }
+
+    if (regCountry) {
+      regCountry.addEventListener('change', applyCountry);
+      regPostal.addEventListener('input', checkPostal);
+      regTaxId.addEventListener('input', checkTaxId);
+    }
+
+    function countryListFailed() {
+      const message = 'The country list could not be loaded. Reload the page to try again.';
+      const slot = document.getElementById('reg-country-error');
+      if (slot) slot.textContent = message;
+      else registerError(message);
+    }
 
     function loadGeo() {
       if (geo) return Promise.resolve(geo);
       if (!geoRequest) {
-        document.getElementById('reg-country-error').textContent = '';
+        const slot = document.getElementById('reg-country-error');
+        if (slot) slot.textContent = '';
         geoRequest = fetch('${GEO_DATA_PATH}')
           .then((res) => {
             if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -1526,22 +1584,23 @@ ${FONT_LINKS}
           })
           .then((table) => {
             geo = table;
-            regCountry.replaceChildren(new Option('Select a country', ''));
-            for (const row of geo.countries) regCountry.append(new Option(row[1], row[0]));
-            regCountry.disabled = false;
+            if (regCountry) {
+              regCountry.replaceChildren(new Option('Select a country', ''));
+              for (const row of geo.countries) regCountry.append(new Option(row[1], row[0]));
+              regCountry.disabled = false;
+            }
             // Windows has no flag glyphs of its own; this font carries them.
             const flags = document.createElement('link');
             flags.rel = 'stylesheet';
             flags.href = 'https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap';
             document.head.append(flags);
-            if (!dialPanel.hidden) renderDialList();
+            if (dialPanel && !dialPanel.hidden) renderDialList();
             return geo;
           })
           .catch(() => {
-            // Shown where the list should be; the next opening of the dialog tries again.
+            // Shown where the list should be; the next request for it tries again.
             geoRequest = null;
-            document.getElementById('reg-country-error').textContent =
-              'The country list could not be loaded. Close this dialog and open it again.';
+            countryListFailed();
             return null;
           });
       }
@@ -1576,7 +1635,7 @@ ${FONT_LINKS}
       }
       return authModule;
     }
-    if (FIREBASE) {
+    if (FIREBASE && registerForm) {
       const smsSend = document.getElementById('reg-sms-send');
       const smsVerify = document.getElementById('reg-sms-verify');
       const forget = () => {
@@ -1646,7 +1705,7 @@ ${FONT_LINKS}
       });
     }
 
-    document.getElementById('register-form').addEventListener('submit', async (e) => {
+    if (registerForm) registerForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       registerAlert.style.display = 'none';
       const phoneDigits = checkPhone(true);
@@ -1662,27 +1721,14 @@ ${FONT_LINKS}
         return;
       }
       const value = (id) => document.getElementById(id).value.trim();
-      const workstations = parseInt(value('reg-workstations'), 10);
       const payload = {
-        name: value('reg-name'),
-        legalName: value('reg-legal-name'),
-        organizationType: value('reg-type'),
-        workstationEstimate: Number.isFinite(workstations) ? workstations : null,
         contactName: value('reg-contact-name'),
         phone: '+' + dialCountry[2] + phoneDigits,
         phoneToken: FIREBASE ? phoneToken : undefined,
         email: value('reg-email'),
         emailCode: value('reg-code'),
         password: document.getElementById('reg-password').value,
-        addressLine1: value('reg-address1'),
-        addressLine2: value('reg-address2'),
-        city: value('reg-city'),
-        region: regRegionSelect.hidden ? value('reg-region') : regRegionSelect.value,
-        postalCode: value('reg-postal'),
-        country: value('reg-country'),
-        taxId: value('reg-tax-id'),
-        billingEmail: value('reg-billing-email'),
-        notes: value('reg-notes'),
+        subdomain: value('reg-subdomain').toLowerCase(),
         acceptTerms: document.getElementById('reg-terms').checked
       };
 
@@ -1694,16 +1740,61 @@ ${FONT_LINKS}
         });
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
-          document.getElementById('register-form').style.display = 'none';
+          registerForm.style.display = 'none';
           const done = document.getElementById('register-done');
-          done.textContent = 'Thank you. Your registration (reference ' + data.reference + ') is waiting for review. ' +
-            'We have emailed ' + payload.email + ' and will write again as soon as your console is active.';
+          done.replaceChildren();
+          done.append('Your account is ready. Sign in with ' + payload.email + ' and your password to enter the organization details. ');
+          const link = document.createElement('a');
+          link.href = '/login';
+          link.textContent = 'Sign in';
+          done.append(link);
           done.style.display = 'block';
           return;
         }
         registerError(data.error || 'Registration failed');
       } catch (err) {
         registerError('Network error during registration');
+      }
+    });
+
+    // Signup's second step: the organization's details, then the console.
+    if (organizationForm) organizationForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      registerAlert.style.display = 'none';
+      const value = (id) => document.getElementById(id).value.trim();
+      const workstations = parseInt(value('reg-workstations'), 10);
+      const payload = {
+        name: value('reg-name'),
+        legalName: value('reg-legal-name'),
+        organizationType: value('reg-type'),
+        workstationEstimate: Number.isFinite(workstations) ? workstations : null,
+        addressLine1: value('reg-address1'),
+        addressLine2: value('reg-address2'),
+        city: value('reg-city'),
+        region: regRegionSelect.hidden ? value('reg-region') : regRegionSelect.value,
+        postalCode: value('reg-postal'),
+        country: value('reg-country'),
+        taxId: value('reg-tax-id'),
+        billingEmail: value('reg-billing-email'),
+        notes: value('reg-notes')
+      };
+      // On a dev host the organization rides along as ?tenant= (Rule 5e).
+      const tenant = new URLSearchParams(location.search).get('tenant');
+      const scope = tenant ? '?tenant=' + encodeURIComponent(tenant) : '';
+      try {
+        const res = await fetch('/api/tenant/organization' + scope, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          location.assign('/admin' + scope);
+          return;
+        }
+        registerError(data.error || 'The details could not be saved');
+      } catch (err) {
+        registerError('Network error while saving the details');
       }
     });
     }
@@ -2326,7 +2417,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Register on this website and we review the request. Once it is approved you receive your console address and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
+            Create an account on this website, sign in, and enter your organization's name and address. Your console then shows your enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
           </div>
         </div>
       </div>
@@ -2390,10 +2481,18 @@ export function renderLandingHtml(data: LandingOptions): string {
       authPage: "login"
     });
   }
+  if (data.openModal === "organization") {
+    return renderPublicShell(data, {
+      title: "Set Up Your Organization - Lab Kiosk",
+      description: "Enter your organization's name and address to open its Lab Kiosk console.",
+      mainHtml: "",
+      authPage: "organization"
+    });
+  }
   if (data.openModal === "register") {
     return renderPublicShell(data, {
       title: "Register Your Organization - Lab Kiosk",
-      description: "Register your organization for Lab Kiosk. Every registration is reviewed before its console is activated.",
+      description: `Create a Lab Kiosk account for your organization: free on ${PRICING.freeWorkstations} workstations, with plans for more.`,
       activeNav: "register",
       mainHtml: "",
       authPage: "register"
@@ -2913,7 +3012,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
           <a class="btn btn-ghost btn-block" href="/register">Get started</a>
         </div>
       </div>
-      <p class="pricing-footnote">${gstLine} A yearly plan costs ten months. Online plans go up to ${p.salesAbove} workstations; for more, <a href="/contact?reason=sales">talk to sales</a>.</p>
+      <p class="pricing-footnote">${gstLine} A yearly plan costs ten months. Online plans go up to ${p.salesAbove} workstations; for more, ask for a Custom plan from Plan &amp; billing in your console, or <a href="/contact?reason=sales">talk to sales</a>.</p>
 
       <div class="pricing-grid pricing-grid-2">
         <div class="pricing-card pricing-card-row">
@@ -2922,6 +3021,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
           ${list([
             `${t.education.includedWorkstations} workstations and ${t.education.staff} staff, free for a year at a time`,
             `Remote Control at half price: ${inr(t.education.remoteMonthly)} a month per workstation`,
+            `A custom domain for ${inr(t.education.domainMonthly)} a month`,
             "Apply from Plan &amp; billing in your console; we check every application by hand"
           ])}
           <a class="btn btn-ghost" href="/register">Register, then apply</a>
@@ -2929,13 +3029,15 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
         <div class="pricing-card pricing-card-row">
           <h2 class="pricing-tier">Custom</h2>
           <div class="pricing-sub">For more than ${p.salesAbove} computers, several sites, or invoiced billing.</div>
-          ${list(["Any number of workstations and sites", "Volume pricing, purchase orders and annual invoicing", "Priority onboarding, and help with certified hardware"])}
+          ${list(["Any number of workstations and sites", "Your own domain, such as kiosk.example.org", "Ask from Plan &amp; billing in your console; we email a payment link with the price", "Priority onboarding, and help with certified hardware"])}
+          <a class="btn btn-ghost" href="/register">Register, then ask</a>
           <a class="btn btn-ghost" href="/contact?reason=sales">Contact sales</a>
         </div>
       </div>
 
       <div class="docs-callout pricing-addon">
-        <strong>Remote Control add-on:</strong> see and control a workstation's screen from the console. ${inr(t.standard.remoteMonthly)} a month (${inr(t.standard.remoteYearly)} a year) for each workstation that carries a seat; ${t.pro.label} includes ${t.pro.includedRemoteSeats}. Move a seat to another workstation whenever you like.
+        <strong>Remote Control add-on:</strong> see and control a workstation's screen from the console. ${inr(t.standard.remoteMonthly)} a month (${inr(t.standard.remoteYearly)} a year) for each workstation that carries a seat; ${t.pro.label} includes ${t.pro.includedRemoteSeats}. Move a seat to another workstation whenever you like.<br>
+        <strong>Custom domain add-on:</strong> serve the console and homepage from your own domain. ${inr(t.standard.domainMonthly)} a month (${inr(t.standard.domainYearly)} a year) on ${t.starter.label}, ${t.standard.label} and Education; included in ${t.pro.label} and Custom.
       </div>
     </section>
 
@@ -2950,6 +3052,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
             ${row("Staff accounts besides you", [String(STAFF_LIMITS.free), String(t.starter.staff), String(t.standard.staff), String(t.pro.staff)])}
             ${row("Remote Control seats included", [no, "0", "0", String(t.pro.includedRemoteSeats)])}
             ${row("More Remote Control seats, a month", [no, `${inr(t.starter.remoteMonthly)} each`, `${inr(t.standard.remoteMonthly)} each`, `${inr(t.pro.remoteMonthly)} each`])}
+            ${row("Custom domain, a month", [no, inr(t.starter.domainMonthly), inr(t.standard.domainMonthly), "Included"])}
             ${row("Live screens, lock and broadcast", [yes, yes, yes, yes])}
             ${row("User Portal and domain allowlist", [yes, yes, yes, yes])}
             ${row("Exam mode, power schedules, usage reports", [yes, yes, yes, yes])}
@@ -3034,7 +3137,7 @@ function pricingMainHtml(nonce: string, gstPercent: number): string {
             tier.label + " covers " + tier.included + " workstations" + (tier.seatsIncluded ? " and " + tier.seatsIncluded + " Remote Control seats" : "") + "; " +
             (extra ? extra + " more workstation" + (extra === 1 ? "" : "s") + " added. " : "nothing extra. ") +
             (GST ? "Includes " + GST + "% GST. " : "No GST is charged at present. ") +
-            (ws >= SALES_ABOVE ? "For more workstations, talk to sales." : "The total at checkout is worked out the same way.");
+            (ws >= SALES_ABOVE ? "For more workstations, ask for a Custom plan from Plan & billing." : "The total at checkout is worked out the same way.");
         }
         ["calc-tier", "calc-ws", "calc-seats"].forEach(function (id) { document.getElementById(id).addEventListener("input", calc); });
         calc();
@@ -4132,6 +4235,8 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .modal-switch { text-align: center; margin-top: 18px; font-size: 0.8125rem; color: var(--text-muted); }
     .modal-switch a { color: var(--accent-text); text-decoration: none; cursor: pointer; font-weight: 600; }
     .modal-switch a:hover { text-decoration: underline; }
+    .modal-switch-button { background: none; border: 0; padding: 0; font: inherit; color: var(--accent-text); cursor: pointer; font-weight: 600; }
+    .modal-switch-button:hover { text-decoration: underline; }
     .modal-wide { max-width: 640px; }
     .form-split { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
     .form-legend { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin: 20px 0 10px; text-align: left; }

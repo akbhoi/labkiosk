@@ -21,6 +21,7 @@ import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor"
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
 import { renderStatusPaneHtml, renderStatusPaneScript } from "./ui_super_status";
+import { renderCustomPlansPaneHtml, renderCustomPlansScript } from "./ui_super_custom_plans";
 import { renderEducationPaneHtml, renderEducationScript } from "./ui_super_education";
 import { renderPartnersScript, renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
@@ -57,6 +58,8 @@ export interface SuperAdminOptions {
   inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
   /** Education applications waiting for a decision (src/education.ts). */
   pendingEducation?: number;
+  /** Custom plan requests waiting for a price (src/custom_plans.ts). */
+  pendingCustomPlans?: number;
   nonce: string;
 }
 
@@ -115,22 +118,18 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       ? tenants.filter((t) => t.status === "active" && !isDemoTenant(t, superAdminId)).map((t) => ({ id: t.id, name: t.name, subdomain: t.subdomain }))
       : [];
 
-  // Registrations are decided in Tasks; this list is an active organization asking for a new address.
-  const pendingList = tenants.filter((t) => t.status !== "pending" && t.requested_subdomain);
   const inbox = { deletedSupport: 0, ...(data.inbox || { openTasks: 0, openSupport: 0, unreadSupport: 0 }) };
-  const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
+  const customDomainList = tenants.filter((t) => t.custom_domain);
   const customBudget = customHostnameBudget(tenants.filter((t) => t.custom_domain).length);
   const customBudgetLine =
     `${customBudget.inUse} custom domain${customBudget.inUse === 1 ? "" : "s"} in use. ` +
     `Cloudflare includes ${CUSTOM_HOSTNAMES_INCLUDED}; each one after that costs $${CUSTOM_HOSTNAME_MONTHLY_USD.toFixed(2)} a month` +
     (customBudget.billable > 0 ? ` (${customBudget.billable} now, $${customBudget.monthlyUsd.toFixed(2)} a month)` : "") +
     `, up to ${CUSTOM_HOSTNAMES_MAX.toLocaleString("en-US")} without Enterprise. Subdomains cost nothing.`;
-  // Approving one more after the included ones adds to the bill (replacing a domain does not); the confirmation says so.
-  const nextCustomAddsCost = customBudget.inUse >= CUSTOM_HOSTNAMES_INCLUDED;
   const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
-  const domainRequestCount = pendingList.length + pendingCustomList.length;
-  const pendingCount = inbox.openTasks + domainRequestCount;
+  const pendingCustomPlans = data.pendingCustomPlans ?? 0;
+  const pendingCount = inbox.openTasks + pendingCustomPlans;
   const realTenants = tenants.filter((t) => !isDemoTenant(t, superAdminId));
   const overviewData = {
     organizations: {
@@ -139,7 +138,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       suspended: realTenants.filter((t) => t.status === "suspended").length
     },
     workstations: { online: totalOnline, total: totalClients },
-    tasks: { requests: inbox.openTasks, subdomains: pendingList.length, customDomains: pendingCustomList.length, education: data.pendingEducation ?? 0 },
+    tasks: { requests: inbox.openTasks, education: data.pendingEducation ?? 0, customPlans: pendingCustomPlans },
     unreadMail: inbox.unreadSupport,
     plansEndingSoon: realTenants.filter((t) => t.status === "active" && licenseState(t).endingSoon).length,
     plansLapsed: realTenants.filter((t) => t.status === "active" && licenseState(t).expired).length
@@ -167,51 +166,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     )
     .join("");
 
-  const pendingSubdomainRows = pendingList
+  const customDomainRows = customDomainList
     .map(
       (t) => `
     <tr>
       <td><div class="cell-title">${escapeHtml(t.name)}</div></td>
-      <td>${escapeHtml(t.admin_name)} <div class="cell-sub">${escapeHtml(t.admin_email)}</div></td>
-      <td>
-        <span class="badge badge-yellow mono">
-          ${
-            t.requested_subdomain
-              ? `<b>${escapeHtml(t.requested_subdomain)}</b> (keeps ${escapeHtml(t.subdomain)})`
-              : `<b>${escapeHtml(t.subdomain)}</b>`
-          }
-        </span>
-      </td>
-      <td class="mono text-xs nowrap">${escapeHtml(new Date(t.created_at * 1000).toISOString().slice(0, 10))}</td>
-      <td>
-        <div class="cell-actions">
-          <button class="btn btn-sm btn-primary btn-approve-sub" data-tenant="${escapeAttr(t.id)}" data-subdomain="${escapeAttr(t.requested_subdomain || t.subdomain)}">Approve</button>
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
-          <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeAttr(t.id)}">Reject</button>
-        </div>
-      </td>
-    </tr>
-  `
-    )
-    .join("");
-
-  const pendingCustomRows = pendingCustomList
-    .map(
-      (t) => `
-    <tr>
-      <td><div class="cell-title">${escapeHtml(t.name)}</div></td>
-      <td>${escapeHtml(t.admin_name)} <div class="cell-sub">${escapeHtml(t.admin_email)}</div></td>
-      <td>
-        <span class="badge badge-yellow mono">
-          ${escapeHtml(t.requested_custom_domain || "")}
-        </span>
-      </td>
-      <td>
-        <div class="cell-actions">
-          <button class="btn btn-sm btn-primary btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}"${nextCustomAddsCost && !t.custom_domain ? ` data-adds-cost="${escapeAttr(CUSTOM_HOSTNAME_MONTHLY_USD.toFixed(2))}"` : ""}>Approve Domain</button>
-          <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeAttr(t.id)}">Reject</button>
-        </div>
-      </td>
+      <td><span class="mono">${escapeHtml(t.custom_domain || "")}</span></td>
+      <td><span class="badge ${t.custom_hostname_status === "active" ? "badge-green" : t.custom_hostname_status === "failed" ? "badge-red" : "badge-yellow"}">${escapeHtml(t.custom_hostname_status || "pending")}</span></td>
     </tr>
   `
     )
@@ -237,9 +198,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         ${
           t.custom_domain
             ? `<div class="row mt-sm"><span class="badge badge-green">Custom</span><span class="mono text-xs">${escapeHtml(t.custom_domain)}</span></div>`
-            : t.custom_domain_status === "pending"
-              ? `<div class="row mt-sm"><span class="badge badge-yellow">Pending</span><span class="mono text-xs text-muted">${escapeHtml(t.requested_custom_domain || "")}</span></div>`
-              : ""
+            : ""
         }
       </td>
       <td>
@@ -279,7 +238,6 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
           </button>
           <div class="menu-popover" id="${escapeAttr(menuId)}" popover role="menu" aria-label="Organization actions">
-            ${isDemo ? "" : `<button type="button" class="menu-item btn-edit-sub" role="menuitem" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>`}
             <button type="button" class="menu-item btn-assign-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
             ${
               t.remote_control_status === "approved"
@@ -399,9 +357,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     ],
     tasks: [
       { id: "requests", label: "Requests", count: inbox.openTasks, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>` },
-      { id: "subdomains", label: "Subdomain changes", count: pendingList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>` },
+      { id: "custom-plans", label: "Custom plans", count: pendingCustomPlans, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>` },
       { id: "education", label: "Education", count: data.pendingEducation ?? 0, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/></svg>` },
-      { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
+      { id: "custom-domains", label: "Custom domains", count: customDomainList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
     ],
     support: [],
     billing: [],
@@ -492,46 +450,22 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
   `;
 
-  const subdomainRequestsCardHtml = `
-      <div class="card">
-        <h2 class="card-title">Subdomain Change Requests (${pendingList.length})</h2>
-        <p class="card-sub">Active organizations asking to move to a new address. Registrations are decided in Tasks.</p>
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Organization</th>
-                <th>Contact</th>
-                <th>Requested Subdomain</th>
-                <th>Requested</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${pendingSubdomainRows || `<tr><td colspan="5" class="table-empty">No subdomain change requests.</td></tr>`}
-            </tbody>
-          </table>
-        </div>
-      </div>
-  `;
-
   const customDomainsCardHtml = `
       <div class="card">
-        <h2 class="card-title">Pending Custom Domain Requests (${pendingCustomList.length})</h2>
-        <p class="card-sub">Organizations requesting their own custom domains (e.g. <code>kiosk.example.com</code>).</p>
+        <h2 class="card-title">Custom Domains (${customDomainList.length})</h2>
+        <p class="card-sub">Organizations connect their own domains from Settings; nobody approves them. Cloudflare issues each certificate once the domain's DNS points here.</p>
         <p class="card-sub">${escapeHtml(customBudgetLine)}</p>
         <div class="table-container">
           <table>
             <thead>
               <tr>
                 <th>Organization</th>
-                <th>Contact</th>
-                <th>Requested Domain</th>
-                <th>Actions</th>
+                <th>Domain</th>
+                <th>Certificate</th>
               </tr>
             </thead>
             <tbody>
-              ${pendingCustomRows || `<tr><td colspan="4" class="table-empty">No pending custom domain requests.</td></tr>`}
+              ${customDomainRows || `<tr><td colspan="3" class="table-empty">No custom domains connected.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -642,8 +576,8 @@ ${organizationsPaneHtml}
       <div class="tab-pane active" id="pane-requests">
         ${renderInboxPaneHtml("tasks", { open: inbox.openTasks })}
       </div>
-      <div class="tab-pane" id="pane-subdomains">
-        ${subdomainRequestsCardHtml}
+      <div class="tab-pane" id="pane-custom-plans">
+        ${renderCustomPlansPaneHtml()}
       </div>
       <div class="tab-pane" id="pane-education">
         ${renderEducationPaneHtml()}
@@ -695,7 +629,7 @@ ${segmentedNavHtml}
 ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const inboxScriptHtml =
-    activeTab === "tasks" || activeTab === "support" ? renderInboxScript(nonce, activeTab, baseDomain, domainRequestCount) : "";
+    activeTab === "tasks" || activeTab === "support" ? renderInboxScript(nonce, activeTab, baseDomain, pendingCustomPlans) : "";
 
   const tabSwitchScriptHtml = `
     <script nonce="${escapeAttr(nonce)}">
@@ -762,6 +696,7 @@ ${activeTab === "overview" ? renderSuperOverviewScript(nonce) : ""}
 ${activeTab === "account" ? renderTwoFactorScript(nonce) : ""}
 ${activeTab === "system" ? renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderStatusPaneScript(nonce) + renderPlatformUsageScript(nonce) + renderPartnersScript(nonce) : ""}
 ${activeTab === "tasks" ? renderEducationScript(nonce) : ""}
+${activeTab === "tasks" ? renderCustomPlansScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
 ${activeTab === "billing" ? renderBillingScript(nonce, billingOrganizations) : ""}
     <script nonce="${escapeAttr(nonce)}">
@@ -783,150 +718,6 @@ ${activeTab === "billing" ? renderBillingScript(nonce, billingOrganizations) : "
         }
         controls.forEach((control) => control.addEventListener("click", () => apply(control.dataset.orgFilter)));
       })();
-
-      document.querySelectorAll(".btn-approve-sub").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const tenantId = btn.dataset.tenant;
-          const subdomain = btn.dataset.subdomain;
-          const agreed = await lkConfirm({
-            title: "Grant '" + subdomain + "'?",
-            message: "The organization gets this address and its public homepage straight away. Its current address keeps working, so enrolled workstations are unaffected. A granted address is permanent.",
-            confirmLabel: "Approve"
-          });
-          if (!agreed) return;
-          try {
-            const res = await fetch("/api/super/tenants/approve", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tenantId, subdomain })
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              window.location.reload();
-            } else {
-              lkToast(data.error || "Approval failed", "error");
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          }
-        });
-      });
-
-      document.querySelectorAll(".btn-reject-sub").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const tenantId = btn.dataset.tenant;
-          const agreed = await lkConfirm({
-            title: "Decline this address?",
-            message: "The organization keeps its current address. It can ask for a different one later.",
-            confirmLabel: "Reject",
-            tone: "danger"
-          });
-          if (!agreed) return;
-          try {
-            const res = await fetch("/api/super/tenants/reject", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tenantId })
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              window.location.reload();
-            } else {
-              lkToast(data.error || "Rejection failed", "error");
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          }
-        });
-      });
-
-      document.querySelectorAll(".btn-approve-custom").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const tenantId = btn.dataset.tenant;
-          const customDomain = btn.dataset.domain;
-          const agreed = await lkConfirm({
-            title: "Approve " + customDomain + "?",
-            message:
-              "Traffic on that hostname will route to this organization. Their DNS has to point at the worker before it resolves." +
-              (btn.dataset.addsCost ? " It is beyond the custom domains Cloudflare includes, so it adds $" + btn.dataset.addsCost + " a month." : ""),
-            confirmLabel: "Approve domain"
-          });
-          if (!agreed) return;
-          try {
-            const res = await fetch("/api/super/tenants/custom-domain/approve", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tenantId, customDomain })
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              window.location.reload();
-            } else {
-              lkToast(data.error || "Custom domain approval failed", "error");
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          }
-        });
-      });
-
-      document.querySelectorAll(".btn-reject-custom").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const tenantId = btn.dataset.tenant;
-          const agreed = await lkConfirm({
-            title: "Reject this domain request?",
-            message: "The organization keeps its subdomain address and can request a different domain later.",
-            confirmLabel: "Reject",
-            tone: "danger"
-          });
-          if (!agreed) return;
-          try {
-            const res = await fetch("/api/super/tenants/custom-domain/reject", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tenantId })
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              window.location.reload();
-            } else {
-              lkToast(data.error || "Failed to reject custom domain", "error");
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          }
-        });
-      });
-
-      document.querySelectorAll(".btn-edit-sub").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const tenantId = btn.dataset.tenant;
-          const newSub = await lkPrompt({
-            title: "Grant a chosen address",
-            message: "The organization reaches its console, portal and homepage at this address too. Its current address keeps working.",
-            label: "Subdomain",
-            placeholder: "greenwood",
-            hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",
-            confirmLabel: "Assign"
-          });
-          if (!newSub) return;
-          try {
-            const res = await fetch("/api/super/tenants/approve", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tenantId, subdomain: newSub.trim().toLowerCase() })
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              window.location.reload();
-            } else {
-              lkToast(data.error || "Failed to assign subdomain", "error");
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          }
-        });
-      });
 
       async function remoteControlAction(payload, failure) {
         try {

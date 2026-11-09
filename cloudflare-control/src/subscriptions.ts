@@ -56,6 +56,8 @@ export interface SubscriptionRow {
   catalogue_version: number;
   extra_workstations: number;
   remote_seats: number;
+  /** 1 when it sells the custom domain add-on (0064). */
+  custom_domain: number;
   subtotal_paise: number;
   gst_paise: number;
   total_paise: number;
@@ -117,13 +119,20 @@ export function pendingReplacement(rows: SubscriptionRow[], now: number): Subscr
   );
 }
 
-export function quoteOf(row: Pick<SubscriptionRow, "tier" | "period" | "extra_workstations" | "remote_seats">): TierQuoteInput {
-  return { tier: row.tier, period: row.period, extraWorkstations: Number(row.extra_workstations), remoteSeats: Number(row.remote_seats) };
+export function quoteOf(row: Pick<SubscriptionRow, "tier" | "period" | "extra_workstations" | "remote_seats" | "custom_domain">): TierQuoteInput {
+  return {
+    tier: row.tier,
+    period: row.period,
+    extraWorkstations: Number(row.extra_workstations),
+    remoteSeats: Number(row.remote_seats),
+    customDomain: Number(row.custom_domain) === 1
+  };
 }
 
 function describe(q: TierQuote, organization: string): string {
   const parts = [`${CATALOGUE[q.tier].label}`, `${q.workstations} workstations`];
   if (q.remoteSeatsTotal) parts.push(`${q.remoteSeatsTotal} Remote Control seat${q.remoteSeatsTotal === 1 ? "" : "s"}`);
+  if (q.customDomain) parts.push("custom domain");
   return `Lab Kiosk ${parts.join(", ")}, ${q.period === "month" ? "monthly" : "yearly"}, for ${organization}`.slice(0, 250);
 }
 
@@ -133,6 +142,7 @@ export function invoiceLines(q: TierQuote): InvoiceLine[] {
   if (q.base) lines.push({ description: `Lab Kiosk ${CATALOGUE[q.tier].label}, ${period}, ${CATALOGUE[q.tier].includedWorkstations} workstations`, amount: q.base });
   if (q.extras) lines.push({ description: `${q.extraWorkstations} additional workstation${q.extraWorkstations === 1 ? "" : "s"}, ${period}`, amount: q.extras });
   if (q.remote) lines.push({ description: `Remote Control, ${q.remoteSeats} workstation${q.remoteSeats === 1 ? "" : "s"}, ${period}`, amount: q.remote });
+  if (q.domain) lines.push({ description: `Custom domain, ${period}`, amount: q.domain });
   return lines;
 }
 
@@ -196,9 +206,9 @@ export async function startCheckout(
   const upfront = input.upfront && input.upfront.total > 0 ? input.upfront : null;
   await db
     .prepare(
-      `INSERT INTO subscriptions (id, tenant_id, tier, period, catalogue_version, extra_workstations, remote_seats, subtotal_paise, gst_paise,
+      `INSERT INTO subscriptions (id, tenant_id, tier, period, catalogue_version, extra_workstations, remote_seats, custom_domain, subtotal_paise, gst_paise,
                                   total_paise, upfront_paise, upfront_gst_paise, status, replaces_id, starts_at, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -208,6 +218,7 @@ export async function startCheckout(
       q.catalogueVersion,
       q.extraWorkstations,
       q.remoteSeats,
+      q.customDomain ? 1 : 0,
       q.subtotal,
       q.gst,
       q.total,
@@ -369,12 +380,13 @@ export async function syncSubscription(env: Env, db: D1Database, row: Subscripti
 }
 
 /** The tenant's limits for what a subscription sells. */
-function grantColumns(row: SubscriptionRow): { workstations: number; remoteSeats: number; remoteSeatsTotal: number } {
+function grantColumns(row: SubscriptionRow): { workstations: number; remoteSeats: number; remoteSeatsTotal: number; customDomain: number } {
   const spec = CATALOGUE[row.tier];
   return {
     workstations: spec.includedWorkstations + Number(row.extra_workstations),
     remoteSeats: Number(row.remote_seats),
-    remoteSeatsTotal: spec.includedRemoteSeats + Number(row.remote_seats)
+    remoteSeatsTotal: spec.includedRemoteSeats + Number(row.remote_seats),
+    customDomain: Number(row.custom_domain) === 1 ? 1 : 0
   };
 }
 
@@ -403,22 +415,22 @@ function periodStatements(
     education
       ? db
           .prepare(
-            `UPDATE tenants SET workstation_limit = ?, remote_seats_paid = ?, grace_ends_at = NULL,
+            `UPDATE tenants SET workstation_limit = ?, remote_seats_paid = ?, custom_domain_paid = ?, grace_ends_at = NULL,
                     remote_control_seats = MAX(COALESCE(remote_control_seats, 1), ?)
               WHERE id = ? AND ${notYet}`
           )
-          .bind(g.workstations, g.remoteSeats, g.remoteSeatsTotal, tenant.id, paymentId)
+          .bind(g.workstations, g.remoteSeats, g.customDomain, g.remoteSeatsTotal, tenant.id, paymentId)
       : db
           .prepare(
             `UPDATE tenants
-                SET plan_tier = ?, workstation_limit = ?, remote_seats_paid = ?, grace_ends_at = NULL, staff_limit = NULL,
+                SET plan_tier = ?, workstation_limit = ?, remote_seats_paid = ?, custom_domain_paid = ?, grace_ends_at = NULL, staff_limit = NULL,
                     remote_control_seats = MAX(COALESCE(remote_control_seats, 1), ?),
                     license_plan = 'subscriber',
                     license_expires_at = MAX(CASE WHEN license_plan = 'subscriber' THEN COALESCE(license_expires_at, 0) ELSE 0 END, ?)
               WHERE id = ? AND ${notYet}
                 AND (license_plan IS NOT 'subscriber' OR license_expires_at IS NULL OR license_expires_at <= ?)`
           )
-          .bind(row.tier, g.workstations, g.remoteSeats, g.remoteSeatsTotal, periodEnd, tenant.id, paymentId, periodEnd),
+          .bind(row.tier, g.workstations, g.remoteSeats, g.customDomain, g.remoteSeatsTotal, periodEnd, tenant.id, paymentId, periodEnd),
     // An older period applied late still extends nothing backwards and changes no limits.
     db
       .prepare(
@@ -459,9 +471,12 @@ function upfrontStatements(
   const notYet = "NOT EXISTS (SELECT 1 FROM invoices WHERE razorpay_payment_id = ?)";
   const set =
     row.tier === "education"
-      ? "workstation_limit = MAX(COALESCE(workstation_limit, 0), ?), remote_seats_paid = MAX(remote_seats_paid, ?), remote_control_seats = MAX(COALESCE(remote_control_seats, 1), ?)"
-      : "plan_tier = ?, workstation_limit = MAX(COALESCE(workstation_limit, 0), ?), remote_seats_paid = MAX(remote_seats_paid, ?), remote_control_seats = MAX(COALESCE(remote_control_seats, 1), ?)";
-  const binds = row.tier === "education" ? [g.workstations, g.remoteSeats, g.remoteSeatsTotal] : [row.tier, g.workstations, g.remoteSeats, g.remoteSeatsTotal];
+      ? "workstation_limit = MAX(COALESCE(workstation_limit, 0), ?), remote_seats_paid = MAX(remote_seats_paid, ?), remote_control_seats = MAX(COALESCE(remote_control_seats, 1), ?), custom_domain_paid = MAX(custom_domain_paid, ?)"
+      : "plan_tier = ?, workstation_limit = MAX(COALESCE(workstation_limit, 0), ?), remote_seats_paid = MAX(remote_seats_paid, ?), remote_control_seats = MAX(COALESCE(remote_control_seats, 1), ?), custom_domain_paid = MAX(custom_domain_paid, ?)";
+  const binds =
+    row.tier === "education"
+      ? [g.workstations, g.remoteSeats, g.remoteSeatsTotal, g.customDomain]
+      : [row.tier, g.workstations, g.remoteSeats, g.remoteSeatsTotal, g.customDomain];
   return [
     db.prepare(`UPDATE tenants SET ${set} WHERE id = ? AND ${notYet}`).bind(...binds, tenant.id, paymentId),
     ...invoiceStatements(db, env, {

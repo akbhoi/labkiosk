@@ -191,7 +191,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
-      <div class="updated-date">Last updated: November 3, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: November 9, 2026 • Effective immediately</div>
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
@@ -232,8 +232,8 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Organization administrators and operators provide an email address, organization name, and password for administrative access. Passwords are cryptographically hashed using PBKDF2-HMAC-SHA256 (100,000 iterations) and then keyed with a secret held outside the database. Administrative account details are stored securely in Cloudflare D1 and are never sold or shared.</p>
       <p><strong>Signing in with Google or Microsoft.</strong> An organization can let its staff sign in with their Google Workspace or Microsoft Entra ID account (OpenID Connect). Only when the organization has turned this on and a member of staff chooses it, their browser is sent to Google or Microsoft, which receives the sign-in request and returns the person's email address, name, an identifier for their account with that provider, and the Google Workspace domain or the Microsoft tenant it belongs to. We keep only what we need to match the sign-in to the staff account the organization already created, and we do not store the provider's access or refresh tokens. Google and Microsoft handle the sign-in as independent controllers under their own terms and privacy statements, which the organization agreed to when it set up its Google Workspace or Microsoft Entra ID.</p>
       <p>Signing in sets two cookies, both strictly necessary and never used for tracking: <code>__Host-labkiosk_session</code>, which keeps you signed in on the one address that set it for up to seven days (twelve hours for the platform's own administrators), and <code>labkiosk_device</code>, a random identifier for the browser, sent only to the sign-in service. We keep a hash of that identifier with the browser's user-agent string, so that a sign-in from a browser your account has not used before can be reported to you by email (with the time, IP address and browser), and so that a browser you chose to trust can skip the two-factor code for 30 days. If you turn on two-factor sign-in, we store the authenticator-app secret and hashes of your recovery codes, and a code you ask for by email is sent to your account's address. If you add a passkey, we store its public key, the name you give it, its signature counter and when it was last used; the private key never leaves your device.</p>
-      <p>We keep a record of each organization's account: its license plan and end date, its workstation limit, its Remote Control approval and seats, the notifications we send to its console and which members of staff dismissed them, its requests for new major releases and its trial workstation group, and any content we took down with the reason. Actions in the console are kept in the organization's audit log.</p>
-      <p>To register an organization we also ask for a technical contact's name, email address and phone number, the organization's postal address and, optionally, its legal name, tax identifier and billing email. We use them to verify the request, to decide whether to approve it, to arrange payment where a license requires one, and to reach the organization about its account. The email address is confirmed with a one-time code; the phone number is confirmed by our staff before approval. When an organization accepts our Terms of Service, with the Content Policy and the Data Processing Agreement that are part of them, at registration or later in its console, we keep a record of which version was accepted, by which account, when, and from which IP address and browser, as evidence of the agreement; that record is kept after the organization's account is closed. The contact form confirms your email address with a one-time code before your message is sent. Messages you send to our addresses or through the contact form, with any attachments, and our replies, are kept with your request so the conversation can continue.</p>
+      <p>We keep a record of each organization's account: its license plan and end date, its workstation limit, whether Remote Control is on and its seats, the notifications we send to its console and which members of staff dismissed them, its requests for new major releases and its trial workstation group, and any content we took down with the reason. Actions in the console are kept in the organization's audit log.</p>
+      <p>To create an account we ask for your name, email address, phone number and the console address you choose; after you sign in, for the organization's name and postal address and, optionally, its legal name, tax identifier and billing email. We use them to verify the registration, to make sure each organization registers once (a new registration's email address and phone number are compared with those already registered, and its console address and organization name are checked against a list of words that are not allowed), to arrange payment where a plan requires one, and to reach the organization about its account. The email address is confirmed with a one-time code; the phone number with a code we text to it or, where we cannot text it, by our staff before the account is activated. When an organization accepts our Terms of Service, with the Content Policy and the Data Processing Agreement that are part of them, at registration or later in its console, we keep a record of which version was accepted, by which account, when, and from which IP address and browser, as evidence of the agreement; that record is kept after the organization's account is closed. The contact form confirms your email address with a one-time code before your message is sent. Messages you send to our addresses or through the contact form, with any attachments, and our replies, are kept with your request so the conversation can continue.</p>
 
       <h2>5. Automatic Bug Reports (Optional)</h2>
       <p>An organization's administrator may turn on Automatic Bug Reports. Only then, the workstation problems listed in Errors &amp; Warnings are sent, with network addresses, host names, e-mail addresses and identifiers masked, to an AI model on Cloudflare Workers AI for triage, and published as issues in a GitHub repository, which may be public. Organization names, workstation names, staff accounts, browsing and screen content are never sent. The <a href="/terms/bug-reports">Automatic Bug Report Terms</a> describe exactly what is sent and how to have a report removed.</p>
@@ -248,7 +248,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
         <li><strong>R2:</strong> audit log entries older than 180 days, archived, the original of every email sent to our addresses, with its attachments, until we delete the conversation, and the signed system images workstations download as updates. A workstation downloading an update sends its IP address to R2, as any download does.</li>
         <li><strong>Workers Analytics Engine:</strong> counts of workstation connections and disconnections per organization.</li>
         <li><strong>Rate Limiting:</strong> counts of requests per IP address in front of sign-in, registration and workstation enrollment.</li>
-        <li><strong>Cloudflare Email Service:</strong> sends registration codes, approval decisions and our replies, and receives mail sent to our addresses, which is stored with the conversation it belongs to.</li>
+        <li><strong>Cloudflare Email Service:</strong> sends registration codes, payment links, decisions on Custom plan and Education requests, and our replies, and receives mail sent to our addresses, which is stored with the conversation it belongs to.</li>
         <li><strong>Workflows and Cloudflare for SaaS:</strong> an organization's custom domain name and its TLS certificate.</li>
         <li><strong>Workers AI:</strong> only for organizations that turned on Automatic Bug Reports, the masked problem reports described in section 5.</li>
         <li><strong>Cloudflare Turnstile:</strong> when we turn it on, checks that the registration, contact and sign-in forms are being used by a person. Cloudflare reads signals from your browser and its IP address to decide, without a tracking cookie, and tells us only whether the check passed.</li>
@@ -258,14 +258,14 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Other providers are involved:</p>
       <ul>
         <li><strong>GitHub, Inc.:</strong> only for organizations that turned on Automatic Bug Reports, the masked reports are published as GitHub issues under GitHub's own terms and privacy statement.</li>
-        <li><strong>Google Firebase Authentication:</strong> when we turn it on, sends the text message code that proves the phone number given at registration. Google receives that phone number, the registrant's IP address and browser details, and runs Google reCAPTCHA on the registration page to stop automated requests; it tells us only that the code was entered correctly for that number. Google handles this under the <a href="https://firebase.google.com/terms/data-processing-terms">Firebase Data Processing and Security Terms</a>.</li>
+        <li><strong>Google Firebase Authentication:</strong> sends the text message code that proves the phone number given at registration. Google receives that phone number, the registrant's IP address and browser details, and runs Google reCAPTCHA on the registration page to stop automated requests; it tells us only that the code was entered correctly for that number. Google handles this under the <a href="https://firebase.google.com/terms/data-processing-terms">Firebase Data Processing and Security Terms</a>.</li>
         <li><strong>Google Fonts:</strong> the consoles and public pages load the Inter and JetBrains Mono typefaces from Google, which receives the visitor's IP address and browser details when the fonts are requested.</li>
         <li><strong>Google Analytics:</strong> only on the public website pages described in section 8, and only after the visitor consents.</li>
       </ul>
       <p>The <a href="/dpa#subprocessors">Data Processing Agreement</a> lists which of these process an organization's data on our behalf. An organization may also choose services that work under their own terms rather than ours: Google or Microsoft for staff sign-in (section 4), and its own printers on its own network (section 3).</p>
 
       <h2>7. Super Administrator Privacy Restriction</h2>
-      <p>Platform Super Administrators are architecturally restricted from accessing individual organization consoles, User Portal configurations, live workstation telemetry and screens. Their privileges are limited to running the platform: approving organizations and their status, licenses and workstation limits, approving or turning off Remote Control, release policy, notifications to organizations, taking down publicly visible content under the <a href="/content-policy">Content Policy</a>, and the platform's own demo organizations used for testing (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>).</p>
+      <p>Platform Super Administrators are architecturally restricted from accessing individual organization consoles, User Portal configurations, live workstation telemetry and screens. Their privileges are limited to running the platform: suspending or reactivating organizations, their licenses and workstation limits, pricing Custom plans, reviewing Education and partner applications, turning off Remote Control, release policy, notifications to organizations, taking down publicly visible content under the <a href="/content-policy">Content Policy</a>, and the platform's own demo organizations used for testing (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>).</p>
       <p>To see how the Platform is used and which computers it runs on, Super Administrators see only figures that name no organization: for hardware reports, how many workstations report each hardware model across all organizations; for usage reports, platform-wide daily totals (the number of organizations and workstations, total time switched on and in use, and the number of browsing sessions) and the domain names of sites visited by workstations of at least three organizations. A public hardware compatibility list may show hardware models reported by at least three organizations; it never names an organization or a workstation.</p>
 
       <h2>8. Visitors to This Website</h2>
@@ -323,7 +323,7 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
   <main>
     <div class="legal-card">
       <h1>Terms of Service</h1>
-      <div class="updated-date">Last updated: November 8, 2026 &bull; Version 2026-11-08</div>
+      <div class="updated-date">Last updated: November 9, 2026 &bull; Version 2026-11-09</div>
 
       <div class="highlight-box">
         <strong>In short</strong>
@@ -345,7 +345,8 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
       </ul>
 
       <h2>3. Registration and Accounts</h2>
-      <p>You agree to give accurate registration details and to keep them current. We review each registration and may approve or decline it at our discretion. Your organization's owner is responsible for the account and for every action taken by its staff.</p>
+      <p>You agree to give accurate registration details and to keep them current. We may refuse or close a registration whose details are false, or whose name or subdomain breaks the <a href="/content-policy">Content Policy</a>. Your organization's owner is responsible for the account and for every action taken by its staff.</p>
+      <p>Each organization registers once: one account per contact email address and per phone number, with one Free plan and one trial. You must not register more than one organization, or use several accounts, to get more workstations, staff or trial time than one organization's plan allows; we may combine, restrict or close accounts that do, and tell the owner why. The Free plan is for an organization that runs its own workstations. A vendor, reseller or IT service provider that runs workstations for other organizations needs a paid plan for them, at the same prices as any other organization.</p>
       <p>You must keep passwords, recovery codes and your enrollment key confidential, give staff only the permissions they need, and tell us at once at <a href="mailto:security@labkiosk.org">security@labkiosk.org</a> if you suspect that any of them has been compromised. We recommend two-factor sign-in for every staff account.</p>
 
       <h2>4. Licensing</h2>
@@ -372,7 +373,7 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
       </ul>
 
       <h2>7. Remote Control</h2>
-      <p>Remote Control lets an administrator of your organization see and operate a workstation's screen, keyboard and mouse from the console. It is available only after we approve your organization's request, only to the organization's owner and administrators, never to other staff, and only for as many sessions at once as your seats allow. The session passes through the Platform and is never recorded. You must use Remote Control only to support your users and manage your workstations, and in line with section 6. We may turn Remote Control off for your organization, ending any open session, if it is misused, if your license ends, or if security requires it; we tell you in your console when we do.</p>
+      <p>Remote Control lets an administrator of your organization see and operate a workstation's screen, keyboard and mouse from the console. An administrator turns it on in Settings once your plan includes Remote Control seats. It is available only to the organization's owner and administrators, never to other staff, and only for as many sessions at once as your seats allow. The session passes through the Platform and is never recorded. You must use Remote Control only to support your users and manage your workstations, and in line with section 6. We may turn Remote Control off for your organization, ending any open session, if it is misused, if your license ends, or if security requires it; we tell you in your console when we do.</p>
 
       <h2>8. Hosted Content</h2>
       <p>You are responsible for your Hosted Content and must have the right to publish it. You grant us a worldwide, non-exclusive, royalty-free license to host, copy, display and transmit it only as needed to run the Platform for you. Hosted Content must follow the <a href="/content-policy">Content Policy</a>. We may refuse a link, take down your homepage or a User Portal card, or block a domain as the Content Policy describes, and we tell you in your console with the reason. To contest a decision, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
@@ -443,7 +444,7 @@ export function renderDataProcessingAgreementHtml(options: LegalPageOptions = {}
   <main>
     <div class="legal-card">
       <h1>Data Processing Agreement</h1>
-      <div class="updated-date">Last updated: November 8, 2026 &bull; Part of the Terms of Service, Version 2026-11-08</div>
+      <div class="updated-date">Last updated: November 9, 2026 &bull; Part of the Terms of Service, Version 2026-11-09</div>
 
       <div class="highlight-box">
         <strong>Part of the Terms of Service</strong>
@@ -555,7 +556,7 @@ export function renderContentPolicyHtml(options: LegalPageOptions = {}): string 
   <main>
     <div class="legal-card">
       <h1>Content Policy</h1>
-      <div class="updated-date">Last updated: October 13, 2026 &bull; Version 2026-10-13</div>
+      <div class="updated-date">Last updated: November 9, 2026 &bull; Version 2026-11-09</div>
 
       <div class="highlight-box">
         <strong>Part of the Terms of Service</strong>
@@ -601,6 +602,7 @@ export function renderContentPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Every organization homepage and User Portal has a <strong>Report this page</strong> link. You can also write to <a href="mailto:abuse@labkiosk.org">abuse@labkiosk.org</a>, naming the address of the page and what is wrong with it. We review every report. If you are reporting an infringement of your rights, tell us which work or mark is infringed and how to reach you.</p>
 
       <h2>5. What We Do</h2>
+      <p>A subdomain and an organization name are checked when they are registered or changed, against a list of words that are sexual, hateful or abusive, or that impersonate a bank, payment service or public authority; one that matches is refused. You can contest a refusal as described in section 6.</p>
       <p>When Hosted Content breaks this policy, we may:</p>
       <ul>
         <li>take down the organization's homepage or a User Portal card, which then shows to visitors as taken down;</li>

@@ -20,8 +20,7 @@
 
 import { Env } from "./types";
 import { jsonError, requireSuperAdmin } from "./guard";
-import { findTenantById, findUserById, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT, updateTenant, writeAuditLog } from "./db";
-import { notifyConfigChanged } from "./hub";
+import { findTenantById, findUserById, writeAuditLog } from "./db";
 import {
   addConversationMessage,
   AttachmentInfo,
@@ -45,7 +44,6 @@ import {
   listConversations,
   mailboxCounts,
   markConversationRead,
-  markPhoneVerified,
   MAX_MESSAGE_CHARS,
   referenceInSubject,
   setConversationDeleted,
@@ -55,14 +53,13 @@ import {
 import { mailConfigProblem, mailDomain, parseAddress, sendingDomain } from "./mail";
 import { clearPendingMail, deleteRawMail, isMailId, listPendingMail, loadRawMail, rawMailKey, storeRawMail } from "./mail_store";
 import { extractAttachment, parseEmail } from "./mime";
-import { consoleUrlFor, RouteContext, sendOnConversation } from "./signup";
-import { createNotification } from "./notifications";
+import { RouteContext, sendOnConversation } from "./signup";
 import { issuePhoneLink, maskPhone, PHONE_LINK_DAYS } from "./phone_link";
 import { firebaseConfig, firebaseConfigProblem } from "./phone_verify";
 
 const SUPPORT_KINDS: readonly ConversationKind[] = ["support"];
 const INBOX_PATH =
-  /^\/api\/super\/inbox(?:\/compose|\/([0-9a-f-]{36})(?:\/(reply|note|approve|reject|verify-phone|phone-link|status|unread|trash|restore|delete)|\/attachment\/([0-9a-f-]{36})\/(original|\d{1,2}))?)?$/;
+  /^\/api\/super\/inbox(?:\/compose|\/([0-9a-f-]{36})(?:\/(reply|note|phone-link|status|unread|trash|restore|delete)|\/attachment\/([0-9a-f-]{36})\/(original|\d{1,2}))?)?$/;
 /** Email Routing's own limit: nothing larger reaches the Worker. */
 const MAX_INBOUND_BYTES = 25 * 1024 * 1024;
 /** Inbound messages larger than this are filed from their headers; the stored original is whole. */
@@ -76,21 +73,17 @@ function json(data: unknown, headers: Record<string, string>, status = 200): Res
 
 async function readMessage(
   request: Request
-): Promise<{ message: string; close: boolean; status: string; workstationLimit: unknown; remoteControlSeats: unknown } | null> {
+): Promise<{ message: string; close: boolean; status: string } | null> {
   try {
     const body = await request.json<{
       message?: unknown;
       close?: unknown;
       status?: unknown;
-      workstationLimit?: unknown;
-      remoteControlSeats?: unknown;
     }>();
     return {
       message: String(body?.message ?? "").replace(/\r\n/g, "\n").trim().slice(0, MAX_MESSAGE_CHARS),
       close: body?.close === true,
-      status: String(body?.status ?? ""),
-      workstationLimit: body?.workstationLimit,
-      remoteControlSeats: body?.remoteControlSeats
+      status: String(body?.status ?? "")
     };
   } catch {
     return null;
@@ -391,32 +384,16 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
 
   // POST .../status { status: open|closed }: support conversations only.
   if (action === "status") {
-    if (conversation.kind !== "support") return jsonError("Tasks are closed by approving or rejecting them", 400, jsonHeaders);
+    if (conversation.kind !== "support") return jsonError("Only a support conversation is opened or closed by hand", 400, jsonHeaders);
     if (input.status !== "open" && input.status !== "closed") return jsonError("Status must be open or closed", 400, jsonHeaders);
     await setConversationStatus(db, id, input.status, userId);
     return json({ status: "ok", conversationStatus: input.status }, jsonHeaders);
   }
 
-  // The remaining actions decide a task.
+  // The remaining action concerns the organization a task belongs to.
   if (conversation.kind === "support") return jsonError("Support conversations are not approved or rejected", 400, jsonHeaders);
   if (!tenant) return jsonError("The organization this request belongs to no longer exists", 404, jsonHeaders);
   const profile = await findOrganizationProfile(db, tenant.id);
-
-  // POST .../verify-phone: the owner confirmed the number (call, message).
-  if (action === "verify-phone") {
-    if (conversation.kind !== "signup") return jsonError("Only a registration has a phone number to verify", 400, jsonHeaders);
-    if (!profile) return jsonError("This registration has no contact details", 404, jsonHeaders);
-    if (profile.phone_verified_at) return json({ status: "ok", phoneVerifiedAt: profile.phone_verified_at }, jsonHeaders);
-    await markPhoneVerified(db, tenant.id, userId);
-    await addConversationMessage(db, {
-      conversationId: id,
-      direction: "event",
-      body: `Phone number ${profile.contact_phone} marked as verified.`,
-      authorUserId: userId
-    });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.verify_phone" });
-    return json({ status: "ok" }, jsonHeaders);
-  }
 
   // POST .../phone-link: email the owner a one-time link to verify the number by
   // text message (src/phone_link.ts). For registrations made before numbers were
@@ -449,145 +426,6 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.phone_link", details: `delivered=${sent}` });
     if (!sent) return jsonError("The link could not be emailed. Try again later.", 502, jsonHeaders);
     return json({ status: "ok" }, jsonHeaders);
-  }
-
-  if (conversation.status !== "open") return jsonError("This task has already been decided", 409, jsonHeaders);
-  const problem = mailConfigProblem(env);
-  if (problem) return jsonError(problem, 503, jsonHeaders);
-  const threading = await threadingFor(db, conversation);
-  const note = input.message ? `\n\n${input.message}` : "";
-
-  if (action === "approve" && conversation.kind === "signup") {
-    if (tenant.status !== "pending") return jsonError("This organization is not waiting for approval", 409, jsonHeaders);
-    if (!profile?.email_verified_at) return jsonError("The email address has not been verified", 409, jsonHeaders);
-    if (!profile.phone_verified_at) return jsonError("Verify the phone number before approving", 409, jsonHeaders);
-    const limit = input.workstationLimit;
-    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_WORKSTATION_LIMIT) {
-      return jsonError(`Set the workstation limit: a whole number from 1 to ${MAX_WORKSTATION_LIMIT}`, 400, jsonHeaders);
-    }
-    await updateTenant(db, tenant.id, { status: "active", workstation_limit: limit });
-    await setConversationStatus(db, id, "approved", userId);
-    await addConversationMessage(db, { conversationId: id, direction: "event", body: "Registration approved.", authorUserId: userId });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.approve", details: `subdomain=${tenant.subdomain} workstation_limit=${limit}` });
-    await createNotification(db, {
-      tenantId: tenant.id,
-      kind: "account",
-      title: "Welcome to Lab Kiosk",
-      body: `${tenant.name} is active and may enrol up to ${limit} workstation${limit === 1 ? "" : "s"}. Your enrollment key and the setup steps for your workstations are under Settings.`,
-      createdBy: userId
-    });
-    await notifyConfigChanged(env, tenant.id);
-    const sent = await sendOnConversation(
-      env,
-      db,
-      conversation,
-      `Hello ${conversation.contact_name || ""},\n\n` +
-        `${tenant.name} is now active on Lab Kiosk.${note}\n\n` +
-        `Sign in to your console with the email address and password you registered with:\n${consoleUrlFor(ctx, tenant.subdomain)}\n\n` +
-        `Your enrollment key and the setup steps for your workstations are under Settings.\n\nLab Kiosk`,
-      {
-        subject: "Your organization is active",
-        authorUserId: userId,
-        ...threading,
-        template: {
-          name: "decision",
-          reference: conversation.reference,
-          outcome: "approved",
-          title: "Your organization is active",
-          category: categoryLabel(conversation.category),
-          action: { label: "Open your console", url: consoleUrlFor(ctx, tenant.subdomain) }
-        }
-      }
-    );
-    return json({ status: "ok", emailSent: sent }, jsonHeaders);
-  }
-
-  if (action === "reject" && conversation.kind === "signup") {
-    if (tenant.status !== "pending") return jsonError("This organization is not waiting for approval", 409, jsonHeaders);
-    await updateTenant(db, tenant.id, { status: "rejected" });
-    await setConversationStatus(db, id, "rejected", userId);
-    await addConversationMessage(db, { conversationId: id, direction: "event", body: "Registration rejected.", authorUserId: userId });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.reject" });
-    await notifyConfigChanged(env, tenant.id);
-    const sent = await sendOnConversation(
-      env,
-      db,
-      conversation,
-      `Hello ${conversation.contact_name || ""},\n\n` +
-        `We are not able to activate ${tenant.name} on Lab Kiosk at this time.${note}\n\n` +
-        `Reply to this email if you would like to discuss it.\n\nLab Kiosk`,
-      {
-        subject: "About your registration",
-        authorUserId: userId,
-        ...threading,
-        template: {
-          name: "decision",
-          reference: conversation.reference,
-          outcome: "declined",
-          title: "About your registration",
-          category: categoryLabel(conversation.category)
-        }
-      }
-    );
-    return json({ status: "ok", emailSent: sent }, jsonHeaders);
-  }
-
-  if ((action === "approve" || action === "reject") && conversation.kind === "remote_control") {
-    if (tenant.status !== "active") return jsonError("The organization is not active", 409, jsonHeaders);
-    const approve = action === "approve";
-    const seats = input.remoteControlSeats;
-    if (approve && (typeof seats !== "number" || !Number.isInteger(seats) || seats < 1 || seats > MAX_REMOTE_CONTROL_SEATS)) {
-      return jsonError(`Set the Remote Control seats: a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}`, 400, jsonHeaders);
-    }
-    await updateTenant(
-      db,
-      tenant.id,
-      approve
-        ? // A manual grant is seats as well (src/limits.ts): one per workstation, as many open at once.
-          { remote_control_status: "approved", remote_control_seats: seats as number, remote_seats_paid: Math.max(Number(tenant.remote_seats_paid) || 0, seats as number), remote_control_revoked_at: null }
-        : { remote_control_status: "rejected" }
-    );
-    await setConversationStatus(db, id, approve ? "approved" : "rejected", userId);
-    await addConversationMessage(db, {
-      conversationId: id,
-      direction: "event",
-      body: approve ? "Remote Control approved." : "Remote Control request rejected.",
-      authorUserId: userId
-    });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: approve ? "remote_control.approve" : "remote_control.reject", details: approve ? `seats=${seats}` : undefined });
-    await createNotification(db, {
-      tenantId: tenant.id,
-      kind: "remote_control",
-      title: approve ? "Remote Control is on" : "Remote Control request not approved",
-      body: approve
-        ? `Remote Control is now available to ${tenant.name}, with ${seats} session${seats === 1 ? "" : "s"} open at once. Administrators can open it from a connected workstation's card.`
-        : `Lab Kiosk is not able to turn on Remote Control for ${tenant.name} at this time. Reply to the email about your request to discuss it.`,
-      createdBy: userId
-    });
-    const sent = await sendOnConversation(
-      env,
-      db,
-      conversation,
-      approve
-        ? `Hello ${conversation.contact_name || ""},\n\nRemote Control is now available to ${tenant.name}.${note}\n\n` +
-            `Open Workstations in your console and choose Remote Control on any connected workstation:\n${consoleUrlFor(ctx, tenant.subdomain)}\n\nLab Kiosk`
-        : `Hello ${conversation.contact_name || ""},\n\nWe are not able to turn on Remote Control for ${tenant.name} at this time.${note}\n\n` +
-            `Reply to this email if you would like to discuss it.\n\nLab Kiosk`,
-      {
-        subject: approve ? "Remote Control is on" : "About your Remote Control request",
-        authorUserId: userId,
-        ...threading,
-        template: {
-          name: "decision",
-          reference: conversation.reference,
-          outcome: approve ? "approved" : "declined",
-          title: approve ? "Remote Control is on" : "About your Remote Control request",
-          category: categoryLabel(conversation.category),
-          action: approve ? { label: "Open your console", url: consoleUrlFor(ctx, tenant.subdomain) } : null
-        }
-      }
-    );
-    return json({ status: "ok", emailSent: sent }, jsonHeaders);
   }
 
   return jsonError("Unknown action", 400, jsonHeaders);

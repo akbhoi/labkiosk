@@ -176,7 +176,7 @@ The Docker container that behaves like an enrolled thin client, viewable through
 
 ### Super admin
 
-The platform operator, distinct from an organization's organization admin. Approves and suspends organizations, and binds custom domains. → [Super Admin Guide](Super-Admin-Guide)
+The platform operator, distinct from an organization's organization admin. Suspends and reactivates organizations, prices Custom plans, and reviews Education and partner applications. → [Super Admin Guide](Super-Admin-Guide)
 
 ### Telemetry
 

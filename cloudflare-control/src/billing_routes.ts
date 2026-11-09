@@ -6,7 +6,7 @@
  *
  * Organization (the `settings` permission; cancelling and resuming are the owner's):
  *   GET  /api/billing                    plan, subscription, usage, prices, invoices, details
- *   POST /api/billing/preview            {tier, period, extraWorkstations, remoteSeats}: price, what changes and when
+ *   POST /api/billing/preview            {tier, period, extraWorkstations, remoteSeats, customDomain}: price, what changes and when
  *   POST /api/billing/checkout           the same: a Razorpay subscription to authorise
  *   POST /api/billing/cancel             {reason}: no further charge; the plan lasts to the end of the period
  *   POST /api/billing/resume             a new authorisation that starts when the paid period ends
@@ -22,7 +22,7 @@
  *   POST /api/super/billing/sync         {subscriptionId}
  *   POST /api/super/billing/cancel       {subscriptionId, immediately}
  *   POST /api/super/billing/extend       {tenantId, days}
- *   POST /api/super/billing/payment-link {tenantId, tier, period, extraWorkstations, remoteSeats, mode, note}
+ *   POST /api/super/billing/payment-link {tenantId, tier, period, extraWorkstations, remoteSeats, customDomain, mode, note}
  *   GET  /api/super/billing/gstr1?month=YYYY-MM&section=b2b|b2cl|b2cs|hsn|docs  the month's GSTR-1 as CSV
  *
  * And, with no session: GET /billing/document/:token, a private link to one
@@ -191,6 +191,7 @@ export function subscriptionJson(r: SubscriptionRow) {
     workstations: q.workstations,
     remoteSeats: Number(r.remote_seats),
     remoteSeatsTotal: q.remoteSeatsTotal,
+    customDomain: q.customDomainIncluded,
     extraWorkstations: Number(r.extra_workstations),
     subtotal: Number(r.subtotal_paise),
     gst: Number(r.gst_paise),
@@ -243,9 +244,12 @@ function quoteJson(q: TierQuote) {
     workstations: q.workstations,
     staff: q.staff,
     remoteSeatsTotal: q.remoteSeatsTotal,
+    customDomain: q.customDomain,
+    customDomainIncluded: q.customDomainIncluded,
     base: q.base,
     extras: q.extras,
     remote: q.remote,
+    domain: q.domain,
     subtotal: q.subtotal,
     gstPercent: q.gstPercent,
     gst: q.gst,
@@ -269,6 +273,7 @@ async function legacyCurrent(db: D1Database, tenant: Tenant, now: number): Promi
       period: "month" | "year";
       extra_workstations: number;
       remote_seats: number;
+      custom_domain: number;
       tier: SoldTier | null;
       subtotal_paise: number;
       gst_paise: number;
@@ -284,6 +289,7 @@ async function legacyCurrent(db: D1Database, tenant: Tenant, now: number): Promi
     catalogue_version: 0,
     extra_workstations: Number(paid.extra_workstations),
     remote_seats: Number(paid.remote_seats) || 0,
+    custom_domain: Number(paid.custom_domain) === 1 ? 1 : 0,
     subtotal_paise: Number(paid.subtotal_paise),
     gst_paise: Number(paid.gst_paise),
     total_paise: Number(paid.total_paise),
@@ -341,10 +347,11 @@ async function emailOwner(
   }
 }
 
-export function describePlan(r: Pick<SubscriptionRow, "tier" | "period" | "extra_workstations" | "remote_seats">): string {
+export function describePlan(r: Pick<SubscriptionRow, "tier" | "period" | "extra_workstations" | "remote_seats" | "custom_domain">): string {
   const q = quoteTier(quoteOf(r), 0);
   const seats = q.remoteSeatsTotal ? `, ${q.remoteSeatsTotal} Remote Control seat${q.remoteSeatsTotal === 1 ? "" : "s"}` : "";
-  return `${CATALOGUE[r.tier].label}, ${r.period === "month" ? "monthly" : "yearly"}, ${q.workstations} workstations${seats}`;
+  const domain = q.customDomainIncluded ? ", custom domain" : "";
+  return `${CATALOGUE[r.tier].label}, ${r.period === "month" ? "monthly" : "yearly"}, ${q.workstations} workstations${seats}${domain}`;
 }
 
 /**
@@ -420,6 +427,11 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
   const denied = await requireTenantPermission(db, session, ctx.tenant, "settings", jsonHeaders);
   if (denied) return denied;
   const tenant = ctx.tenant!;
+  // Plans are bought for an organization whose name and address are entered:
+  // invoices carry them, and the place of supply comes from the state.
+  if (!tenant.profile_completed_at && method !== "GET") {
+    return jsonError("Enter your organization's details in the console first", 409, jsonHeaders);
+  }
   const userId = session!.user_id;
   const now = Math.floor(Date.now() / 1000);
   const isOwner = tenant.user_id === userId || isDemoTenant(tenant, userId);
@@ -440,6 +452,7 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
       {
         enabled: billingEnabled(env),
         isOwner,
+        customDomainConnected: Boolean(tenant.custom_domain),
         gstRegistered: Boolean(seller.gstin),
         plan: {
           kind: plan.kind,
@@ -448,6 +461,7 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
           workstations: plan.limit,
           staff: plan.staffLimit,
           remoteSeats: plan.remoteSeats,
+          customDomain: plan.customDomain,
           expiresAt: plan.expiresAt,
           lapsed: plan.lapsed,
           endingSoon: plan.endingSoon,
@@ -519,12 +533,14 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
               current.tier === quote.tier &&
               current.period === quote.period &&
               Number(current.extra_workstations) === quote.extraWorkstations &&
-              Number(current.remote_seats) === quote.remoteSeats
+              Number(current.remote_seats) === quote.remoteSeats &&
+              (Number(current.custom_domain) === 1) === quote.customDomain
           ),
           losses: {
             workstations: Math.max(0, workstations.length - quote.workstations),
             staff: Math.max(0, staff - quote.staff),
-            remoteSeats: Math.max(0, seats.length - quote.remoteSeatsTotal)
+            remoteSeats: Math.max(0, seats.length - quote.remoteSeatsTotal),
+            customDomain: Boolean(tenant.custom_domain) && !quote.customDomainIncluded
           }
         },
         jsonHeaders
@@ -535,7 +551,8 @@ async function organizationBilling(ctx: BillingRouteContext): Promise<Response> 
       return jsonError("Only the organization's owner or an organization admin can change the plan", 403, jsonHeaders);
     }
     if (current && !current.id.startsWith("legacy:") && !isFinal(current.status) && current.tier === quote.tier && current.period === quote.period &&
-      Number(current.extra_workstations) === quote.extraWorkstations && Number(current.remote_seats) === quote.remoteSeats) {
+      Number(current.extra_workstations) === quote.extraWorkstations && Number(current.remote_seats) === quote.remoteSeats &&
+      (Number(current.custom_domain) === 1) === quote.customDomain) {
       return jsonError("That is the plan you have", 409, jsonHeaders);
     }
     try {
@@ -900,7 +917,7 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
       return refusal(err, jsonHeaders);
     }
     if (!url) return jsonError("Razorpay did not return a link", 502, jsonHeaders);
-    const planText = describePlan({ tier: quote.tier, period: quote.period, extra_workstations: quote.extraWorkstations, remote_seats: quote.remoteSeats });
+    const planText = describePlan({ tier: quote.tier, period: quote.period, extra_workstations: quote.extraWorkstations, remote_seats: quote.remoteSeats, custom_domain: quote.customDomain ? 1 : 0 });
     const emailed = proforma
       ? await emailDocument(env, db, tenant, "proforma", proforma.id, now, ctx.url.origin, {
           subject: `Proforma invoice ${proforma.number}: your Lab Kiosk ${CATALOGUE[quote.tier].label} plan`,
@@ -916,7 +933,7 @@ async function platformBilling(ctx: BillingRouteContext): Promise<Response> {
           ? `Lab Kiosk has prepared ${tenant.name}'s subscription. Authorise it once and it renews by itself; you can cancel any time.`
           : `Lab Kiosk has prepared a payment for ${tenant.name}'s plan.`,
       details: [
-        ["Plan", describePlan({ tier: quote.tier, period: quote.period, extra_workstations: quote.extraWorkstations, remote_seats: quote.remoteSeats })],
+        ["Plan", describePlan({ tier: quote.tier, period: quote.period, extra_workstations: quote.extraWorkstations, remote_seats: quote.remoteSeats, custom_domain: quote.customDomain ? 1 : 0 })],
         ["Amount", `${rupees(quote.total)}${quote.gst ? ` (GST ${rupees(quote.gst)})` : ""}${mode === "subscription" ? ` every ${quote.period}` : ""}`]
       ],
       action: { label: mode === "subscription" ? "Authorise subscription" : "Pay now", url },

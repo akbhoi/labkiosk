@@ -136,6 +136,12 @@ export function renderBillingPaneHtml(organizations: BillingPaneOrganization[]):
               </div>
             </div>
             <div class="form-group">
+              <label class="form-checkbox-label">
+                <input type="checkbox" class="form-checkbox" id="link-domain">
+                <span>Custom domain add-on (included in Pro)</span>
+              </label>
+            </div>
+            <div class="form-group">
               <label class="form-label" for="link-note">Note to the organization (optional)</label>
               <textarea class="form-textarea" id="link-note" rows="2" maxlength="500"></textarea>
             </div>
@@ -423,6 +429,7 @@ export function renderBillingScript(nonce: string, organizations: BillingPaneOrg
               period: $("link-period").value,
               extraWorkstations: parseInt($("link-extra").value, 10) || 0,
               remoteSeats: parseInt($("link-seats").value, 10) || 0,
+              customDomain: $("link-domain").checked,
               note: $("link-note").value
             });
             $("link-result").textContent = (out.emailed ? "Emailed to the owner. " : "Email could not be sent; share this link yourself: ") + out.url;

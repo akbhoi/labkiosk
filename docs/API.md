@@ -77,10 +77,10 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/settings/mode` | `POST` | Organization Admin | Toggle between `portal` launcher and `single_url` mode |
 | `/api/settings/customization` | `GET` | Organization Admin | Read custom branding and lock message configurations |
 | `/api/settings/customization` | `POST` | Organization Admin | Update custom branding, hero titles, and lock messages |
-| `/api/settings/subdomain` | `POST` | Organization Admin | Request change of organization subdomain |
+| `/api/settings/subdomain` | `POST` | Organization Admin (`settings`) | `{"subdomain"}`: change the console address at once, at most once every 7 days (`429` sooner, `409` when taken); earlier addresses keep working. Same as `/api/tenant/subdomain` |
 | `/api/settings/enrollment-key` | `GET` | Organization Admin | View current workstation enrollment key: 20 characters in four groups, the last being the Luhn (mod 30) check character of the rest. A key issued before the check character is replaced here |
 | `/api/settings/enrollment-key` | `POST` | Organization Admin | Regenerate/rotate workstation enrollment key |
-| `/api/settings/custom-domain` | `POST` | Organization Admin | Request custom domain binding (e.g. `kiosk.example.com`) |
+| `/api/settings/custom-domain` | `POST` | Organization Admin | `{"domain"}`: on Pro, Custom or a plan with the custom domain add-on (`403` otherwise), connect a custom domain (e.g. `kiosk.example.com`) at once and create its Cloudflare custom hostname; `409` when it is already connected or held by another organization |
 | `/api/settings/custom-domain` | `DELETE` | Organization Admin | Disconnect custom domain binding |
 | `/api/whitelist` | `GET` | Organization Admin | List effective allowed domains for user workstations |
 | `/api/whitelist` | `POST` | Organization Admin | Add or remove a domain from the permanent allowlist |
@@ -127,8 +127,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
 | `/api/settings/printing` | `GET` / `POST` | Organization Admin (`settings`) | Settings → Printing. `GET`: `{enabled, printers: [{id, name, uri, groupName}], groups, maxPrinters}`. `POST` `{enabled, printers}` replaces the list (at most 20): `name` 1–64 characters, unique; `uri` `ipp://` or `ipps://` to a host name or private address with a plain path; `groupName` an existing group or null. `400` with the first problem, `404` for an unknown group. Audited as `settings.printing`; workstations get `printing: {enabled, printers}` at once |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
-| `/api/tenant/remote-control/request` | `POST` | Organization Admin (`settings`) | `{"reason"}`: ask the platform to enable Remote Control; `409` when already asked or enabled |
-| `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all\|unread\|read\|deleted&mailbox=<address>&category=<type>`: registrations and Remote Control requests (Tasks) or mail (Mail), open first, oldest first. Mail lists also return `mailboxes` (`{mailbox, open, unread, total}`) and `mailDomain` |
+| `/api/tenant/remote-control/enable` | `POST` | Organization Admin (`settings`) | Turn Remote Control on; `409` when it is on, revoked by the platform, or the plan has no Remote Control seats |
+| `/api/plan/custom` | `GET` / `POST` | Organization Admin (`settings`) | The latest Custom plan request, or `{"workstations", "remoteSeats"?, "staff"?, "period": "month"\|"year", "notes"?}` to ask for one; `409` while one is open or its payment link is unpaid |
+| `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all\|unread\|read\|deleted&mailbox=<address>&category=<type>`: tasks or mail (Mail), open first, oldest first. Mail lists also return `mailboxes` (`{mailbox, open, unread, total}`) and `mailDomain` |
 | `/api/super/inbox/compose` | `POST` | Super Admin | `{"from", "to", "subject", "message", "format"?: "letter", "organization"?, "signatoryTitle"?}`: a new email (or a formal letter, tracking ID `LTR-…`) written as `from` (a name, or an address on the mail domain); `400` for another domain or a recipient on the platform's own domains, `502` when it was saved but not sent |
 | `/api/super/inbox/:id` | `GET` | Super Admin | One conversation with its messages, organization and registration details; marks it read |
 | `/api/super/inbox/:id/reply` | `POST` | Super Admin | `{"message", "close"?}`: email the contact; `502` when the mail was not sent |
@@ -139,15 +140,12 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/inbox/:id/restore` | `POST` | Super Admin | Bring it back out of Deleted |
 | `/api/super/inbox/:id/delete` | `POST` | Super Admin | Delete a conversation that is in Deleted, its messages and their stored originals, for good; `409` when it is not in Deleted, `400` for a task |
 | `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Super Admin | One attachment of an incoming message (`:index` from its `attachments` list), or `original` for the whole `.eml`; always `application/octet-stream` as a download |
-| `/api/super/inbox/:id/verify-phone` | `POST` | Super Admin | Record that a registration's phone number was confirmed |
-| `/api/super/inbox/:id/approve` | `POST` | Super Admin | `{"message"?}`: activate the organization (needs a confirmed phone) or enable Remote Control, and email the contact |
-| `/api/super/inbox/:id/reject` | `POST` | Super Admin | `{"message"?}`: decline the registration or Remote Control request, and email the contact |
-| `/api/super/tenants/approve` | `POST` | Super Admin | Approve an organization's requested subdomain change |
-| `/api/super/tenants/reject` | `POST` | Super Admin | Decline an organization's requested subdomain change |
+| `/api/super/inbox/:id/phone-link` | `POST` | Super Admin | Email a registration made before phone verification was required a one-time link to prove its phone |
+| `/api/super/custom-plans` | `GET` | Super Admin | Every Custom plan request, open first, with `billingEnabled` and `gstPercent` |
+| `/api/super/custom-plans/approve` | `POST` | Super Admin | `{"id", "price", "workstations"?, "remoteSeats"?, "staff"?, "period"?, "validDays"?, "note"?}`: `price` in whole rupees before GST for one period; creates a Razorpay payment link (open `validDays`, 1–30, default 7) and emails it to the owner; paying it applies the plan. `502` when Razorpay refuses, leaving the request open |
+| `/api/super/custom-plans/decline` | `POST` | Super Admin | `{"id", "reason"}`: decline, telling the organization why |
 | `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active organization tenant |
 | `/api/super/tenants/reactivate` | `POST` | Super Admin | Reactivate suspended organization tenant |
-| `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for an organization |
-| `/api/super/tenants/custom-domain/reject` | `POST` | Super Admin | Reject requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Super Admin | Remove assigned custom domain |
 | `/api/super/releases` | `GET` | Super Admin | Record new releases found in the `RELEASES` bucket and list them all; `503` without the binding |
 | `/api/super/releases/classify` | `POST` | Super Admin | `{"version", "channel": "beta"\|"stable"\|null}`: offer a release on a channel, or withdraw it (`null`) |
@@ -191,41 +189,32 @@ Returns the operational mode and current landing target. Used by the first-boot 
 
 #### `POST /api/auth/register`
 
-Registers an organization for review. Ask for `emailCode` first with
-`POST /api/auth/register/email-code`. Every field below is required except `legalName`,
-`organizationType`, `addressLine2`, `region`, `taxId`, `billingEmail`, `workstationEstimate` and
-`notes`. The phone number is international (`+` and the country code). The organization is
-`pending`, nobody is signed in, and the contact is emailed; a super admin confirms the phone and
-approves it under Super Admin → Tasks, which emails the console address.
+Registers an organization and its owner, active at once on the Free plan; nobody approves it.
+Both the email and the phone must be proved: ask for `emailCode` first with
+`POST /api/auth/register/email-code`, and send `phoneToken`, the Firebase ID token from proving
+the phone by a texted code. Without Firebase configured it answers `503`. The phone number is
+international (`+` and the country code). The owner then signs in and enters the organization's
+details with `POST /api/tenant/organization` (name, address, tax ID and the rest, rules below)
+before the console, enrolment and billing open.
 
 - **Access:** Public (rate-limited per address and per email)
 - **Request Body:**
 
   ```json
   {
-    "name": "Oakridge Holdings",
-    "legalName": "Oakridge Holdings Pvt Ltd",
-    "organizationType": "business",
     "contactName": "Jane Smith",
     "email": "it@oakridge.example",
     "emailCode": "482913",
     "phone": "+91 98765 43210",
+    "phoneToken": "<Firebase ID token>",
     "password": "StrongPassword123!",
     "subdomain": "oakridge",
-    "addressLine1": "12 Market Road",
-    "city": "Bhubaneswar",
-    "region": "Odisha",
-    "postalCode": "751001",
-    "country": "India",
-    "taxId": "21ABCDE1234F1Z5",
-    "billingEmail": "accounts@oakridge.example",
-    "workstationEstimate": 40,
     "acceptTerms": true
   }
   ```
 
-- **Response `200 OK`:** `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
-- **Country rules:** `country` is an ISO 3166-1 alpha-2 code (`IN`) or the English name as listed in `src/geo.ts`, and is stored as the name. Where that country's states are listed, `region` must be one of them; `postalCode` is checked against the country's format and may be empty where addresses carry none; `taxId`, when given, is checked against the country's format (GSTIN, EIN, VAT number and so on). `phone` is the calling code and the number without its leading 0. The registration form reads the same table from `/assets/geo-<hash>.json`.
+- **Response `200 OK`:** `{ "status": "ok", "active": true, "signIn": "https://labkiosk.org/login" }`
+- **Country rules** (for `POST /api/tenant/organization`): `country` is an ISO 3166-1 alpha-2 code (`IN`) or the English name as listed in `src/geo.ts`, and is stored as the name. Where that country's states are listed, `region` must be one of them; `postalCode` is checked against the country's format and may be empty where addresses carry none; `taxId`, when given, is checked against the country's format (GSTIN, EIN, VAT number and so on). `phone` is the calling code and the number without its leading 0. The registration form reads the same table from `/assets/geo-<hash>.json`.
 
 #### `POST /api/auth/login`
 
@@ -1079,21 +1068,9 @@ workstations at once.
 
 ### 7. Super Administrator Console (`/super`)
 
-Registrations and Remote Control requests are decided under **Tasks** (`/api/super/inbox`, above).
-
-#### `POST /api/super/tenants/approve`
-
-Approves an organization's requested subdomain change.
-
-- **Access:** Super Admin
-- **Request Body:**
-
-  ```json
-  {
-    "tenantId": "tenant-uuid-1",
-    "subdomain": "oakridge"
-  }
-  ```
+Nothing an organization does waits for approval except a Custom plan, which is priced under
+**Tasks → Custom plans** (`/api/super/custom-plans`, above), and the Education and partner
+applications, which are reviewed by hand.
 
 #### `POST /api/super/tenants/suspend`
 
@@ -1104,20 +1081,6 @@ Temporarily suspends an active organization. Workstations for this tenant stop r
 
   ```json
   { "tenantId": "tenant-uuid-1" }
-  ```
-
-#### `POST /api/super/tenants/custom-domain/approve`
-
-Approves and activates a custom domain mapping for an organization.
-
-- **Access:** Super Admin
-- **Request Body:**
-
-  ```json
-  {
-    "tenantId": "tenant-uuid-1",
-    "customDomain": "kiosk.oakridge.edu"
-  }
   ```
 
 #### Releases: `GET /api/super/releases`, `POST /api/super/releases/classify`, `POST /api/super/releases/revoke`

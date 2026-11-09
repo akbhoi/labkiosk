@@ -9,9 +9,9 @@
  */
 
 import { LabConfig, Tenant, HomepageBlock } from "./types";
-import { CATALOGUE, entitlement } from "./plans";
+import { allowsCustomDomain, CATALOGUE, entitlement } from "./plans";
 import { parseHomepageBlocks } from "./db";
-import { consoleSubdomain, showsHomepage } from "./addresses";
+import { consoleSubdomain, nextAddressChangeAt, showsHomepage } from "./addresses";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts, WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { buildAccountPage } from "./ui_admin_account";
@@ -52,12 +52,13 @@ function renderSettingsPageHtml(
   canUpdate: boolean
 ): string {
   const currentSubdomain = tenant?.subdomain || "";
-  const chosenSubdomain = tenant?.chosen_subdomain || "";
-  const requestedSubdomain = tenant?.requested_subdomain || "";
+  const nextAddressChange = tenant ? nextAddressChangeAt(tenant, Math.floor(Date.now() / 1000)) : null;
   const homepageLive = tenant ? showsHomepage(tenant) : true;
   const shownSubdomain = tenant ? consoleSubdomain(tenant) : "";
   const customDomain = tenant?.custom_domain || "";
   const customDomainStatus = tenant?.custom_domain_status || "none";
+  const certificate = tenant?.custom_hostname_status || "pending";
+  const mayConnectDomain = tenant ? allowsCustomDomain(tenant) : false;
   const homeRoute = tenant?.home_route || "/home";
 
   return `
@@ -174,24 +175,24 @@ ${renderRemoteControlCard(tenant, tenantParam)}
           <!-- Card 2: Console address (src/addresses.ts) -->
           <div class="card" id="section-subdomain">
             <h2 class="card-title">Console Address</h2>
-            <p class="card-sub">Your console is at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}</code>${
-              chosenSubdomain ? ` and at your chosen address <code>${escapeHtml(chosenSubdomain)}.${escapeHtml(baseDomain)}</code>` : ""
-            }.</p>
+            <p class="card-sub">Your console is at <code>${escapeHtml(shownSubdomain)}.${escapeHtml(baseDomain)}</code>.${
+              shownSubdomain !== currentSubdomain
+                ? ` Earlier addresses, such as <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}</code>, keep working, so enrolled workstations need no change.`
+                : ""
+            }</p>
             ${
-              chosenSubdomain
-                ? `<p class="form-hint">Your chosen address and public homepage are on. Both addresses keep working. To change the chosen one, write to support.</p>`
-                : requestedSubdomain
-                  ? `<div class="callout" id="subdomain-pending" role="status"><div><strong>Address requested</strong><div>You asked for <code>${escapeHtml(requestedSubdomain)}.${escapeHtml(baseDomain)}</code>. We will add it once it is approved, together with your public homepage.</div></div></div>`
-                  : `<form id="form-subdomain-settings">
+              nextAddressChange
+                ? `<p class="form-hint">The address can be changed once a week. The next change is possible on ${escapeHtml(new Date(nextAddressChange * 1000).toISOString().slice(0, 10))}.</p>`
+                : `<form id="form-subdomain-settings">
               <div class="form-group">
-                <label class="form-label" for="setting-subdomain">Ask for a chosen address</label>
+                <label class="form-label" for="setting-subdomain">New address</label>
                 <div class="form-row">
-                  <input type="text" class="form-input" id="setting-subdomain" placeholder="greenwood" required pattern="[a-zA-Z0-9-]{3,63}">
+                  <input type="text" class="form-input" id="setting-subdomain" placeholder="greenwood" required minlength="3" maxlength="63" pattern="[a-z0-9]+(-+[a-z0-9]+)*" autocapitalize="none" spellcheck="false">
                   <span class="input-suffix">.${escapeHtml(baseDomain)}</span>
                 </div>
-                <div class="form-hint">A short address people remember, with your organization's public homepage at its root. Your current address keeps working, so enrolled workstations need no change.</div>
+                <div class="form-hint">Lowercase letters, numbers and hyphens. The address can be changed once a week, and the one you leave keeps working for your workstations. Your public homepage is at the root of a chosen address.</div>
               </div>
-              <button type="submit" class="btn btn-secondary">Request Address</button>
+              <button type="submit" class="btn btn-secondary">Change Address</button>
             </form>`
             }
           </div>
@@ -206,32 +207,43 @@ ${renderRemoteControlCard(tenant, tenantParam)}
             ${
               customDomain && customDomainStatus === "approved"
                 ? `
-                <div class="callout callout-success">
+                <div class="callout ${certificate === "active" ? "callout-success" : certificate === "failed" ? "callout-danger" : "callout-warning"}">
                   <div>
-                    <span class="badge badge-green">Active domain</span>
+                    ${
+                      mayConnectDomain
+                        ? ""
+                        : `<div class="form-hint">This domain is not loading: your plan no longer includes a custom domain. <a href="/admin/plan${escapeAttr(tenantParam)}#plans">Add it on Plan &amp; billing</a> and it works again.</div>`
+                    }
+                    <span class="badge ${certificate === "active" ? "badge-green" : certificate === "failed" ? "badge-red" : "badge-yellow"}">${
+                      certificate === "active" ? "Active domain" : certificate === "failed" ? "Certificate failed" : "Waiting for DNS"
+                    }</span>
                     <div class="callout-value mono">https://${escapeHtml(customDomain)}</div>
+                    ${
+                      certificate === "active"
+                        ? ""
+                        : `<div class="form-hint">${
+                            certificate === "failed"
+                              ? "Cloudflare could not issue the certificate. Check the CNAME record, then disconnect and connect the domain again."
+                              : `Cloudflare issues the certificate once a CNAME record for this domain points to <code>${escapeHtml(baseDomain)}</code>. That can take a few minutes after the record is in place.`
+                          }</div>`
+                    }
                   </div>
                 </div>
                 <button type="button" class="btn btn-danger" id="btn-disconnect-custom">Disconnect Custom Domain</button>
               `
-                : customDomainStatus === "pending"
-                ? `
-                <div class="callout callout-warning">
-                  <div>
-                    <span class="badge badge-yellow">Pending platform approval</span>
-                    <div class="callout-value mono">${escapeHtml(tenant?.requested_custom_domain || "")}</div>
-                  </div>
-                </div>
-                <button type="button" class="btn btn-secondary" id="btn-cancel-custom">Cancel Request</button>
+                : !mayConnectDomain
+                  ? `
+                <p class="form-hint">A custom domain is included in Pro and Custom, and an add-on on Starter, Standard and Education for ₹${CATALOGUE.standard.domainMonthly.toLocaleString("en-IN")} a month or ₹${CATALOGUE.standard.domainYearly.toLocaleString("en-IN")} a year. Without it, your console address is yours, and you can change it once a week.</p>
+                <a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}#plans">Add a custom domain</a>
               `
-                : `
+                  : `
                 <form id="form-custom-domain">
                   <div class="form-group">
                     <label class="form-label" for="setting-custom-domain">Domain Name</label>
                     <input type="text" class="form-input" id="setting-custom-domain" placeholder="e.g. lab.example.com" required>
-                    <div class="form-hint">Create a CNAME record in your DNS pointing to <code>${escapeHtml(baseDomain)}</code>, then submit below.</div>
+                    <div class="form-hint">Create a CNAME record in your DNS pointing to <code>${escapeHtml(baseDomain)}</code>, then connect it. The domain works once Cloudflare has issued its certificate.</div>
                   </div>
-                  <button type="submit" class="btn btn-secondary">Request Custom Domain</button>
+                  <button type="submit" class="btn btn-secondary">Connect Custom Domain</button>
                 </form>
               `
             }
@@ -329,27 +341,30 @@ ${renderPrintingPaneHtml()}
 /**
  * Remote Control is sold per workstation (src/limits.ts): this card says how
  * many seats the plan has and sends the organization to Plan & billing for
- * them. An organization that cannot pay online may still ask Lab Kiosk.
+ * them. With seats it is on, or turned on here; nobody approves it.
  */
 function renderRemoteControlCard(tenant: Tenant | undefined, tenantParam: string): string {
   const revoked = tenant?.remote_control_status === "rejected" && Boolean(tenant?.remote_control_revoked_at);
   const seats = tenant ? entitlement(tenant).remoteSeats : 0;
-  const pending = tenant?.remote_control_status === "pending";
-  const status = revoked ? "revoked" : pending ? "pending" : seats > 0 ? "seats" : "none";
+  const status = revoked ? "revoked" : seats < 1 ? "none" : tenant?.remote_control_status === "approved" ? "seats" : "off";
   const badges: Record<string, string> = {
     none: `<span class="badge badge-neutral">Add-on</span>`,
-    pending: `<span class="badge badge-yellow">Requested</span>`,
+    off: `<span class="badge badge-neutral">Off</span>`,
     seats: `<span class="badge badge-green">Enabled</span>`,
     revoked: `<span class="badge badge-red">Turned off</span>`
   };
   const revokedOn = revoked ? new Date(Number(tenant!.remote_control_revoked_at) * 1000).toISOString().slice(0, 10) : "";
+  const seatText = `${seats} Remote Control ${seats === 1 ? "seat" : "seats"}`;
   const explanation: Record<string, string> = {
     none: `See and control a workstation's screen from this console. Each workstation you want to reach needs a Remote Control seat: ${escapeHtml(`₹${CATALOGUE.standard.remoteMonthly}`)} a month, and ${CATALOGUE.pro.label} includes ${CATALOGUE.pro.includedRemoteSeats}.`,
-    pending: "Your request is being reviewed. We will email you as soon as it has been decided.",
-    seats: `Your plan has ${seats} Remote Control ${seats === 1 ? "seat" : "seats"}. A workstation takes a free seat the first time an administrator opens it; choose which workstations hold them, or buy more, on Plan &amp; billing.`,
-    revoked: `Lab Kiosk turned Remote Control off for this organization on ${escapeHtml(revokedOn)}. Write to support, or ask below, to have it turned on again.`
+    off: `Your plan has ${seatText}, and Remote Control is off. Turn it on to open a connected workstation's screen from Workstations.`,
+    seats: `Your plan has ${seatText}. A workstation takes a free seat the first time an administrator opens it; choose which workstations hold them, or buy more, on Plan &amp; billing.`,
+    revoked: `Lab Kiosk turned Remote Control off for this organization on ${escapeHtml(revokedOn)}. Write to support to have it turned on again.`
   };
-  const canRequest = status === "none" || status === "revoked";
+  const actions =
+    status === "revoked"
+      ? ""
+      : `<div class="form-actions">${status === "off" ? `<button type="button" class="btn btn-primary" id="btn-remote-control-enable">Turn on Remote Control</button>` : ""}<a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}">${status === "none" ? "Buy seats" : "Manage seats"} on Plan &amp; billing</a></div>`;
   return `
       <div class="card mt-lg" id="section-remote-control">
         <div class="row-between">
@@ -357,19 +372,7 @@ function renderRemoteControlCard(tenant: Tenant | undefined, tenantParam: string
           ${badges[status]}
         </div>
         <p class="card-sub">${explanation[status]}</p>
-        ${status === "revoked" || status === "pending" ? "" : `<div class="form-actions"><a class="btn btn-secondary" href="/admin/plan${escapeAttr(tenantParam)}">${status === "seats" ? "Manage seats" : "Buy seats"} on Plan &amp; billing</a></div>`}
-        ${
-          canRequest
-            ? `<details class="mt-lg"><summary class="text-muted">Cannot pay online? Ask Lab Kiosk instead</summary>
-        <form id="form-remote-control-request" class="form-narrow mt-lg">
-          <div class="form-group">
-            <label class="form-label" for="remote-control-reason">What will you use it for? (optional)</label>
-            <textarea class="form-textarea" id="remote-control-reason" rows="3" maxlength="2000" placeholder="For example: helping users at 30 workstations across two sites."></textarea>
-          </div>
-          <button type="submit" class="btn btn-secondary">Ask for Remote Control</button>
-        </form></details>`
-            : ""
-        }
+        ${actions}
       </div>`;
 }
 
@@ -438,23 +441,21 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         });
       }
 
-      const remoteControlForm = document.getElementById("form-remote-control-request");
-      if (remoteControlForm) {
-        remoteControlForm.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const reason = document.getElementById("remote-control-reason").value.trim();
+      const remoteControlEnable = document.getElementById("btn-remote-control-enable");
+      if (remoteControlEnable) {
+        remoteControlEnable.addEventListener("click", async () => {
           try {
-            const res = await fetch(labkioskApi("/api/tenant/remote-control/request"), {
+            const res = await fetch(labkioskApi("/api/tenant/remote-control/enable"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ reason })
+              body: "{}"
             });
             const data = await res.json();
             if (res.ok && data.status === "ok") {
-              lkToastAfterReload("Remote Control requested. We will email you when it has been reviewed.", "success");
+              lkToastAfterReload("Remote Control is on.", "success");
               window.location.reload();
             } else {
-              lkToast(data.error || "The request could not be sent", "error");
+              lkToast(data.error || "Remote Control could not be turned on", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
@@ -467,7 +468,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         remoteControlDisable.addEventListener("click", async () => {
           const ok = await lkConfirm({
             title: "Turn off Remote Control?",
-            message: "Every Remote Control session open now ends. Turning it on again is a new request to Lab Kiosk.",
+            message: "Every Remote Control session open now ends. You can turn it on again here.",
             confirmLabel: "Turn off",
             tone: "danger"
           });
@@ -535,10 +536,11 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           });
           const data = await res.json();
           if (res.ok && data.status === "ok") {
-            lkToastAfterReload("Address requested. We will let you know here once it is approved.", "success");
-            window.location.reload();
+            // Sessions belong to one host: the console opens at the new address, signed in there anew.
+            lkToastAfterReload("Address changed. Sign in at the new address.", "success");
+            window.location.assign(data.consoleUrl);
           } else {
-            lkToast(data.error || "The request could not be sent", "error");
+            lkToast(data.error || "The address could not be changed", "error");
           }
         } catch (err) {
           lkToast("Network error: " + err.message, "error");
@@ -558,10 +560,10 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             });
             const data = await res.json();
             if (data.status === "ok") {
-              lkToastAfterReload("Custom domain submitted for platform review.", "success");
+              lkToastAfterReload("Custom domain connected. It works once its certificate is issued.", "success");
               window.location.reload();
             } else {
-              lkToast(data.error || "Failed to submit custom domain", "error");
+              lkToast(data.error || "The custom domain could not be connected", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
@@ -587,18 +589,6 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             } else {
               lkToast(data.error || "Failed to disconnect domain", "error");
             }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          }
-        });
-      }
-
-      const cancelCustomBtn = document.getElementById("btn-cancel-custom");
-      if (cancelCustomBtn) {
-        cancelCustomBtn.addEventListener("click", async () => {
-          try {
-            await fetch(labkioskApi("/api/settings/custom-domain"), { method: "DELETE" });
-            window.location.reload();
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
           }

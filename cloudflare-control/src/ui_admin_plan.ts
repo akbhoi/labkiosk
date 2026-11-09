@@ -10,7 +10,9 @@
 
 import { escapeAttr, escapeHtml, escapeJson } from "./escape";
 import { EDUCATION_LIMITS } from "./education";
-import { CATALOGUE, PAID_TIERS, PRICING } from "./plans";
+import { CUSTOM_PLAN_LIMITS } from "./custom_plans";
+import { MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
+import { CATALOGUE, PAID_TIERS, PRICING, STAFF_LIMITS } from "./plans";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildPlanPage(options: AdminPageInput): AdminPageParts {
@@ -26,9 +28,9 @@ const BOARDS = ["CBSE", "CISCE (ICSE / ISC)", "State board", "NIOS", "IB", "Camb
 
 /** What each tier adds beyond its limits; the same words as /pricing, where every console feature is in every plan. */
 const TIER_POINTS: Record<string, string[]> = {
-  starter: ["Every console feature, including exams and usage reports", "Remote Control as an add-on", "Email support"],
-  standard: ["Every console feature, including exams and usage reports", "Remote Control as an add-on", "Email support"],
-  pro: [`Remote Control on ${CATALOGUE.pro.includedRemoteSeats} workstations included`, "Priority support"]
+  starter: ["Every console feature, including exams and usage reports", "Remote Control and a custom domain as add-ons", "Email support"],
+  standard: ["Every console feature, including exams and usage reports", "Remote Control and a custom domain as add-ons", "Email support"],
+  pro: [`Remote Control on ${CATALOGUE.pro.includedRemoteSeats} workstations included`, "Custom domain included", "Priority support"]
 };
 
 function tierCard(tier: (typeof PAID_TIERS)[number]): string {
@@ -142,7 +144,7 @@ function renderPlanPageHtml(contactHref: string): string {
     </div>
     <div class="plan-grid">${PAID_TIERS.map(tierCard).join("")}
     </div>
-    <p class="form-hint">Prices are before GST where it applies. More than ${p.salesAbove} workstations or several sites? <a href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">Talk to sales</a>.</p>
+    <p class="form-hint">Prices are before GST where it applies. More than ${p.salesAbove} workstations or several sites? Ask for a <a href="#custom-status">Custom plan</a>, or <a href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">talk to sales</a>.</p>
 
     <div class="card mt-lg hidden" id="plan-config">
       <h2 class="card-title" id="config-title">Your plan</h2>
@@ -159,12 +161,20 @@ function renderPlanPageHtml(contactHref: string): string {
             <div class="stepper"><button type="button" data-step="cfg-seats" data-by="-1" aria-label="Fewer seats">−</button><input type="number" id="cfg-seats" min="0" step="1" value="0" inputmode="numeric"><button type="button" data-step="cfg-seats" data-by="1" aria-label="More seats">+</button></div>
             <p class="form-hint" id="cfg-seats-hint">Each seat lets an administrator see and control one workstation's screen. Move a seat to another workstation at any time.</p>
           </div>
+          <div class="form-group">
+            <label class="form-checkbox-label">
+              <input type="checkbox" class="form-checkbox" id="cfg-domain">
+              <span>Custom domain</span>
+            </label>
+            <p class="form-hint" id="cfg-domain-hint">Serve the console and homepage from your own domain, such as kiosk.example.org.</p>
+          </div>
           <div class="callout callout-warning hidden" id="cfg-losses" role="status"></div>
         </div>
         <div class="summary" aria-live="polite">
           <div class="summary-row"><span id="sum-base-label">Plan</span><strong class="money" id="sum-base">–</strong></div>
           <div class="summary-row hidden" id="row-extras"><span id="sum-extras-label">Extra workstations</span><strong class="money" id="sum-extras">–</strong></div>
           <div class="summary-row hidden" id="row-remote"><span id="sum-remote-label">Remote Control</span><strong class="money" id="sum-remote">–</strong></div>
+          <div class="summary-row hidden" id="row-domain"><span>Custom domain</span><strong class="money" id="sum-domain">–</strong></div>
           <div class="summary-row hidden" id="row-gst"><span id="sum-gst-label">GST</span><strong class="money" id="sum-gst">–</strong></div>
           <div class="summary-row summary-total"><span id="sum-total-label">Total</span><strong class="money" id="sum-total">–</strong></div>
           <p class="summary-now" id="sum-now"></p>
@@ -193,7 +203,7 @@ function renderPlanPageHtml(contactHref: string): string {
         <div class="plan-price">₹0 <small>for verified institutions</small></div>
         <ul class="plan-list">
           <li>${p.educationWorkstations} workstations and ${CATALOGUE.education.staff} staff, for a year at a time</li>
-          <li>Remote Control at half price; we check every application by hand</li>
+          <li>Remote Control at half price, and a custom domain for ₹${CATALOGUE.education.domainMonthly.toLocaleString("en-IN")} a month; we check every application by hand</li>
         </ul>
         <div class="plan-foot" id="edu-status"></div>
       </div>
@@ -202,10 +212,47 @@ function renderPlanPageHtml(contactHref: string): string {
         <div class="plan-price"><small>For large or multi-site deployments</small></div>
         <ul class="plan-list">
           <li>More than ${p.salesAbove} workstations, invoicing and purchase orders</li>
-          <li>Terms agreed with Lab Kiosk</li>
+          <li>Your own domain for the console and homepage</li>
+          <li>Priced by Lab Kiosk and paid by a payment link we email you</li>
         </ul>
-        <div class="plan-foot"><a class="btn btn-secondary" href="${escapeAttr(contactHref)}" target="_blank" rel="noopener">Talk to sales</a></div>
+        <div class="plan-foot" id="custom-status"></div>
       </div>
+    </div>
+
+    <div class="card mt-lg hidden" id="section-custom-form">
+      <h2 class="card-title">Ask for a Custom plan</h2>
+      <p class="card-sub">Tell us what you need. We email a payment link with the price, usually within two working days, and the plan starts as soon as it is paid.</p>
+      <form id="form-custom" novalidate>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="cp-workstations">Workstations</label>
+            <input type="number" class="form-input" id="cp-workstations" min="1" max="${MAX_WORKSTATION_LIMIT}" step="1" inputmode="numeric" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cp-seats">Remote Control seats</label>
+            <input type="number" class="form-input" id="cp-seats" min="0" max="${MAX_REMOTE_CONTROL_SEATS}" step="1" value="0" inputmode="numeric">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="cp-staff">Staff accounts (optional)</label>
+            <input type="number" class="form-input" id="cp-staff" min="1" max="${CUSTOM_PLAN_LIMITS.staff}" step="1" inputmode="numeric" placeholder="${STAFF_LIMITS.custom}">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cp-period">Billing</label>
+            <select class="form-select" id="cp-period"><option value="year">Yearly</option><option value="month">Monthly</option></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cp-notes">Anything else (optional)</label>
+          <textarea class="form-textarea" id="cp-notes" rows="3" maxlength="${CUSTOM_PLAN_LIMITS.notes}" placeholder="Sites, purchase orders, invoicing needs"></textarea>
+        </div>
+        <p class="callout callout-danger hidden" id="cp-error" role="alert"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost" id="btn-cp-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Send request</button>
+        </div>
+      </form>
     </div>
 
     <div class="card mt-lg hidden" id="section-education-form">
@@ -547,6 +594,12 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           $("cfg-seats-hint").textContent =
             (t.includedRemoteSeats ? t.includedRemoteSeats + " included; more at " : "") +
             rupees(period === "year" ? t.remoteYearly : t.remoteMonthly) + " a " + (period === "year" ? "year" : "month") + " per workstation. Each seat lets an administrator see and control one workstation's screen.";
+          const domainBox = $("cfg-domain");
+          domainBox.checked = t.includesDomain || (sub ? Boolean(sub.customDomain) : Boolean(bill.customDomainConnected));
+          domainBox.disabled = t.includesDomain;
+          $("cfg-domain-hint").textContent = t.includesDomain
+            ? "Included in " + t.label + ": serve the console and homepage from your own domain."
+            : rupees(period === "year" ? t.domainYearly : t.domainMonthly) + " a " + (period === "year" ? "year" : "month") + ". Serve the console and homepage from your own domain, such as kiosk.example.org.";
           show($("plan-config"), true);
           $("plan-config").scrollIntoView({ behavior: "smooth", block: "start" });
           schedulePreview(0);
@@ -560,7 +613,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             if (Number.isFinite(max) && v > max) v = max;
             return v;
           };
-          return { extra: clamp($("cfg-extra")), seats: clamp($("cfg-seats")) };
+          return { extra: clamp($("cfg-extra")), seats: clamp($("cfg-seats")), domain: $("cfg-domain").checked && !$("cfg-domain").disabled };
         }
 
         function schedulePreview(delay) {
@@ -575,7 +628,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           const btn = $("btn-checkout");
           btn.disabled = true;
           try {
-            const data = await api("/api/billing/preview", { tier: chosen, period, extraWorkstations: c.extra, remoteSeats: c.seats });
+            const data = await api("/api/billing/preview", { tier: chosen, period, extraWorkstations: c.extra, remoteSeats: c.seats, customDomain: c.domain });
             if (seq !== previewSeq) return;
             const q = data.quote;
             const per = period === "year" ? " a year" : " a month";
@@ -587,6 +640,8 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             show($("row-remote"), q.remote > 0);
             $("sum-remote-label").textContent = "Remote Control, " + q.remoteSeats + " seat" + (q.remoteSeats === 1 ? "" : "s");
             $("sum-remote").textContent = money(q.remote);
+            show($("row-domain"), q.domain > 0);
+            $("sum-domain").textContent = money(q.domain);
             show($("row-gst"), q.gst > 0);
             $("sum-gst-label").textContent = "GST " + q.gstPercent + "%";
             $("sum-gst").textContent = money(q.gst);
@@ -607,6 +662,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             if (data.losses.workstations) losses.push(data.losses.workstations + " workstation" + (data.losses.workstations === 1 ? "" : "s") + " will show a licence notice");
             if (data.losses.staff) losses.push(data.losses.staff + " staff account" + (data.losses.staff === 1 ? "" : "s") + " will be suspended");
             if (data.losses.remoteSeats) losses.push(data.losses.remoteSeats + " Remote Control seat" + (data.losses.remoteSeats === 1 ? "" : "s") + " will be released");
+            if (data.losses.customDomain) losses.push("your custom domain will stop loading until a plan includes it again");
             $("cfg-losses").textContent = losses.length ? "With this plan, " + losses.join(", ") + ". You choose which under this page." : "";
             show($("cfg-losses"), losses.length > 0);
             btn.textContent = !bill.enabled ? "Talk to sales" : data.immediate || data.upfront ? "Continue to payment" : "Authorise the change";
@@ -780,8 +836,38 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           if (!a) box.append(apply);
           else if (a.status === "verifying") { p.textContent = "Waiting for the code we emailed to " + a.email + "."; box.append(p); showCode(a); }
           else if (a.status === "pending") { p.textContent = "Sent for review on " + day(a.submittedAt) + ". We email you when it is decided."; box.append(p); }
-          else if (a.status === "approved") { p.textContent = "Approved on " + day(a.decidedAt) + "."; box.append(p, apply); }
+          else if (a.status === "approved") {
+            p.textContent = "Approved on " + day(a.decidedAt) + ".";
+            box.append(p);
+            if (bill.plan.kind === "education") {
+              const extras = el("button", "btn btn-primary", "Add workstations, Remote Control or a custom domain");
+              extras.type = "button";
+              extras.addEventListener("click", () => chooseTier("education", bill.subscription && bill.subscription.tier === "education" ? bill.subscription : null));
+              box.append(extras);
+            }
+            box.append(apply);
+          }
           else { p.textContent = "Not approved: " + (a.reason || "no reason given") + " You can fix it and apply again."; box.append(p, apply); }
+        }
+
+        let customRequest = null;
+        function renderCustom() {
+          const box = $("custom-status");
+          box.replaceChildren();
+          const r = customRequest;
+          const p = el("p", "form-hint");
+          const ask = el("button", "btn btn-secondary", r && r.status === "paid" ? "Ask for a new Custom plan" : "Ask for a Custom plan");
+          ask.type = "button";
+          ask.addEventListener("click", () => {
+            show($("section-custom-form"), true);
+            if (!$("cp-workstations").value) $("cp-workstations").value = String(Math.max(${PRICING.salesAbove + 1}, plan.workstations.length));
+            $("cp-workstations").focus();
+          });
+          if (!r) box.append(ask);
+          else if (r.status === "open") { p.textContent = "Asked for on " + day(r.createdAt) + ". We email you a payment link with the price."; box.append(p); }
+          else if (r.status === "sent") { p.textContent = "Approved on " + day(r.decidedAt) + " at " + r.total + ". The payment link is in your email; the plan starts when it is paid."; box.append(p); }
+          else if (r.status === "paid") { p.textContent = "Paid. Your Custom plan is in force."; box.append(p, ask); }
+          else { p.textContent = "Not offered: " + (r.decisionNote || "no reason given") + " You can ask again."; box.append(p, ask); }
         }
 
         function renderUnlicensed() {
@@ -823,9 +909,10 @@ function renderPlanScript(nonce: string, contactHref: string): string {
         // ---------------------------------------------------------------- load
         async function load() {
           try {
-            const [b, p] = await Promise.all([api("/api/billing"), api("/api/plan")]);
+            const [b, p, c] = await Promise.all([api("/api/billing"), api("/api/plan"), api("/api/plan/custom")]);
             bill = b;
             plan = p;
+            customRequest = c.request;
             renderBanners();
             renderOverview();
             renderUsage();
@@ -836,6 +923,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
             renderInvoices();
             renderTrial();
             renderEducation();
+            renderCustom();
             renderUnlicensed();
             renderPayments();
             if (chosen) schedulePreview(0);
@@ -881,6 +969,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           })
         );
         ["cfg-extra", "cfg-seats"].forEach((id) => $(id).addEventListener("input", () => schedulePreview()));
+        $("cfg-domain").addEventListener("change", () => schedulePreview(0));
         $("btn-change").addEventListener("click", () => {
           if (bill.subscription) chooseTier(bill.subscription.tier, bill.subscription);
           else document.getElementById("plans").scrollIntoView({ behavior: "smooth" });
@@ -893,7 +982,7 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           }
           const c = counts();
           try {
-            const data = await api("/api/billing/checkout", { tier: chosen, period, extraWorkstations: c.extra, remoteSeats: c.seats });
+            const data = await api("/api/billing/checkout", { tier: chosen, period, extraWorkstations: c.extra, remoteSeats: c.seats, customDomain: c.domain });
             openCheckout(data.url);
             await load();
           } catch (err) {
@@ -964,6 +1053,30 @@ function renderPlanScript(nonce: string, contactHref: string): string {
           }
         });
 
+        $("btn-cp-cancel").addEventListener("click", () => show($("section-custom-form"), false));
+        $("form-custom").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const errorBox = $("cp-error");
+          show(errorBox, false);
+          if (!e.target.reportValidity()) return;
+          const staff = $("cp-staff").value.trim();
+          try {
+            const data = await api("/api/plan/custom", {
+              workstations: Number($("cp-workstations").value),
+              remoteSeats: Number($("cp-seats").value || 0),
+              staff: staff ? Number(staff) : null,
+              period: $("cp-period").value,
+              notes: $("cp-notes").value
+            });
+            customRequest = data.request;
+            show($("section-custom-form"), false);
+            renderCustom();
+            lkToast("Request sent. We email you a payment link with the price.", "success");
+          } catch (err) {
+            errorBox.textContent = err.message;
+            show(errorBox, true);
+          }
+        });
         $("btn-edu-cancel").addEventListener("click", () => show($("section-education-form"), false));
         $("form-education").addEventListener("submit", async (e) => {
           e.preventDefault();

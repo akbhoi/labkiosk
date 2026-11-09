@@ -117,16 +117,18 @@ One row per organization. This table has accumulated the most columns because it
 | `id` | TEXT PK | |
 | `user_id` | TEXT → `users.id` | Owning administrator, `ON DELETE CASCADE` |
 | `name` | TEXT | Display name; attacker-controlled, always escaped on render |
-| `subdomain` | TEXT UNIQUE | The slug in `<slug>.labkiosk.example.edu` |
-| `requested_subdomain` | TEXT | Pending change awaiting super-admin action |
-| `status` | TEXT | `active` \| `pending` \| `rejected` \| `suspended` |
+| `subdomain` | TEXT UNIQUE | The slug in `<slug>.labkiosk.example.edu` it registered with; never changes, and keeps working |
+| `chosen_subdomain` | TEXT | The console address the organization changed to, shown everywhere; NULL while it is `subdomain`. Addresses given up are kept in `retired_addresses` and keep working (`0062`) |
+| `address_changed_at` | INTEGER | When the console address last changed; another change waits 7 days (`0062`) |
+| `requested_subdomain` | TEXT | No longer written: addresses change without approval |
+| `status` | TEXT | `active` \| `suspended`; `pending` \| `rejected` only for registrations made before approvals ended |
 | `mode` | TEXT | `portal` \| `single_url` |
 | `default_url` | TEXT | Target in `single_url` mode |
 | `admin_pin` | TEXT | Legacy local PIN, default `1234` |
 | `enrollment_key` | TEXT | Empty by default — an empty key authenticates nothing |
-| `custom_domain` | TEXT | Approved FQDN; unique index |
-| `requested_custom_domain` | TEXT | Awaiting approval |
-| `custom_domain_status` | TEXT | `none` \| `pending` \| `approved` \| `rejected` |
+| `custom_domain` | TEXT | The connected FQDN; unique index |
+| `requested_custom_domain` | TEXT | No longer written: a domain is connected without approval |
+| `custom_domain_status` | TEXT | `none` \| `approved` (connected); `pending` \| `rejected` only from before approvals ended |
 | `custom_hostname_id` | TEXT | The Cloudflare for SaaS custom hostname id, once created |
 | `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
 | `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
@@ -136,8 +138,8 @@ One row per organization. This table has accumulated the most columns because it
 | `update_channel` | TEXT | `stable` (default) \| `beta`: which classified releases its workstations are offered; `beta` also takes `stable` ones |
 | `security_updates` | TEXT | `next_boot` (default) \| `approval`. No longer read: security fixes and minor releases always install at a workstation's next start. Kept because dropping a column is a table rebuild |
 | `lan_sharing` | INTEGER | `1` when the organization's workstations share a release on their local network; default `0` |
-| `workstation_limit` | INTEGER | How many workstations may hold a valid device token (1–100000, default 45); set by a super admin at approval and under Organizations. Enrolment past it answers 403; a workstation that still holds a valid token always enrols again |
-| `remote_control_seats` | INTEGER | Remote Control sessions that may be open at once (1–1000); set when Remote Control is approved |
+| `workstation_limit` | INTEGER | How many workstations may hold a valid device token (1–100000, default 45); set by the plan, and by a super admin under Organizations. Enrolment past it answers 403; a workstation that still holds a valid token always enrols again |
+| `remote_control_seats` | INTEGER | Remote Control sessions that may be open at once (1–1000); set by the plan's Remote Control seats, or by a super admin |
 | `remote_control_revoked_at` | INTEGER | When a super admin revoked Remote Control (status back to `rejected`); NULL otherwise |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |

@@ -1,16 +1,14 @@
 /**
  * Console addresses: `<subdomain>.<platform domain>`.
  *
- * A registration gets a generated address made from its name and a random
- * suffix (`greenwood-k3x9`). A chosen address (`greenwood`), and with it the
- * public homepage at the address's root, is granted on request: the
- * organization asks from Settings and a super admin approves it. The chosen one
- * is stored beside the generated one (`chosen_subdomain`) instead of replacing
- * it, because each workstation keeps the address it enrolled with and would stop
- * reaching its console if that address went away. Both keep working.
- *
- * Organizations registered before addresses were generated keep the one they
- * chose (`address_generated = 0`) and their homepage.
+ * An organization's first address (`subdomain`) is the one it registered with,
+ * or one generated from its name for organizations from before addresses were
+ * chosen at signup. It changes its address itself from Settings, at most once a
+ * week, with no approval: the new one is stored as `chosen_subdomain`, and with a
+ * chosen address the root shows the public homepage. Nothing an organization
+ * gave up stops reaching it: each workstation keeps the address it enrolled
+ * with, so the first address stays and every chosen address it moved away from
+ * is kept in `retired_addresses`, where nobody else can take it.
  */
 
 import { findTenantBySubdomain } from "./db";
@@ -72,4 +70,41 @@ export function featureTipFor(tenant: Tenant, nowSeconds: number): TipFeature[] 
   if (rc === "none") features.push("remote_control");
   if (tenant.address_generated && !tenant.chosen_subdomain && !tenant.requested_subdomain) features.push("address");
   return features;
+}
+
+/** How often an organization may change its console address. */
+export const ADDRESS_CHANGE_DAYS = 7;
+
+/** When the organization may next change its address (Unix seconds), or null when it may now. */
+export function nextAddressChangeAt(tenant: Pick<Tenant, "address_changed_at">, nowSeconds: number): number | null {
+  if (!tenant.address_changed_at) return null;
+  const next = Number(tenant.address_changed_at) + ADDRESS_CHANGE_DAYS * 24 * 3600;
+  return next > nowSeconds ? next : null;
+}
+
+/**
+ * Move the organization to `address`, already checked as free and allowed. The
+ * address it leaves is retired (it keeps reaching the organization); moving back
+ * to an address it retired, or to its first one, takes that one up again.
+ */
+export async function changeConsoleAddress(
+  db: D1Database,
+  tenant: Pick<Tenant, "id" | "subdomain" | "chosen_subdomain">,
+  address: string,
+  nowSeconds: number
+): Promise<void> {
+  const leaving = tenant.chosen_subdomain || null;
+  const chosen = address === tenant.subdomain ? null : address;
+  const statements = [db.prepare("DELETE FROM retired_addresses WHERE subdomain = ? AND tenant_id = ?").bind(address, tenant.id)];
+  if (leaving && leaving !== address) {
+    statements.push(
+      db.prepare("INSERT OR REPLACE INTO retired_addresses (subdomain, tenant_id, retired_at) VALUES (?, ?, ?)").bind(leaving, tenant.id, nowSeconds)
+    );
+  }
+  statements.push(
+    db
+      .prepare("UPDATE tenants SET chosen_subdomain = ?, requested_subdomain = NULL, address_changed_at = ?, updated_at = ? WHERE id = ?")
+      .bind(chosen, nowSeconds, nowSeconds, tenant.id)
+  );
+  await db.batch(statements);
 }

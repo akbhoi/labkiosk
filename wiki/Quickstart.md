@@ -57,7 +57,7 @@ The worker creates three demo organizations at startup, one per way of testing: 
 2. **Open Console** on `docker-demo` (this guide uses the Docker simulator; a local VM uses `local-demo`).
 3. Go to **Settings → Workstation Enrollment Key** and copy the key.
 
-To try an ordinary organization instead, register one at `http://localhost:8787/`, then approve it under **Tasks** in `/super` (mark the phone verified first). Locally no email is sent: each message, including the registration code in its subject, is printed in the dev server's log. The demo names and `demo` itself are reserved.
+To try an ordinary organization instead, register one at `http://localhost:8787/`, sign in and enter the organization's details. Registration proves the phone by a texted code, so it needs the `FIREBASE_*` variables in `.dev.vars`; a test phone number added in the Firebase console works without sending a text. Without them `/register` says registration is closed. Locally no email is sent: each message, including the registration code in its subject, is printed in the dev server's log. The demo names and `demo` itself are reserved.
 
 ---
 

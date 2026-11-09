@@ -117,6 +117,10 @@ export interface Tenant {
   license_plan?: LicensePlan | null;
   /** Unix seconds the license ends; NULL: no end date (0037). */
   license_expires_at?: number | null;
+  /** When the owner entered the organization's details, signup's second step; NULL until then (0061). */
+  profile_completed_at?: number | null;
+  /** When the organization last changed its console address itself; once a week at most (0062). */
+  address_changed_at?: number | null;
   /** When the organization started its one free trial (0058, src/plans.ts). */
   trial_started_at?: number | null;
   /** The paid tier of a subscriber; NULL for every other plan (0059, src/plans.ts). */
@@ -125,6 +129,8 @@ export interface Tenant {
   staff_limit?: number | null;
   /** Remote Control seats paid for, each on one workstation (0059). */
   remote_seats_paid?: number;
+  /** 1 while a Starter, Standard or Education plan pays for the custom domain add-on (0064). */
+  custom_domain_paid?: number;
   /** A halted subscription's organization falls to Free at this time (0059). */
   grace_ends_at?: number | null;
   /** Who invoices are made out to (0059, src/invoices.ts). */

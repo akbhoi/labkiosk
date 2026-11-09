@@ -85,12 +85,12 @@ function renderFeatureTipHtml(tenantParam: string, features: TipFeature[]): stri
   const items: string[] = [];
   if (features.includes("remote_control")) {
     items.push(
-      `<li><strong>Remote Control</strong>: see and use a workstation's screen from the console to help someone without walking over. <a href="${escapeAttr(settings("general"))}">Request it</a></li>`
+      `<li><strong>Remote Control</strong>: see and use a workstation's screen from the console to help someone without walking over. <a href="${escapeAttr(settings("general"))}">Set it up</a></li>`
     );
   }
   if (features.includes("address")) {
     items.push(
-      `<li><strong>Your own address</strong>: a short console address you choose, with a public homepage for your organization. <a href="${escapeAttr(settings("domains"))}">Ask for one</a></li>`
+      `<li><strong>Your own address</strong>: a short console address you choose, with a public homepage for your organization. <a href="${escapeAttr(settings("domains"))}">Choose one</a></li>`
     );
   }
   return `

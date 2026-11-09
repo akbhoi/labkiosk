@@ -14,8 +14,6 @@
 
 import { escapeAttr, escapeJson } from "./escape";
 import { CATEGORIES } from "./conversations";
-import { MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
-import { PRICING } from "./plans";
 
 export type InboxBox = "tasks" | "support";
 
@@ -36,7 +34,7 @@ export function renderInboxPaneHtml(box: InboxBox, counts: InboxViewCounts): str
       </div>
       <p class="panel-note mt-md">${
         box === "tasks"
-          ? "Registrations and Remote Control requests, oldest first. Approving or rejecting emails the customer; a reply asks them something first, such as payment. Confirm a registration's phone number before approving it. A tracking ID starts with REG for a registration and RMT for Remote Control."
+          ? "Requests and records about organizations, oldest first. Registrations (REG) and Remote Control (RMT) need no decision any more: they are kept as the record of what was asked."
           : "Mail sent to any address on the mail domain, and the website's contact form, grouped by the address it was sent to. Replies go out as that address, and answers come back into the same conversation. The start of a tracking ID says what the mail is about (SUP support, SAL sales, BIL billing, LGL legal, GEN general, LTR a letter you wrote). Deleted mail stays in Deleted until it is restored or deleted for good."
       }</p>
   `;
@@ -119,7 +117,7 @@ function renderInboxFiltersHtml(box: InboxBox, counts: InboxViewCounts): string 
 
 /**
  * `otherTasks` counts what the Tasks rail badge shows besides open tasks (the
- * subdomain and custom domain requests), so the script can keep that badge
+ * Custom plan requests waiting for a price), so the script can keep that badge
  * right as tasks are decided.
  */
 export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: string, otherTasks = 0): string {
@@ -128,10 +126,6 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
       (function () {
         var BOX = ${escapeJson(box)};
         var BASE_DOMAIN = ${escapeJson(baseDomain)};
-        var FREE_WORKSTATIONS = ${escapeJson(PRICING.freeWorkstations)};
-        var TRIAL_DAYS = ${escapeJson(PRICING.trialDays)};
-        var MAX_WORKSTATION_LIMIT = ${escapeJson(MAX_WORKSTATION_LIMIT)};
-        var MAX_REMOTE_CONTROL_SEATS = ${escapeJson(MAX_REMOTE_CONTROL_SEATS)};
         var OTHER_TASKS = ${escapeJson(Math.max(0, Math.floor(Number(otherTasks) || 0)))};
         var listEl = document.getElementById("inbox-list");
         var detailEl = document.getElementById("inbox-detail");
@@ -340,20 +334,6 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             actions.append(sendLink);
             if (linkOut) definition(list, "Verification link", "sent, valid until " + new Date(p.phone_link_expires_at * 1000).toLocaleDateString());
           }
-          if (p && !p.phone_verified_at && data.conversation.kind === "signup" && data.conversation.status === "open") {
-            var verify = el("button", "btn btn-sm btn-secondary", "Mark phone as verified");
-            verify.type = "button";
-            verify.addEventListener("click", async function () {
-              var ok = await lkConfirm({
-                title: "Phone number confirmed?",
-                message: "Only mark it after you have spoken to or exchanged messages with " + p.contact_name + " on " + p.contact_phone + ".",
-                confirmLabel: "Mark verified"
-              });
-              if (!ok) return;
-              await act(data.conversation.id, "verify-phone", {}, "Phone number marked as verified.");
-            });
-            actions.append(verify);
-          }
           if (actions.children.length) card.append(actions);
           return card;
         }
@@ -425,7 +405,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           var group = el("div", "form-group mt-md");
           var label = el("label", "form-label", c.kind === "support"
             ? (c.mailbox ? "Reply as " + c.mailbox + " to " + c.contact_email : "Message to " + c.contact_email)
-            : "Message to " + c.contact_email + " (also added to an approval or rejection email)");
+            : "Message to " + c.contact_email);
           label.htmlFor = "inbox-message";
           var area = el("textarea", "form-textarea");
           area.id = "inbox-message";
@@ -433,49 +413,6 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           area.maxLength = 20000;
           group.append(label, area);
           card.append(group);
-
-          // An organization is activated with the number of workstations it may enrol.
-          var limitInput = null;
-          if (c.kind === "signup" && c.status === "open") {
-            var limitGroup = el("div", "form-group mt-md");
-            var limitLabel = el("label", "form-label", "Workstation limit");
-            limitLabel.htmlFor = "inbox-workstation-limit";
-            limitInput = el("input", "form-input");
-            limitInput.id = "inbox-workstation-limit";
-            limitInput.type = "number";
-            limitInput.min = "1";
-            limitInput.max = String(MAX_WORKSTATION_LIMIT);
-            limitInput.inputMode = "numeric";
-            var estimate = data.profile && Number(data.profile.workstation_estimate);
-            limitInput.value = String(FREE_WORKSTATIONS);
-            limitGroup.append(
-              limitLabel,
-              limitInput,
-              el("p", "form-hint", "How many workstations the Free plan gives this organization; Free is " + FREE_WORKSTATIONS + ". They expect " + (estimate > 0 ? estimate : "an unknown number") + "; for more they start the " + TRIAL_DAYS + "-day trial, subscribe or apply for Education under Plan.")
-            );
-            card.append(limitGroup);
-          }
-
-          // Remote Control is approved with how many sessions may be open at once.
-          var seatsInput = null;
-          if (c.kind === "remote_control" && c.status === "open") {
-            var seatsGroup = el("div", "form-group mt-md");
-            var seatsLabel = el("label", "form-label", "Remote Control seats");
-            seatsLabel.htmlFor = "inbox-remote-seats";
-            seatsInput = el("input", "form-input");
-            seatsInput.id = "inbox-remote-seats";
-            seatsInput.type = "number";
-            seatsInput.min = "1";
-            seatsInput.max = String(MAX_REMOTE_CONTROL_SEATS);
-            seatsInput.inputMode = "numeric";
-            seatsInput.value = "1";
-            seatsGroup.append(
-              seatsLabel,
-              seatsInput,
-              el("p", "form-hint", "How many Remote Control sessions this organization may have open at once.")
-            );
-            card.append(seatsGroup);
-          }
 
           var actions = el("div", "form-actions");
           function button(text, tone, handler) {
@@ -520,59 +457,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             });
           }
 
-          if (c.kind !== "support" && c.status === "open") {
-            var spacer = el("span", "toolbar-spacer");
-            actions.append(spacer);
-            var needsPhone = c.kind === "signup" && !(data.profile && data.profile.phone_verified_at);
-            var approve = button(c.kind === "signup" ? "Approve account" : "Approve Remote Control", "btn-success", async function () {
-              var ok = await lkConfirm({
-                title: c.kind === "signup" ? "Activate " + (data.organization ? data.organization.name : "this organization") + "?" : "Turn on Remote Control?",
-                message: c.kind === "signup"
-                  ? "The console goes live and " + c.contact_email + " is emailed the sign-in address. Any message above is included."
-                  : "Operators in this organization can open Remote Control straight away, and " + c.contact_email + " is emailed. Any message above is included.",
-                confirmLabel: "Approve"
-              });
-              if (!ok) return;
-              var extra = { message: message() };
-              if (limitInput) {
-                var limit = Number(limitInput.value);
-                if (!Number.isInteger(limit) || limit < 1 || limit > MAX_WORKSTATION_LIMIT) {
-                  lkToast("Set the workstation limit: a whole number from 1 to " + MAX_WORKSTATION_LIMIT + ".", "error");
-                  limitInput.focus();
-                  return;
-                }
-                extra.workstationLimit = limit;
-              }
-              if (seatsInput) {
-                var seats = Number(seatsInput.value);
-                if (!Number.isInteger(seats) || seats < 1 || seats > MAX_REMOTE_CONTROL_SEATS) {
-                  lkToast("Set the Remote Control seats: a whole number from 1 to " + MAX_REMOTE_CONTROL_SEATS + ".", "error");
-                  seatsInput.focus();
-                  return;
-                }
-                extra.remoteControlSeats = seats;
-              }
-              await act(c.id, "approve", extra, "Approved and emailed.");
-            });
-            if (needsPhone) {
-              approve.disabled = true;
-              approve.title = "Mark the phone number as verified first";
-            }
-            button("Reject", "btn-danger", async function () {
-              var ok = await lkConfirm({
-                title: "Reject this request?",
-                message: c.contact_email + " is emailed that it was not approved. Any message above is included as the reason.",
-                confirmLabel: "Reject",
-                tone: "danger"
-              });
-              if (!ok) return;
-              await act(c.id, "reject", { message: message() }, "Rejected and emailed.");
-            });
-          }
           card.append(actions);
-          if (c.kind === "signup" && c.status === "open" && !(data.profile && data.profile.phone_verified_at)) {
-            card.append(el("p", "form-hint mt-sm", "Approval is available once the phone number has been confirmed."));
-          }
           return card;
         }
 

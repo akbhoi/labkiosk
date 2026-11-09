@@ -14,6 +14,7 @@
  * Razorpay (no session):
  *   GET  /api/billing/return            the payer's way back, signed
  *   POST /api/billing/razorpay/webhook  payment_link.paid, signed
+ * Custom plans (src/custom_plans.ts): /api/plan/custom and /api/super/custom-plans/*.
  * Platform:
  *   GET  /api/super/education                       applications
  *   GET  /api/super/education/:id/certificate       the certificate
@@ -31,6 +32,7 @@ import {
   verifyWebhookSignature,
   type Payment
 } from "./billing";
+import { customPlanForPayment, customPlanPaidText, describeCustomPlan, handleCustomPlanRoutes } from "./custom_plans";
 import { findTenantById, findUserById, rateLimitWait, recordRateLimitHit, updateTenant, writeAuditLog } from "./db";
 import {
   applicationJson,
@@ -116,6 +118,8 @@ export async function handlePlanRoutes(ctx: PlanRouteContext): Promise<Response 
   if (path === "/api/billing/return" && method === "GET") return billingReturn(ctx);
   if (path === "/api/billing/razorpay/webhook" && method === "POST") return billingWebhook(ctx);
   if (path === "/api/super/education" || path.startsWith("/api/super/education/")) return superEducation(ctx);
+  const custom = await handleCustomPlanRoutes(ctx);
+  if (custom) return custom;
   if (path === "/api/plan" || path.startsWith("/api/plan/")) return organizationPlan(ctx);
   return null;
 }
@@ -127,6 +131,11 @@ async function organizationPlan(ctx: PlanRouteContext): Promise<Response | null>
   const denied = await requireTenantPermission(db, session, ctx.tenant, "settings", jsonHeaders);
   if (denied) return denied;
   const tenant = ctx.tenant!;
+  // Plans are bought for an organization whose name and address are entered:
+  // invoices carry them, and the place of supply comes from the state.
+  if (!tenant.profile_completed_at && method !== "GET") {
+    return jsonError("Enter your organization's details in the console first", 409, jsonHeaders);
+  }
   const userId = session!.user_id;
   const nowMs = Date.now();
   const now = Math.floor(nowMs / 1000);
@@ -289,7 +298,22 @@ async function activate(ctx: PlanRouteContext, ref: { referenceId: string; linkI
     action: "plan.paid",
     details: `payment=${payment.id} razorpay=${payment.razorpay_payment_id} via=${via} total=${payment.total_paise} ends=${payment.period_ends_at ? licenseDate(Number(payment.period_ends_at)) : "-"}`
   });
-  if (tenant) {
+  const custom = await customPlanForPayment(ctx.db, payment.id);
+  if (tenant && custom) {
+    const ends = Number(payment.period_ends_at);
+    await createNotification(ctx.db, {
+      tenantId: tenant.id,
+      kind: "license",
+      title: "Payment received",
+      body: `Thank you. ${tenant.name} is on its ${customPlanPaidText(custom, ends)} (paid ${rupees(Number(payment.total_paise))}).`,
+      createdBy: payment.created_by
+    });
+    await syncLicences(ctx.env, ctx.db, tenant.id, nowMs);
+    await emailPaidInvoice(ctx.env, ctx.db, tenant, payment.id, Math.floor(nowMs / 1000), ctx.url.origin, {
+      plan: describeCustomPlan(custom),
+      paidUntil: licenseDate(ends)
+    });
+  } else if (tenant) {
     await createNotification(ctx.db, {
       tenantId: tenant.id,
       kind: "license",
@@ -302,7 +326,8 @@ async function activate(ctx: PlanRouteContext, ref: { referenceId: string; linkI
       tier: payment.tier ?? "standard",
       period: payment.period,
       extra_workstations: Number(payment.extra_workstations),
-      remote_seats: Number(payment.remote_seats) || 0
+      remote_seats: Number(payment.remote_seats) || 0,
+      custom_domain: Number(payment.custom_domain) === 1 ? 1 : 0
     });
     await emailPaidInvoice(ctx.env, ctx.db, tenant, payment.id, Math.floor(nowMs / 1000), ctx.url.origin, {
       plan,
