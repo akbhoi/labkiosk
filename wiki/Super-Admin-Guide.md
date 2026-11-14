@@ -192,7 +192,7 @@ Issues filed in a public repository are public; each organization's administrato
 
 ## Reserved subdomains
 
-`www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`
+`www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`, and about 290 more covering platform services, hosting, AI, roles such as `user` and `customer`, sign-in, payments, advertising and mail (`email`, `mx`). The full list is under [Reserved subdomains](Configuration-Reference#reserved-subdomains).
 
 These can be neither registered nor resolved as an organization. Add one to `RESERVED_SLUGS` in `src/guard.ts` **before** you start using a hostname for platform purposes, not after.
 

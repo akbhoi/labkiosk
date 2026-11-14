@@ -84,10 +84,38 @@ sign-in, accounts   account  accounts  login  signin  signup  register  auth  ss
 mail and DNS        abuse  postmaster  hostmaster  webmaster  noreply  no-reply
                     smtp  imap  pop  pop3  webmail  ns1  ns2  autodiscover  autoconfig  mta-sts
                     git  vpn  ftp
+hosting and infra   ai  cloud  host  hosting  hosted  server  servers  node  nodes  edge
+                    gateway  proxy  relay  network  net  web  www1  www2  site  sites
+                    worker  workers  storage  bucket  s3  db  database  data  backup  backups
+                    registry  repo  packages  pkg  apt  build  builds  deploy  ci
+                    monitor  monitoring  metrics  analytics  stats  logs  health  uptime
+                    ops  devops  infra  sandbox  developer  developers  lab  labs
+                    my  me  go  link  links  url  m  mobile
+product features    remote  vnc  novnc  ws  wss  socket  realtime  live  connect
+                    device  devices  fleet  workstation  workstations  kiosks  client  clients
+                    os  iso  image  boot  pxe  provision  enroll  enrollment  agent  agents
+AI                  ml  llm  gpt  chat  bot  bots  assistant  copilot
+people and roles    user  users  member  members  customer  customers  partner  partners
+                    reseller  resellers  affiliate  affiliates  owner  superadmin  super-admin
+                    sysadmin  administrator  moderator  mod  operator  manage  management
+                    control  panel  cpanel  settings  profile  verified
+identity            id  identity  verify  verification  secure  password  reset  recover
+                    recovery  2fa  mfa  otp  session  token  saml  oidc  signout  logout
+money               pay  payment  payments  checkout  invoice  invoices  plans  pricing
+                    subscribe  subscription  subscriptions  store  shop  orders  wallet
+ads and company     ad  ads  advert  adverts  advertise  advertisement  advertisements
+                    advertising  marketing  promo  promos  offers  deals  campaign  newsletter
+                    news  press  events  careers  jobs  about  contact  info  hello  sales
+                    legal  terms  privacy  policy  compliance  trust  gdpr  cookies
+                    helpdesk  service  services  care  ticket  tickets  feedback  community  forum
+more mail and DNS   email  e-mail  emails  mailer  mailserver  mx  mx1  mx2  mta  bounce
+                    bounces  send  inbound  outbound  dmarc  dkim  spf  dns  ns  ns3  ns4  whois
 ```
 
 `releases` is the hostname of the over-the-air release bucket (`RELEASES_BASE_URL`); the sign-in
-names keep a lookalike organization from passing as the platform.
+names keep a lookalike organization from passing as the platform. Names shorter than three
+characters (`ai`, `ad`, `my`) cannot be registered anyway; they are listed so the host never
+resolves as an organization.
 
 These can be neither registered nor resolved as an organization. Add to the set **before** you start using a hostname for platform purposes, not after.
 

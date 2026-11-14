@@ -109,7 +109,7 @@ Cache-Control: no-store                 (API responses)
 
 - **Sign-in:** exponential back-off per identifier via `login_attempts`, answered `429`. Single sign-on counts against the same identifier (the verified email address) and is refused while it is locked; starting one is limited to 30 per source address per ten minutes.
 - **Registration and failed enrolment:** throttled per source address.
-- **Reserved slugs:** `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root` — neither registerable nor resolvable.
+- **Reserved slugs:** `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root` and the rest of [the list](Configuration-Reference#reserved-subdomains) — neither registerable nor resolvable.
 
 ### Fail closed
 
