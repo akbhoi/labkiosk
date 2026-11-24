@@ -8712,6 +8712,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await onHost("labkiosk-controller.example.workers.dev", "/sitemap.xml")).status, 404);
   });
 
+  test("ads.txt names the AdSense publisher on the platform host, and only there", async () => {
+    for (const host of ["labkiosk.org", "www.labkiosk.org"]) {
+      const res = await onHost(host, "/ads.txt");
+      assert.equal(res.status, 200, `${host} serves ads.txt`);
+      assert.equal(res.headers.get("Content-Type"), "text/plain; charset=utf-8");
+      assert.equal(await res.text(), "google.com, pub-7222534809944092, DIRECT, f08c47fec0942fa0\n");
+    }
+    assert.equal((await onHost("greenwood.labkiosk.org", "/ads.txt")).status, 404);
+    assert.equal((await onHost("labkiosk-controller.example.workers.dev", "/ads.txt")).status, 404);
+  });
+
   test("Only the platform's public pages may be indexed; every other page says noindex", async () => {
     const indexable: [string, string][] = [
       ["www.labkiosk.org", "/"],
