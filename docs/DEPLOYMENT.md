@@ -708,8 +708,8 @@ region. The one per-organization cost is a custom domain.
 ### 3. Search engines and website analytics
 
 Only the platform's public pages are meant for search results: `/`, `/privacy`, `/terms` and
-`/terms/bug-reports` on the platform host. The worker serves `/robots.txt` and `/sitemap.xml`
-there, and sends `X-Robots-Tag: noindex, nofollow` with every other page: organization
+`/terms/bug-reports` on the platform host. The worker serves `/robots.txt`, `/sitemap.xml` and
+`/ads.txt` (the AdSense publisher line, `ADS_TXT` in `src/seo.ts`) there, and sends `X-Robots-Tag: noindex, nofollow` with every other page: organization
 subdomains, custom domains, the consoles, the User Portal and the `workers.dev` address.
 
 Website analytics are optional and run through Cloudflare Zaraz, which injects its snippet at the

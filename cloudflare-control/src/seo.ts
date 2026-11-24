@@ -160,6 +160,12 @@ export function bimiSvg(accent: string, foreground: string): string {
 `;
 }
 
+/** ads.txt: the sellers authorised to sell ads on the platform host (IAB Tech Lab). */
+export const ADS_TXT_PATH = "/ads.txt";
+
+/** The Google AdSense publisher account the platform's public pages use. */
+export const ADS_TXT = "google.com, pub-7222534809944092, DIRECT, f08c47fec0942fa0\n";
+
 /**
  * robots.txt. The platform host lets crawlers in and names the sitemap; every
  * other host only keeps them off the API, so they can read the noindex header

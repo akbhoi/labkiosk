@@ -37,6 +37,8 @@ import {
   canonicalUrlFor,
   faviconSvg,
   bimiSvg,
+  ADS_TXT,
+  ADS_TXT_PATH,
   BIMI_PATH,
   isIndexable,
   isPlatformHost,
@@ -1737,6 +1739,12 @@ export default {
         if (!isPlatformHost(request, env)) return jsonError("Not Found", 404, jsonHeaders);
         return new Response(sitemapXml(request, url, env), {
           headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff" }
+        });
+      }
+      if (path === ADS_TXT_PATH) {
+        if (!isPlatformHost(request, env)) return jsonError("Not Found", 404, jsonHeaders);
+        return new Response(ADS_TXT, {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff" }
         });
       }
       if (path === BIMI_PATH) {
