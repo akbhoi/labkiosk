@@ -261,7 +261,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
         <li><strong>Google Firebase Authentication:</strong> sends the text message code that proves the phone number given at registration. Google receives that phone number, the registrant's IP address and browser details, and runs Google reCAPTCHA on the registration page to stop automated requests; it tells us only that the code was entered correctly for that number. Google handles this under the <a href="https://firebase.google.com/terms/data-processing-terms">Firebase Data Processing and Security Terms</a>.</li>
         <li><strong>Google Fonts:</strong> the consoles and public pages load the Inter and JetBrains Mono typefaces from Google, which receives the visitor's IP address and browser details when the fonts are requested.</li>
         <li><strong>Google Analytics:</strong> only on the public website pages described in section 8, and only after the visitor consents.</li>
-        <li><strong>Google AdSense:</strong> shows ads on some public website pages, as section 8 describes. It never runs on workstations, the User Portal, the consoles or an organization's own address.</li>
+        <li><strong>Google AdSense:</strong> shows ads on some public website pages, as section 8a describes. It never runs on workstations, the User Portal, the consoles or an organization's own address.</li>
       </ul>
       <p>The <a href="/dpa#subprocessors">Data Processing Agreement</a> lists which of these process an organization's data on our behalf. An organization may also choose services that work under their own terms rather than ours: Google or Microsoft for staff sign-in (section 4), and its own printers on its own network (section 3).</p>
 
