@@ -7,9 +7,11 @@ every step that has a `run:` script, in order, with bash -eo pipefail and the
 step's own `env:` block, and skips the `uses:` steps (checkout, setup-node,
 pnpm setup), which the CircleCI executor provides instead.
 
-A step whose script or env contains a GitHub expression (${{ ... }}) cannot be
-evaluated here, so the script refuses to run the job rather than run the step
-with the expression left in place.
+Anything that only GitHub Actions can evaluate makes the script refuse the
+job rather than run it differently: a step with an `if:` condition, a GitHub
+expression (${{ ... }}) in a script or env, or a script that uses the runner's
+step files ($GITHUB_ENV, $GITHUB_PATH, $GITHUB_OUTPUT, $GITHUB_STEP_SUMMARY),
+whose effects on later steps are not reproduced here.
 
 Usage: run-actions-job.py WORKFLOW_FILE JOB_ID
 """
@@ -42,9 +44,18 @@ def load_job(workflow_file: Path, job_id: str) -> dict:
     return job
 
 
+RUNNER_FILES = ("GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")
+
+
 def check_no_expressions(name: str, value: object) -> None:
     if "${{" in str(value):
         fail(f"step {name!r} uses a GitHub expression, which cannot be evaluated outside GitHub Actions")
+
+
+def check_no_runner_files(name: str, script: str) -> None:
+    for variable in RUNNER_FILES:
+        if variable in script:
+            fail(f"step {name!r} uses ${variable}, whose effect on later steps is not reproduced outside GitHub Actions")
 
 
 def main() -> int:
@@ -61,7 +72,10 @@ def main() -> int:
         if "run" not in step:
             print(f"skip: {name} (uses: {step.get('uses', '?')})")
             continue
+        if "if" in step:
+            fail(f"step {name!r} has an if: condition, which cannot be evaluated outside GitHub Actions")
         check_no_expressions(name, step["run"])
+        check_no_runner_files(name, str(step["run"]))
         check_no_expressions(name, step.get("env", {}))
         runnable.append((name, str(step["run"]), step.get("env") or {}))
     if not runnable:
