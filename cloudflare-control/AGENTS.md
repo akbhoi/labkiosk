@@ -29,7 +29,7 @@ cloudflare-control/
 │   ├── release_notes.ts                # GitHub releases and their AI-written summaries, for /download
 │   ├── markdown.ts                     # Markdown to escaped HTML, for /docs
 │   ├── docs_content.generated.ts       # wiki/ as a module (tools/build-docs.mjs; `pnpm run docs`)
-│   ├── seo.ts                          # robots.txt, sitemap, ads.txt, noindex outside public pages, Zaraz CSP
+│   ├── seo.ts                          # robots.txt, sitemap, ads.txt, the AdSense code and its pages, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration and the contact form, each with an email code; Remote Control requests
 │   ├── geo.ts                          # Countries for registration: calling codes, states, postal and tax ID formats; one table for the server's checks and the form (/assets/geo-<hash>.json)
 │   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional passkeys and TOTP app, recovery codes), sign-in alerts
@@ -280,6 +280,13 @@ cloudflare-control/
   handles organization data, to the subprocessor list of the Data Processing Agreement (`/dpa`),
   which promises organizations 30 days' notice. The DPA is part of the Terms: changing its text is
   a new `terms` version in `LEGAL_DOCUMENTS`.
+- **Ads stay on the platform's reading pages.** Google AdSense's code goes only on the pages
+  `allowsAds` (`seo.ts`) lists: the landing page, the product pages, `/docs` and `/about`, on the
+  platform host. Never on a form (sign-in, registration, contact), the legal pages, an organization's
+  host, the consoles, the User Portal or a workstation. Those pages alone get AdSense's strict CSP
+  (`'strict-dynamic'`, frames and connections to `https:`), because AdSense supports no host
+  allowlist; every other page keeps the nonce-only policy. The loader is AdSense's own snippet with
+  the response's nonce added and nothing else changed; a test holds all of this.
 
 ### Rule 3: The Schema Has Two Homes
 

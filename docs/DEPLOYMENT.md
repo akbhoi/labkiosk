@@ -712,6 +712,14 @@ Only the platform's public pages are meant for search results: `/`, `/privacy`, 
 `/ads.txt` (the AdSense publisher line, `ADS_TXT` in `src/seo.ts`) there, and sends `X-Robots-Tag: noindex, nofollow` with every other page: organization
 subdomains, custom domains, the consoles, the User Portal and the `workers.dev` address.
 
+Google AdSense's code (`adsenseHeadHtml` in `src/seo.ts`, account `ca-pub-7222534809944092`) is on
+the reading pages only: `/`, `/features`, `/specs`, `/hardware`, `/pricing`, `/download`, `/docs`
+and `/about`. Those pages get the strict, nonce-based CSP AdSense requires; every other page keeps
+the nonce-only policy. Where ads appear on those pages is set with **Auto ads** in AdSense. Before
+ads serve to visitors in the EEA, the UK and Switzerland, publish a consent message in **AdSense →
+Privacy & messaging → European regulations** (Google's own consent platform, which the AdSense
+code shows by itself); the Privacy Policy (section 8a) says visitors there are asked first.
+
 Website analytics are optional and run through Cloudflare Zaraz, which injects its snippet at the
 edge. The worker's Content Security Policy lets Zaraz's loader (`/cdn-cgi/zaraz/s.js`) run only on
 the public pages of the platform host, so no analytics tool can run on a workstation or a console.

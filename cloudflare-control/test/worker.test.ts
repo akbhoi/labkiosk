@@ -2577,12 +2577,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Every public page leads home, and Contact is a page of its own", async () => {
-    for (const page of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/docs/quickstart", "/contact"]) {
+    for (const page of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/docs/quickstart", "/about", "/contact"]) {
       const html = await (await call(page)).text();
       assert.ok(html.includes('<a class="brand" href="/" aria-label="Lab Kiosk home">'), `${page}: the name leads home`);
       assert.match(html, /<nav class="nav-links"[^>]*>\s*<a href="\/"[^>]*>Home<\/a>/, `${page}: Home is the first tab`);
       assert.ok(html.includes('<a href="/" data-action="close-drawer">'), `${page}: Home is in the phone menu`);
       assert.match(html, /<a href="\/contact"[^>]*>Contact<\/a>/, `${page}: Contact is a link to its page`);
+      assert.match(html, /<nav class="nav-links"[\s\S]*?<a href="\/about"[^>]*>About<\/a>[\s\S]*?<\/nav>/, `${page}: About is in the main navigation`);
+      assert.ok(html.includes('<a href="/about" data-action="close-drawer">'), `${page}: About is in the phone menu`);
+      assert.ok(html.includes('<li><a href="/about">About Us</a></li>') && html.includes(">Contact Us &rarr;</a>"), `${page}: the footer links About Us and Contact Us`);
       assert.ok(!html.includes('href="/#contact"') && !html.includes("contact-modal"), `${page}: no contact dialog`);
     }
     // Home is the marked tab on the home page only.
@@ -8694,6 +8697,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/download",
       "https://www.labkiosk.org/docs",
       ...DOCS_PAGES.filter((page) => page.slug).map((page) => `https://www.labkiosk.org/docs/${page.slug}`),
+      "https://www.labkiosk.org/about",
       "https://www.labkiosk.org/contact",
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
@@ -8721,6 +8725,91 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     assert.equal((await onHost("greenwood.labkiosk.org", "/ads.txt")).status, 404);
     assert.equal((await onHost("labkiosk-controller.example.workers.dev", "/ads.txt")).status, 404);
+  });
+
+  test("About Us is a page of its own that says who runs Lab Kiosk and how to reach them", async () => {
+    const res = await onHost("www.labkiosk.org", "/about");
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /<title>About Lab Kiosk<\/title>/);
+    assert.match(html, /<meta name="description" content="[^"]{50,}">/);
+    assert.ok(html.includes('<link rel="canonical" href="https://www.labkiosk.org/about">'));
+    assert.match(html, /<a href="\/about" class="active">About<\/a>/);
+    assert.match(html, /<h1 class="page-hero-title">About <span>Lab Kiosk<\/span><\/h1>/);
+    for (const text of ["Akbhoi Innovations", 'href="/contact"', "mailto:contact@labkiosk.org", "mailto:support@labkiosk.org", 'href="/privacy#advertising"', "https://github.com/akbhoi/labkiosk"]) {
+      assert.ok(html.includes(text), `About says ${text}`);
+    }
+    assert.equal(res.headers.get("X-Robots-Tag"), null, "About may be indexed");
+    // On an organization's host it is the platform's page, not the organization's.
+    const elsewhere = await onHost("greenwood.labkiosk.org", "/about");
+    assert.equal(elsewhere.status, 301);
+    assert.equal(elsewhere.headers.get("Location"), "https://www.labkiosk.org/about");
+    assert.equal((await onHost("www.labkiosk.org", "/about/")).status, 301, "a trailing slash is sent to /about");
+  });
+
+  test("The AdSense code is on the platform's reading pages only, unchanged, with the strict CSP AdSense supports", async () => {
+    const adsenseTag =
+      '<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7222534809944092" crossorigin="anonymous" nonce="';
+    const withAds = ["/", "/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/docs/quickstart", "/about"];
+    for (const path of withAds) {
+      const res = await onHost("www.labkiosk.org", path);
+      assert.equal(res.status, 200, `${path} renders`);
+      const html = await res.text();
+      const csp = res.headers.get("Content-Security-Policy") || "";
+      const nonce = csp.match(/'nonce-([^']+)'/)?.[1];
+      assert.ok(nonce, `${path}: the CSP has a nonce`);
+      assert.ok(html.includes(`${adsenseTag}${nonce}"></script>`), `${path}: carries the AdSense loader with this response's nonce`);
+      assert.equal(html.split("adsbygoogle.js").length - 1, 1, `${path}: the loader appears once`);
+      assert.ok(html.includes('<meta name="google-adsense-account" content="ca-pub-7222534809944092">'), `${path}: names the AdSense account`);
+      assert.match(csp, /script-src 'nonce-[^']+' [^;]*'strict-dynamic'/, `${path}: strict-dynamic lets the loader add its scripts`);
+      assert.match(csp, /frame-src [^;]*https:/, `${path}: ads may draw in frames`);
+      assert.match(csp, /connect-src [^;]*https:/, `${path}: ads may call Google`);
+      assert.match(csp, /object-src 'none'/);
+      assert.doesNotMatch(html, /<script(?![^>]*nonce=)[^>]*>/, `${path}: every script in the markup still carries the nonce`);
+    }
+    // Forms, legal pages, the status page, organization hosts, the consoles and the portal never carry ads, or the looser policy.
+    const without: [string, string][] = [
+      ["www.labkiosk.org", "/login"],
+      ["www.labkiosk.org", "/register"],
+      ["www.labkiosk.org", "/iso"],
+      ["www.labkiosk.org", "/?login=1"],
+      ["www.labkiosk.org", "/?register=1"],
+      ["www.labkiosk.org", "/contact"],
+      ["www.labkiosk.org", "/privacy"],
+      ["www.labkiosk.org", "/terms"],
+      ["www.labkiosk.org", "/status"],
+      ["www.labkiosk.org", "/?tenant=greenwood"],
+      ["greenwood.labkiosk.org", "/"],
+      ["greenwood.labkiosk.org", "/home"],
+      ["greenwood.labkiosk.org", "/privacy"],
+      ["labkiosk-controller.example.workers.dev", "/"]
+    ];
+    for (const [host, path] of without) {
+      const res = await onHost(host, path);
+      const html = await res.text();
+      const csp = res.headers.get("Content-Security-Policy") || "";
+      assert.ok(!html.includes("adsbygoogle") && !html.includes("google-adsense-account"), `${host}${path}: no AdSense code`);
+      assert.doesNotMatch(csp, /strict-dynamic|unsafe-eval/, `${host}${path}: keeps the strict policy`);
+      assert.doesNotMatch(csp, /(frame|connect)-src [^;]*https:(?!\/\/)/, `${host}${path}: frames and connections stay limited`);
+    }
+  });
+
+  test("The Privacy Policy discloses AdSense the way Google asks publishers to", async () => {
+    const html = await (await onHost("www.labkiosk.org", "/privacy")).text();
+    assert.ok(html.includes('<h2 id="advertising">'), "an Advertising section the cookie banner and About link to");
+    for (const phrase of [
+      "Third-party vendors, including Google, use cookies to serve ads based on a visitor's prior visits to this website or to other websites.",
+      "Google's use of advertising cookies enables it and its partners to serve ads",
+      'href="https://adssettings.google.com/"',
+      'href="https://optout.aboutads.info/"',
+      'href="https://support.google.com/admanager/answer/94149"',
+      "<strong>Google AdSense:</strong>"
+    ]) {
+      assert.ok(html.includes(phrase), `the Privacy Policy says ${phrase}`);
+    }
+    assert.doesNotMatch(html, /It is not used for advertising/, "no longer says the website has no advertising");
+    const home = await (await onHost("www.labkiosk.org", "/")).text();
+    assert.ok(home.includes('Some pages show ads from Google AdSense, which uses cookies as our <a href="/privacy#advertising">Privacy Policy</a> explains.'), "the cookie banner mentions the ads");
   });
 
   test("Only the platform's public pages may be indexed; every other page says noindex", async () => {
@@ -8813,9 +8902,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("The Zaraz analytics loader may run on the platform's public pages and nowhere else", async () => {
     const scriptSrc = (res: Response) =>
       (res.headers.get("Content-Security-Policy") || "").split("; ").find((d) => d.startsWith("script-src ")) || "";
-    for (const path of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/privacy", "/terms", "/login", "/contact"]) {
+    for (const path of ["/privacy", "/terms", "/login", "/contact"]) {
       const src = scriptSrc(await onHost("www.labkiosk.org", path));
       assert.match(src, /^script-src 'nonce-[^']+' https:\/\/www\.labkiosk\.org\/cdn-cgi\/zaraz\/s\.js$/, `www${path} allows exactly the Zaraz loader`);
+    }
+    // Pages with ads add AdSense's strict policy (see the AdSense test) after the same loader.
+    for (const path of ["/", "/features", "/specs", "/pricing", "/download", "/docs"]) {
+      const src = scriptSrc(await onHost("www.labkiosk.org", path));
+      assert.match(
+        src,
+        /^script-src 'nonce-[^']+' https:\/\/www\.labkiosk\.org\/cdn-cgi\/zaraz\/s\.js 'strict-dynamic' 'unsafe-eval' 'unsafe-inline' https:$/,
+        `www${path} allows the Zaraz loader and AdSense`
+      );
     }
     const blocked: [string, string, string | undefined][] = [
       ["www.labkiosk.org", "/super/organizations", superSessionCookie],

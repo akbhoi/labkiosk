@@ -21,6 +21,7 @@ import {
   renderPricingHtml,
   renderDownloadHtml,
   renderDocsHtml,
+  renderAboutHtml,
   renderContactHtml,
   findDocsPage,
   docsPath,
@@ -34,6 +35,7 @@ import {
   FAVICON_PATH,
   ZARAZ_LOADER_PATH,
   allowsAnalytics,
+  allowsAds,
   canonicalUrlFor,
   faviconSvg,
   bimiSvg,
@@ -50,7 +52,7 @@ import {
 } from "./seo";
 
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
-const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
+const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/wiki", "/about", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
 const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/dpa", "/refunds", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
@@ -1351,6 +1353,15 @@ const RAZORPAY_CHECKOUT_ORIGIN = "https://checkout.razorpay.com";
  * lets Cloudflare Zaraz's loader script, which Zaraz's own (nonced) inline
  * snippet adds without a nonce, load from this origin. `indexable` false adds
  * `X-Robots-Tag: noindex` (see src/seo.ts).
+ *
+ * `ads` is set only on the platform pages that may show Google AdSense ads
+ * (`allowsAds`, src/seo.ts). AdSense supports only a strict, nonce-based CSP,
+ * because the hosts its code uses change over time: the nonce still gates every
+ * script in the markup, `'strict-dynamic'` lets the nonced loader add the
+ * scripts it needs, and ads draw in frames and call hosts of Google's choosing.
+ * `https:` and `'unsafe-inline'` are ignored by browsers that understand nonces
+ * and `'strict-dynamic'`; they are the fallback Google's policy names for the
+ * rest. No page with a form or an account carries this policy.
  */
 function buildHtmlHeaders(
   nonce: string,
@@ -1365,6 +1376,8 @@ function buildHtmlHeaders(
     firebase?: FirebaseConfig | null;
     /** Plan & billing opening Razorpay's checkout in the page, prefilled (src/ui_admin_plan.ts). */
     razorpay?: boolean;
+    /** A platform page that may show Google AdSense ads (src/seo.ts allowsAds). */
+    ads?: boolean;
   }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
@@ -1386,6 +1399,11 @@ function buildHtmlHeaders(
   // The Remote Control viewer's nonced module imports noVNC from /novnc/.
   if (options.remoteViewer) scriptSources.push("'self'");
   if (options.analyticsOrigin) scriptSources.push(`${options.analyticsOrigin}${ZARAZ_LOADER_PATH}`);
+  if (options.ads) {
+    scriptSources.push("'strict-dynamic'", "'unsafe-eval'", "'unsafe-inline'", "https:");
+    frameSources.push("https:");
+    connectSources.push("https:");
+  }
   const csp = [
     "default-src 'self'",
     `script-src ${scriptSources.join(" ")}`,
@@ -1905,6 +1923,7 @@ export default {
       turnstile: Boolean(turnstileSiteKey(env)),
       firebase: (isRegistrationPage(path, url) || path === "/verify-phone") && !firebaseConfigProblem(env) ? firebaseConfig(env) : null,
       razorpay: path === "/admin/plan" && billingEnabled(env),
+      ads: allowsAds(request, url, env),
       revalidate: !session && isIndexable(request, url, env)
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
@@ -1917,7 +1936,9 @@ export default {
     const formChecks = {
       turnstileSiteKey: turnstileSiteKey(env),
       loginTurnstile,
-      firebase: firebaseConfigProblem(env) ? null : firebaseConfig(env)
+      firebase: firebaseConfigProblem(env) ? null : firebaseConfig(env),
+      // Not a form check, but every public page takes it the same way: whether it carries the AdSense code.
+      ads: allowsAds(request, url, env)
     };
 
     // With SUPER_ADMIN_HOST set, the platform console and its API answer on that host only, so the
@@ -5619,6 +5640,18 @@ export default {
           certified,
           resellers
         ),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/about") {
+      return new Response(
+        renderAboutHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
         { headers: htmlHeaders }
       );
     }
