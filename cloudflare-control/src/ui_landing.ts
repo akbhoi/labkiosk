@@ -27,7 +27,7 @@ import { LinkResolver, renderMarkdown } from "./markdown";
 import { ARM64_RELEASE_ISO_NAME, LATEST_CHECKSUM_URL, LATEST_ISO_URL, MajorDownload, RELEASES_URL, RELEASE_ISO_NAME, ReleaseNote, isoDebianRelease, isoFileName, releaseHighlights } from "./release_notes";
 import { SupportStatus } from "./releases";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
-import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
+import { FAVICON_LINK_HTML, FAVICON_PATH, adsenseHeadHtml, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
 import { FIREBASE_SDK_ORIGIN, FIREBASE_SDK_VERSION, FirebaseConfig } from "./phone_verify";
 import { ComponentStatus, Incident } from "./status";
@@ -61,7 +61,8 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
         name: "Lab Kiosk",
         url: `${origin}/`,
         logo: `${origin}${FAVICON_PATH}`,
-        email: contactEmail
+        email: contactEmail,
+        sameAs: [SOURCE_REPOSITORY_URL]
       },
       {
         "@type": "WebSite",
@@ -124,6 +125,8 @@ export interface LandingOptions {
   firebase?: FirebaseConfig | null;
   /** The GST rate prices are charged with (src/invoices.ts gstPercentFor), for Pricing. */
   gstPercent?: number;
+  /** The page may show Google AdSense ads, so it carries the AdSense code (src/seo.ts allowsAds). */
+  ads?: boolean;
   /** On one organization's sign-in page: the single sign-on providers it offers (src/sso.ts). */
   sso?: { providers: ReadonlyArray<"google" | "microsoft">; tenantSlug: string };
 }
@@ -215,7 +218,7 @@ function renderPublicShell(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(meta.title)}</title>
   <meta name="description" content="${escapeAttr(meta.description)}">
-${FAVICON_LINK_HTML}${data.canonicalUrl ? landingSeoHeadHtml(data.canonicalUrl, contactEmail, data.nonce, meta.title, meta.description) : ""}  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
+${FAVICON_LINK_HTML}${data.canonicalUrl ? landingSeoHeadHtml(data.canonicalUrl, contactEmail, data.nonce, meta.title, meta.description) : ""}${data.ads ? adsenseHeadHtml(data.nonce) : ""}  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="${PALETTE["--bg-base"][1]}">
 ${themeHeadHtml(data.nonce)}
 ${FONT_LINKS}
@@ -240,6 +243,7 @@ ${FONT_LINKS}
       <a href="/pricing"${meta.activeNav === "pricing" ? ' class="active"' : ""}>Pricing</a>
       <a href="/download"${meta.activeNav === "download" ? ' class="active"' : ""}>Download</a>
       <a href="/docs"${meta.activeNav === "docs" ? ' class="active"' : ""}>Docs</a>
+      <a href="/about"${meta.activeNav === "about" ? ' class="active"' : ""}>About</a>
       <a href="/contact"${meta.activeNav === "contact" ? ' class="active"' : ""}>Contact</a>
     </nav>
 
@@ -299,6 +303,10 @@ ${FONT_LINKS}
       <a href="/#simulator" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
         Live Simulator
+      </a>
+      <a href="/about" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        About Us
       </a>
       <a href="/contact" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -614,6 +622,7 @@ ${FONT_LINKS}
           <li><a href="/docs">Documentation</a></li>
           <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
           <li><a href="/#faq">FAQ</a></li>
+          <li><a href="/about">About Us</a></li>
           <li><a href="/status">System status</a></li>
         </ul>
       </div>
@@ -624,7 +633,7 @@ ${FONT_LINKS}
           <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
           <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
           <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
-          <li><a href="/contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Contact form &rarr;</a></li>
+          <li><a href="/contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Contact Us &rarr;</a></li>
         </ul>
       </div>
     </div>
@@ -646,7 +655,7 @@ ${FONT_LINKS}
   </footer>
 
   <div class="cookie-banner" id="cookie-banner" role="region" aria-label="Cookie choice" hidden>
-    <p>We use Google Analytics to count visits to these pages. Nothing is sent to Google unless you accept. See our <a href="/privacy">Privacy Policy</a>.</p>
+    <p>We use Google Analytics to count visits to these pages, and nothing is sent to Google Analytics unless you accept. Some pages show ads from Google AdSense, which uses cookies as our <a href="/privacy#advertising">Privacy Policy</a> explains.</p>
     <div class="cookie-banner-actions">
       <button type="button" class="btn btn-ghost btn-sm" data-action="cookie-reject">Reject</button>
       <button type="button" class="btn btn-primary btn-sm" data-action="cookie-accept">Accept</button>
@@ -3644,6 +3653,56 @@ function contactMainHtml(data: LandingOptions): string {
     </section>`;
 }
 
+/** /about: who runs Lab Kiosk, what it is for, and how it is paid for. */
+function aboutMainHtml(contactEmail: string): string {
+  const docsCount = DOCS_PAGES.filter((page) => page.slug).length;
+  return `
+    <section class="page-hero">
+      <h1 class="page-hero-title">About <span>Lab Kiosk</span></h1>
+      <p class="page-hero-desc">
+        Lab Kiosk turns ordinary computers into locked-down browser workstations that an organization manages from one web console.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <article class="docs-article about-article">
+        <h2>What Lab Kiosk is</h2>
+        <p>Lab Kiosk has two parts. <strong>Lab Kiosk OS</strong> is a small Debian 13 based operating system for x86-64 and ARM64 computers. It starts straight into a full-screen browser, runs from memory so nothing a visitor does is kept after a restart, and opens only the sites the organization allows. The <strong>control plane</strong> is the web console, hosted on Cloudflare, where staff see every workstation, send a message to the screens, lock them, change the allowed sites and the apps on the User Portal, and take remote control when someone needs help.</p>
+        <p>It is meant for any place where many people share the same computers: offices, public services, libraries, training centres, schools, colleges and universities.</p>
+
+        <h2>Why it exists</h2>
+        <p>Shared computers are usually full desktop installations. Anyone can change their settings, install things, leave files and signed-in accounts behind, and wear out the disk. Fixing that is often done with per-seat commercial kiosk software, or by hand, one machine at a time. Lab Kiosk takes a different approach: every start is a clean start, browsing is limited to an allowlist, and the whole fleet is managed from a browser. Because the system is light, it also gives older computers a useful second life; the <a href="/specs">hardware page</a> lists what it needs.</p>
+
+        <h2>Who runs it</h2>
+        <p>Lab Kiosk is built and operated by <strong>Akbhoi Innovations</strong>, which is the party named in our <a href="/terms">Terms of Service</a>, <a href="/privacy">Privacy Policy</a> and <a href="/dpa">Data Processing Agreement</a>. The work happens in the open: the source of the operating system and the control plane is on <a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">GitHub</a>, where anyone can read it, follow changes and report problems. The project is developed together with AI coding assistants, as the repository's README explains; changes go through the automated tests before they are released.</p>
+
+        <h2>What we publish</h2>
+        <ul>
+          <li><a href="/docs">Documentation</a>: ${docsCount} guides covering installation, the admin console, the User Portal, remote control, security, troubleshooting and running the platform yourself.</li>
+          <li><a href="/download">Releases</a>: each version of Lab Kiosk OS, with its checksum and a summary of what changed.</li>
+          <li><a href="/features">Features</a> and <a href="/hardware">hardware other organizations run it on</a>.</li>
+          <li><a href="/status">System status</a>: whether the console, workstation connections and email are working.</li>
+        </ul>
+
+        <h2>How it is paid for</h2>
+        <p>Lab Kiosk is free on ${PRICING.freeWorkstations} workstations with no end date, and institutions recognised by an education board, university or regulator get ${PRICING.educationWorkstations} workstations free once we verify them. Larger organizations pay for a plan; see <a href="/pricing">Plans &amp; pricing</a>. The public reading pages of this website (the home page, the product pages, the documentation and this page) may also show ads from Google AdSense. Ads never appear on workstations, the User Portal, organization consoles or an organization's own address, and the <a href="/privacy#advertising">Privacy Policy</a> explains the cookies they use.</p>
+
+        <h2>Get in touch</h2>
+        <p>Write to us with the <a href="/contact">contact form</a>, or by email: <a href="mailto:${escapeAttr(contactEmail)}">${escapeHtml(contactEmail)}</a> for general questions, <a href="mailto:support@labkiosk.org">support@labkiosk.org</a> for help with a deployment and <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a> for hardware and reseller partnerships. Bugs can be reported as <a href="${SOURCE_REPOSITORY_URL}/issues" target="_blank" rel="noopener noreferrer">GitHub issues</a>, and security problems as the repository's security policy describes.</p>
+      </article>
+    </section>`;
+}
+
+/** /about: the About Us page. */
+export function renderAboutHtml(data: LandingOptions): string {
+  return renderPublicShell(data, {
+    title: "About Lab Kiosk",
+    description: "Who builds and runs Lab Kiosk, why it exists, what we publish and how it is paid for: secure browser workstations for organizations, from Akbhoi Innovations.",
+    activeNav: "about",
+    mainHtml: aboutMainHtml((data.contactEmail || "contact@labkiosk.org").toLowerCase())
+  });
+}
+
 /** /contact: a message to the platform, from an address proved with an emailed code. */
 export function renderContactHtml(data: LandingOptions): string {
   return renderPublicShell(data, {
@@ -4525,6 +4584,9 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     /* Responsive Breakpoints */
     /* The decorative status badge gives way before the brand name has to wrap. */
     @media (max-width: 1360px) { .edge-status { display: none; } }
+    /* With About in the bar, the tagline beside the name is the first thing to go. */
+    @media (max-width: 1240px) { .brand-title span { display: none; } }
+    .brand-title { white-space: nowrap; }
     @media (max-width: 1080px) {
       .nav-links { display: none; }
       .mobile-menu-btn { display: inline-flex; }
@@ -4854,6 +4916,8 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .docs-sidebar-links a.active { color: var(--accent-text); background: var(--accent-soft); font-weight: 600; }
     .docs-content { min-width: 0; }
     .docs-article { margin-bottom: 48px; scroll-margin-top: 90px; }
+    .about-article { max-width: 760px; margin: 0 auto; }
+    .about-article h2 { margin-top: 32px; }
     .docs-article h2 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 14px; color: var(--text-main); padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle); }
     .docs-article h3 { font-size: 1.25rem; font-weight: 650; margin: 24px 0 10px; color: var(--text-main); }
     .docs-article p { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.7; margin-bottom: 16px; overflow-wrap: anywhere; }

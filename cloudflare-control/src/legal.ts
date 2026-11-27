@@ -40,7 +40,7 @@ export interface LegalDocument {
 export const LEGAL_DOCUMENTS: readonly LegalDocument[] = [
   { id: "terms", title: "Terms of Service", path: "/terms", version: "2026-11-09", required: true },
   { id: "content", title: "Content Policy", path: "/content-policy", version: "2026-11-09", required: true },
-  { id: "privacy", title: "Privacy Policy", path: "/privacy", version: "2026-11-09", required: false }
+  { id: "privacy", title: "Privacy Policy", path: "/privacy", version: "2026-11-27", required: false }
 ];
 
 /** A document organizations are only told about when it changes: they neither accept nor acknowledge it. */

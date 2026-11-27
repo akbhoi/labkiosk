@@ -30,6 +30,7 @@ export const INDEXABLE_PATHS: readonly string[] = [
   "/docs",
   // Every page of the documentation (the repository's wiki, under /docs).
   ...DOCS_PAGES.filter((page) => page.slug).map((page) => `/docs/${page.slug}`),
+  "/about",
   "/contact",
   "/privacy",
   "/terms",
@@ -164,7 +165,53 @@ export function bimiSvg(accent: string, foreground: string): string {
 export const ADS_TXT_PATH = "/ads.txt";
 
 /** The Google AdSense publisher account the platform's public pages use. */
-export const ADS_TXT = "google.com, pub-7222534809944092, DIRECT, f08c47fec0942fa0\n";
+export const ADSENSE_PUBLISHER_ID = "pub-7222534809944092";
+
+export const ADS_TXT = `google.com, ${ADSENSE_PUBLISHER_ID}, DIRECT, f08c47fec0942fa0\n`;
+
+/** AdSense's loader, exactly as AdSense issues it, with the response's nonce added (Google's strict-CSP guidance). */
+export const ADSENSE_SCRIPT_URL = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-${ADSENSE_PUBLISHER_ID}`;
+
+/**
+ * Pages that may show Google AdSense ads: the platform's own reading pages
+ * (the landing page, the product pages, the documentation and About). Never
+ * a form people fill in (sign-in, registration, contact), never the legal
+ * pages, and never anything an organization, its staff or its workstations
+ * see: consoles, the User Portal, organization hosts and workstations stay
+ * ad-free because they are not platform public pages at all.
+ */
+const AD_PATHS = new Set<string>([
+  "/",
+  "/features",
+  "/specs",
+  "/hardware",
+  "/pricing",
+  "/download",
+  "/docs",
+  ...DOCS_PAGES.filter((page) => page.slug).map((page) => `/docs/${page.slug}`),
+  "/about"
+]);
+
+/**
+ * True when this response may carry the AdSense script. "/" counts only as the
+ * landing page itself: its sign-in, registration and download views (?login=,
+ * ?register=, ?download=, ?iso=) are forms, so they stay ad-free.
+ */
+export function allowsAds(request: Request, url: URL, env: Env): boolean {
+  if (!isPlatformPublicPage(request, url, env) || !AD_PATHS.has(url.pathname)) return false;
+  if (url.pathname === "/" && ["login", "register", "download", "iso"].some((key) => url.searchParams.has(key))) return false;
+  return true;
+}
+
+/**
+ * The AdSense account tag and the AdSense loader for a page that may show ads.
+ * Placement is left to Auto ads, configured in AdSense.
+ */
+export function adsenseHeadHtml(nonce: string): string {
+  return `  <meta name="google-adsense-account" content="ca-${ADSENSE_PUBLISHER_ID}">
+  <script async src="${escapeAttr(ADSENSE_SCRIPT_URL)}" crossorigin="anonymous" nonce="${escapeAttr(nonce)}"></script>
+`;
+}
 
 /**
  * robots.txt. The platform host lets crawlers in and names the sitemap; every
