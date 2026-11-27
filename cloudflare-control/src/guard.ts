@@ -95,7 +95,41 @@ const RESERVED_SLUGS = new Set([
   // Mail and DNS conventions.
   "abuse", "postmaster", "hostmaster", "webmaster", "noreply", "no-reply",
   "smtp", "imap", "pop", "pop3", "webmail", "ns1", "ns2", "autodiscover", "autoconfig", "mta-sts",
-  "git", "vpn", "ftp"
+  "git", "vpn", "ftp",
+  // Hosting and infrastructure: read as a service the platform runs, not a customer.
+  "ai", "cloud", "host", "hosting", "hosted", "server", "servers", "node", "nodes", "edge",
+  "gateway", "proxy", "relay", "network", "net", "web", "www1", "www2", "site", "sites",
+  "worker", "workers", "storage", "bucket", "s3", "db", "database", "data", "backup", "backups",
+  "registry", "repo", "packages", "pkg", "apt", "build", "builds", "deploy", "ci",
+  "monitor", "monitoring", "metrics", "analytics", "stats", "logs", "health", "uptime",
+  "ops", "devops", "infra", "sandbox", "developer", "developers", "lab", "labs",
+  "my", "me", "go", "link", "links", "url", "m", "mobile",
+  // The product's own features and devices.
+  "remote", "vnc", "novnc", "ws", "wss", "socket", "realtime", "live", "connect",
+  "device", "devices", "fleet", "workstation", "workstations", "kiosks", "client", "clients",
+  "os", "iso", "image", "boot", "pxe", "provision", "enroll", "enrollment", "agent", "agents",
+  // AI and assistants.
+  "ml", "llm", "gpt", "chat", "bot", "bots", "assistant", "copilot",
+  // People and roles: an organization here reads as the platform's own user pages.
+  "user", "users", "member", "members", "customer", "customers", "partner", "partners",
+  "reseller", "resellers", "affiliate", "affiliates", "owner", "superadmin", "super-admin",
+  "sysadmin", "administrator", "moderator", "mod", "operator", "manage", "management",
+  "control", "panel", "cpanel", "settings", "profile", "verified",
+  // Sign-in, recovery and identity: phishing lookalikes.
+  "id", "identity", "verify", "verification", "secure", "password", "reset", "recover",
+  "recovery", "2fa", "mfa", "otp", "session", "token", "saml", "oidc", "signout", "logout",
+  // Money.
+  "pay", "payment", "payments", "checkout", "invoice", "invoices", "plans", "pricing",
+  "subscribe", "subscription", "subscriptions", "store", "shop", "orders", "wallet",
+  // Advertising, marketing and company pages.
+  "ad", "ads", "advert", "adverts", "advertise", "advertisement", "advertisements",
+  "advertising", "marketing", "promo", "promos", "offers", "deals", "campaign", "newsletter",
+  "news", "press", "events", "careers", "jobs", "about", "contact", "info", "hello", "sales",
+  "legal", "terms", "privacy", "policy", "compliance", "trust", "gdpr", "cookies",
+  "helpdesk", "service", "services", "care", "ticket", "tickets", "feedback", "community", "forum",
+  // More mail and DNS names (email.labkiosk.org may host the platform's mail).
+  "email", "e-mail", "emails", "mailer", "mailserver", "mx", "mx1", "mx2", "mta", "bounce",
+  "bounces", "send", "inbound", "outbound", "dmarc", "dkim", "spf", "dns", "ns", "ns3", "ns4", "whois"
 ]);
 
 /**

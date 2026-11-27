@@ -5710,6 +5710,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(subdomainProblem("greenwood"), null);
   });
 
+  test("Addresses that read as the platform's own services are reserved, and none resolves as an organization", () => {
+    for (const name of ["email", "cloud", "advertisement", "user", "users", "verify", "payments", "remote", "superadmin"]) {
+      assert.equal(subdomainProblem(name), ADDRESS_REFUSAL, `${name} cannot be registered`);
+      const request = new Request("https://labkiosk.org/", { headers: { host: `${name}.labkiosk.org` } });
+      assert.equal(hostSubdomain(request, "labkiosk.org"), null, `${name}.labkiosk.org is not an organization`);
+    }
+    for (const name of ["ai", "ad"]) {
+      const request = new Request("https://labkiosk.org/", { headers: { host: `${name}.labkiosk.org` } });
+      assert.equal(hostSubdomain(request, "labkiosk.org"), null, `${name}.labkiosk.org is not an organization`);
+    }
+    assert.equal(subdomainProblem("greenwood-users"), null, "a name that only contains one is still allowed");
+  });
+
   test("Registration takes the chosen console address, once, and refuses implausible emails", async () => {
     const { res, data } = await submitSignup({ email: "chosen@example.com", subdomain: "Chosen-Co" });
     assert.equal(res.status, 200, JSON.stringify(data));
