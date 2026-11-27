@@ -292,25 +292,29 @@ At minute 0 of every hour Cloudflare calls `scheduled()`, which purges expired s
 
 ## 7. CI/CD
 
-`.github/workflows/deploy-cloudflare.yml` is called by `workers.yml` on `main`, after `workers.yml`'s typecheck and tests passed on the same commit: on a push touching `cloudflare-control/**` or `cloudflare-email-routing/**`, or when `workers.yml` is run by hand.
+Both Workers are deployed by **Cloudflare Workers Builds** on the `labkiosk-controller` Worker (**Workers & Pages → labkiosk-controller → Settings → Build**), connected to this repository:
 
-Required repository secrets, under **Settings → Secrets and variables → Actions**:
-
-| Secret | Permissions |
+| Field | Value |
 | :--- | :--- |
-| `CLOUDFLARE_API_TOKEN` | `Workers Scripts: Edit`, `D1: Edit`, `Account Settings: Read` |
-| `CLOUDFLARE_ACCOUNT_ID` | From the Cloudflare dashboard sidebar |
+| Git branch | `main` |
+| Root directory | `cloudflare-control` |
+| Build command | *(empty)* |
+| Deploy command | `bash scripts/workers-builds-deploy.sh` |
+| Preview builds | Off: pull requests are checked by CI, and a preview upload would put untested code on Cloudflare |
+| API token | A user token with `Workers Scripts: Edit`, `D1: Edit`, `Account Settings: Read`; the token Workers Builds creates by itself has no D1 access |
+| Build watch paths | Include `cloudflare-control/*` and `cloudflare-email-routing/*` |
 
-Pipeline:
+The `labkiosk-email-routing` Worker gets no build of its own: the script deploys it after the controller, which its Service Binding needs.
 
-1. In `workers.yml`: `tsc --noEmit` on both TS projects and the multi-tenant and security test suite, for both Workers
-2. `pnpm install --frozen-lockfile`
-3. `wrangler d1 migrations apply labkiosk-db --remote`
-4. `wrangler deploy` for the controller, then for the email Worker
+Pipeline, all in `scripts/workers-builds-deploy.sh` under `set -euo pipefail`, so any failure stops it:
+
+1. For both Workers: `pnpm install --frozen-lockfile`, `tsc --noEmit` on both TS projects, and the test suite
+2. `wrangler d1 migrations apply labkiosk-db --remote`
+3. `wrangler deploy` for the controller, then for the email Worker
 
 Migrations are applied **before** the deploy, which is the right order: the new worker asserts the schema is current on its first request.
 
-The other workflows: on pushes and pull requests to `main`, each only when its inputs changed, `client.yml` (client unit tests, syntax and policy checks) and `images.yml` (both images, also daily); `build-iso.yml` on `v*` tags and manual dispatch (it boot-tests the installed disk in QEMU before releasing), `docker-publish.yml` on tags and manual dispatch.
+No GitHub workflow deploys a Worker; `workers.yml` only checks them, and CircleCI runs the same checks (`.circleci/config.yml`). The other workflows: on pushes and pull requests to `main`, each only when its inputs changed, `client.yml` (client unit tests, syntax and policy checks) and `images.yml` (both images, also daily); `build-iso.yml` on `v*` tags and manual dispatch (it boot-tests the installed disk in QEMU before releasing), `docker-publish.yml` on tags and manual dispatch.
 
 ---
 

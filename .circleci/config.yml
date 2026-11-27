@@ -1,0 +1,72 @@
+# CircleCI runs the repository's checks while GitHub Actions is unavailable:
+# the jobs of client.yml and the two test jobs of workers.yml. It does not copy
+# them. run-actions-job.py runs each job's shell steps straight from the
+# workflow file, so a change to a check there changes it here too.
+#
+# Nothing here deploys and nothing needs a secret. The Workers are deployed by
+# Cloudflare Workers Builds, which runs the same typecheck and tests before
+# every deploy (wiki/Production-Deployment.md, section 7).
+#
+# The small resource class costs 5 credits a minute; each job takes a few
+# minutes, which keeps a month of pushes well inside the free plan.
+version: 2.1
+
+executors:
+  node:
+    docker:
+      # Ubuntu 24.04 with Node 24, Python 3.12, shellcheck and the Docker CLI
+      # with Compose. An exact tag, so a rerun uses the same image.
+      - image: cimg/node:24.22.3
+    resource_class: small
+
+commands:
+  prepare:
+    steps:
+      - checkout
+      - run:
+          name: Install PyYAML and pnpm 10
+          # PyYAML reads the workflow files. The lockfiles are pnpm 10's and
+          # the image ships a newer major.
+          command: |
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends python3-yaml
+            sudo npm install --global --silent pnpm@10.34.9
+            pnpm --version
+
+  actions-job:
+    parameters:
+      workflow:
+        type: string
+      job:
+        type: string
+    steps:
+      - prepare
+      - run:
+          name: << parameters.workflow >> / << parameters.job >>
+          command: python3 .circleci/run-actions-job.py .github/workflows/<< parameters.workflow >> << parameters.job >>
+
+jobs:
+  control-plane:
+    executor: node
+    steps:
+      - actions-job: { workflow: workers.yml, job: control-plane }
+  email-worker:
+    executor: node
+    steps:
+      - actions-job: { workflow: workers.yml, job: email-worker }
+  client-tests:
+    executor: node
+    steps:
+      - actions-job: { workflow: client.yml, job: tests }
+  client-lint:
+    executor: node
+    steps:
+      - actions-job: { workflow: client.yml, job: lint }
+
+workflows:
+  checks:
+    jobs:
+      - control-plane
+      - email-worker
+      - client-tests
+      - client-lint

@@ -151,7 +151,7 @@ Lab Kiosk is openly co-developed with AI assistants, and contributions authored 
 
 **In the description:** what changed, why, how you verified it, and any AI involvement. The repository has a PR template; fill in its sections.
 
-**CI** runs the checks for what your change touched: `workers.yml` typechecks and tests both Workers, `client.yml` runs the client unit tests and the syntax, shellcheck, JSON and Chromium-policy checks, and `images.yml` builds and scans both Docker images. → [Testing Guide](Testing-Guide#ci)
+**CI** runs the checks for what your change touched, on GitHub Actions and on CircleCI (`.circleci/config.yml` runs the jobs of `workers.yml` and `client.yml` from those files): `workers.yml` typechecks and tests both Workers, `client.yml` runs the client unit tests and the syntax, shellcheck, JSON and Chromium-policy checks, and `images.yml` builds and scans both Docker images. → [Testing Guide](Testing-Guide#ci)
 
 ---
 
@@ -159,7 +159,7 @@ Lab Kiosk is openly co-developed with AI assistants, and contributions authored 
 
 | Trigger | Workflow | Result |
 | :--- | :--- | :--- |
-| Push to `main` touching either Worker, or `workers.yml` run by hand on `main` | `workers.yml` → `deploy-cloudflare.yml` | After `workers.yml`'s typecheck and tests pass on that commit: apply remote migrations → `wrangler deploy` (both Workers) |
+| Push to `main` touching either Worker | Cloudflare Workers Builds → `cloudflare-control/scripts/workers-builds-deploy.sh` | Typecheck and test both Workers in that build, then apply remote migrations → `wrangler deploy` (controller, then email Worker) |
 | A `v*` tag, or manual dispatch | `docker-publish.yml` | Publishes `labkiosk` (amd64 and arm64, each built on its own runner) and `labkiosk-iso-builder` to GHCR |
 | A `v*` tag, or manual dispatch | `build-iso.yml` | Builds the ISO, verifies the checksum, boot-tests the installed disk in QEMU in parallel jobs, then (on a tag) signs it and creates a GitHub Release |
 | Pushes and pull requests to `main` | `workers.yml`, `client.yml`, `images.yml` | Each runs only when its inputs changed; `images.yml` also daily |

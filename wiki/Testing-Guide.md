@@ -219,12 +219,14 @@ Pushes and pull requests to `main` run only the workflows whose inputs changed (
 
 | Workflow | Runs when | Jobs |
 | :--- | :--- | :--- |
-| `workers.yml` | `cloudflare-control/`, `cloudflare-email-routing/` or `wiki/` changed (the wiki is bundled as `/docs`); by hand on `main` | `control-plane` and `email-worker` (Node 24, pnpm, typecheck, tests) in parallel; on `main`, `deploy` calls `deploy-cloudflare.yml` after both passed, when the push touched either Worker or the run was started by hand |
+| `workers.yml` | `cloudflare-control/`, `cloudflare-email-routing/` or `wiki/` changed (the wiki is bundled as `/docs`); by hand | `control-plane` and `email-worker` (Node 24, pnpm, typecheck, tests) in parallel. Deploys nothing |
 | `client.yml` | `distro-builder/`, `docker-test/`, the `Dockerfile`, `docker-compose.yml`, `cloudflare-control/src/`, `wiki/` or `.github/` changed | `tests`: Python compile and the client unit tests; `lint`: `node --check`, shellcheck, JSON validity, Chromium policy drift, line endings, `overlayroot`, embedded Python |
 | `images.yml` | Something that goes into an image changed, and daily | Builds and scans `labkiosk` and `labkiosk-iso-builder` (no push) |
 
 `build-iso.yml` (version tags and manual dispatch) builds the ISO, then runs the boot test above as parallel jobs before any GitHub Release is created; a failing scenario uploads the VM screenshots.
 
-`deploy-cloudflare.yml` does not test again: it runs only from `workers.yml`, after the typecheck and tests passed on the same commit, so a failing test never reaches production.
+CircleCI (`.circleci/config.yml`) runs the four check jobs of `workers.yml` and `client.yml` on every push, straight from those files through `.circleci/run-actions-job.py`, so both services run the same checks.
+
+The Workers are deployed by Cloudflare Workers Builds, not by a workflow. Its deploy command, `cloudflare-control/scripts/workers-builds-deploy.sh`, typechecks and tests both Workers in the same build and stops before any migration or deploy if one fails, so a failing test never reaches production.
 
 → [Development Workflow](Development-Workflow) · [Control Plane Internals](Control-Plane-Internals)

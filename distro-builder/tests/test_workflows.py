@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 .github/workflows: every third-party action is pinned to a full commit SHA, and
-nothing is deployed or released before the checks of the same run passed.
+nothing is deployed or released before the checks of the same run passed. The
+Workers are deployed by Cloudflare Workers Builds, through a script that runs
+their checks first.
 
 The deploy and release jobs hold the Cloudflare token, the R2 keys and the update
 signing key, so a moved tag on any action they run would reach every workstation.
@@ -59,28 +61,50 @@ def read_workflow(name):
 class NothingUntestedIsPublished(unittest.TestCase):
     """The deploy and the release run only after the checks of the same run passed."""
 
-    def test_the_control_plane_deploys_only_from_workers_after_its_tests(self):
-        deploy = read_workflow("deploy-cloudflare.yml")
-        triggers = deploy.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(triggers.split(), ["workflow_call:"], "deploy-cloudflare.yml must run only when workers.yml calls it")
-        workers = read_workflow("workers.yml")
-        job = workers.split("\n  deploy:\n", 1)[1]
-        self.assertIn("needs: [changes, control-plane, email-worker]", job)
-        self.assertIn("uses: ./.github/workflows/deploy-cloudflare.yml", job)
-        self.assertIn("github.ref == 'refs/heads/main'", job)
+    def test_no_workflow_deploys_a_worker(self):
+        # The Workers are deployed by Cloudflare Workers Builds alone, through
+        # workers-builds-deploy.sh. A second deploy from a workflow could run
+        # its migrations alongside that one.
+        for name in sorted(f for f in os.listdir(WORKFLOWS) if f.endswith((".yml", ".yaml"))):
+            text = read_workflow(name)
+            self.assertNotIn("wrangler deploy", text, f"{name} deploys a Worker; Workers Builds does that")
+            self.assertNotIn("d1 migrations apply", text, f"{name} migrates D1; Workers Builds does that")
 
-    def test_a_push_to_main_never_cancels_a_running_deploy(self):
-        workers = read_workflow("workers.yml")
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workers)
+    def test_the_workers_deploy_only_after_their_tests(self):
+        with open(os.path.join(REPO, "cloudflare-control", "scripts", "workers-builds-deploy.sh"),
+                  encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertIn("set -euo pipefail", script)
+        body = script.split("\ncheck \"$control\"\n", 1)
+        self.assertEqual(len(body), 2, "the script must check the control plane before anything else")
+        before, after = body
+        self.assertNotIn("wrangler deploy", before)
+        self.assertNotIn("migrations apply", before)
+        order = [after.index(step) for step in (
+            'check "$email"',
+            "wrangler d1 migrations apply labkiosk-db --remote",
+            'pnpm --dir "$control" exec wrangler deploy',
+            'pnpm --dir "$email" exec wrangler deploy',
+        )]
+        self.assertEqual(order, sorted(order), "check both Workers, migrate, then deploy the controller before the email Worker")
+        for step in ("install --frozen-lockfile", "run typecheck", "test"):
+            self.assertIn(f'pnpm --dir "$1" {step}', script)
 
-    def test_every_change_to_a_deployed_worker_starts_its_tests(self):
-        # The deploy's own filter must never name a path the workflow's trigger
-        # leaves out, or a change to it would deploy nothing and test nothing.
+    def test_every_change_to_a_worker_starts_its_tests(self):
         workers = read_workflow("workers.yml")
         triggers = workers.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
         for path in ("cloudflare-control/**", "cloudflare-email-routing/**", "wiki/**",
-                     ".github/workflows/workers.yml", ".github/workflows/deploy-cloudflare.yml"):
+                     ".github/workflows/workers.yml"):
             self.assertEqual(triggers.count(f'- "{path}"'), 2, f"{path} must start both push and pull_request runs")
+
+    def test_circleci_runs_the_workflow_jobs_themselves(self):
+        # CircleCI runs the checks from the workflow files, not from a copy.
+        with open(os.path.join(REPO, ".circleci", "config.yml"), encoding="utf-8") as handle:
+            config = handle.read()
+        for workflow, job in (("workers.yml", "control-plane"), ("workers.yml", "email-worker"),
+                              ("client.yml", "tests"), ("client.yml", "lint")):
+            self.assertIn(f"{{ workflow: {workflow}, job: {job} }}", config)
+            self.assertIn(f"\n  {job}:\n", read_workflow(workflow), f"{workflow} has no job {job}")
 
     def test_the_release_waits_for_every_boot_test_job(self):
         iso = read_workflow("build-iso.yml")

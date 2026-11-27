@@ -344,8 +344,8 @@ Sets the kernel command line, `--bootappend-live`, distribution, and package lis
 
 | Secret | Used by | Permissions |
 | :--- | :--- | :--- |
-| `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare.yml` | `Workers Scripts: Edit`, `D1: Edit`, `Account Settings: Read` |
-| `CLOUDFLARE_ACCOUNT_ID` | `deploy-cloudflare.yml` | From the dashboard sidebar |
+| Workers Builds API token | Cloudflare Workers Builds on `labkiosk-controller` (set in the Cloudflare dashboard, not on GitHub) | `Workers Scripts: Edit`, `D1: Edit`, `Account Settings: Read` |
+| `CLOUDFLARE_ACCOUNT_ID` | `build-iso.yml`, `security-rebuild.yml` (the R2 endpoint) | From the dashboard sidebar |
 | `GITHUB_TOKEN` | `docker-publish.yml` | Provided automatically; needs `packages: write` |
 
 → [Production Deployment](Production-Deployment) · [Building the ISO](Building-the-ISO) · [Troubleshooting](Troubleshooting)
