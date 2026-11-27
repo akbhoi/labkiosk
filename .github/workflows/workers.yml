@@ -1,4 +1,4 @@
-name: "Cloudflare Workers: test & deploy"
+name: "Cloudflare Workers: typecheck & test"
 
 # The control plane and the email Worker: typecheck and test both. Runs only
 # when something that goes into a Worker changed: wiki/ is bundled into the
